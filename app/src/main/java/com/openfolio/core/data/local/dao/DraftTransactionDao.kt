@@ -4,11 +4,18 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Update
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
 import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface DraftTransactionDao {
+    @Update
+    suspend fun update(draft: DraftTransactionEntity)
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insert(draft: DraftTransactionEntity)
+
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertAll(drafts: List<DraftTransactionEntity>)
 
@@ -32,4 +39,7 @@ interface DraftTransactionDao {
 
     @Query("UPDATE draft_transactions SET isAccepted = :accepted WHERE id = :draftId")
     suspend fun setAccepted(draftId: String, accepted: Boolean)
+
+    @Query("DELETE FROM draft_transactions WHERE documentId = :documentId")
+    suspend fun deleteByDocumentId(documentId: String)
 }

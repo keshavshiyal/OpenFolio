@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -37,7 +38,7 @@ fun InboxScreen(
     onDocumentClick: (String) -> Unit,
 ) {
     val colors = LocalOpenFolioColors.current
-    val awaitingReview = documents.count { it.status == DocumentStatus.PENDING.name }
+    val awaitingReview = documents.count { it.status != DocumentStatus.COMPLETED.name }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -140,26 +141,73 @@ fun DocumentCard(
                 )
             }
             Spacer(Modifier.width(10.dp))
-            Surface(
-                shape = RoundedCornerShape(50.dp),
-                color = if (document.status == DocumentStatus.PENDING.name) {
-                    colors.brandSubtle
-                } else {
-                    colors.background
-                },
+            DocumentStatusBadge(document.status)
+        }
+    }
+}
+
+@Composable
+private fun DocumentStatusBadge(status: String) {
+    val colors = LocalOpenFolioColors.current
+    val label: String
+    val foreground: androidx.compose.ui.graphics.Color
+    val background: androidx.compose.ui.graphics.Color
+    when (status) {
+        DocumentStatus.PENDING_OCR.name -> {
+            label = "Processing OCR..."
+            foreground = colors.muted
+            background = colors.background
+        }
+        DocumentStatus.OCR_FAILED.name -> {
+            label = "OCR Failed"
+            foreground = colors.lossGlyph
+            background = colors.lossGlyph.copy(alpha = 0.12f)
+        }
+        DocumentStatus.OCR_COMPLETE.name,
+        DocumentStatus.AI_COMPLETE.name -> {
+            label = if (status == DocumentStatus.OCR_COMPLETE.name) {
+                "Ready for AI"
+            } else {
+                "Ready for review"
+            }
+            foreground = colors.brand
+            background = colors.brandSubtle
+        }
+        DocumentStatus.COMPLETED.name -> {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
+                androidx.compose.material3.Icon(
+                    imageVector = Icons.Filled.CheckCircle,
+                    contentDescription = null,
+                    tint = colors.gainGlyph,
+                    modifier = Modifier.size(18.dp),
+                )
                 Text(
-                    text = document.status.lowercase().replaceFirstChar { it.uppercase() },
+                    text = "Completed",
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (document.status == DocumentStatus.PENDING.name) {
-                        colors.brand
-                    } else {
-                        colors.muted
-                    },
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    color = colors.gainGlyph,
                 )
             }
+            return
         }
+        else -> {
+            label = status.lowercase().replaceFirstChar { it.uppercase() }
+            foreground = colors.muted
+            background = colors.background
+        }
+    }
+    Surface(
+        shape = RoundedCornerShape(50.dp),
+        color = background,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = foreground,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+        )
     }
 }
 

@@ -3,8 +3,10 @@ package com.openfolio.feature.review
 import android.content.Context
 import android.net.Uri
 import com.openfolio.core.data.local.entity.DocumentEntity
+import com.openfolio.core.data.local.entity.DocumentStatus
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
 import com.openfolio.core.domain.repository.DocumentRepository
+import com.openfolio.core.domain.repository.SaveDraftTransactionsResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -28,13 +30,18 @@ class ReviewViewModelTest {
         fileHash = "hash",
         fileSize = 100L,
         importDate = 1L,
+        status = DocumentStatus.OCR_COMPLETE.name,
+        extractedText = "Local statement text",
     )
+    private lateinit var repository: FakeDocumentRepository
     private lateinit var viewModel: ReviewViewModel
 
     @Before
     fun setUp() {
         Dispatchers.setMain(UnconfinedTestDispatcher())
-        viewModel = ReviewViewModel(FakeDocumentRepository(document))
+        repository = FakeDocumentRepository(document)
+        viewModel = ReviewViewModel(repository)
+        viewModel.loadDocument(document.id)
     }
 
     @After
@@ -43,60 +50,96 @@ class ReviewViewModelTest {
     }
 
     @Test
-    fun loadsDocumentById() {
-        viewModel.loadDocument(document.id)
-
+    fun loadsDocumentAndStartsWithNoDrafts() {
         assertEquals(ReviewUiState.Loaded(document), viewModel.uiState.value)
+        assertTrue(viewModel.drafts.value.isEmpty())
+    }
+
+    @Test
+    fun processWithAiCreatesFiveMockDraftsWithMixedConfidence() {
+        viewModel.onProcessWithAi()
+
         assertEquals(5, viewModel.drafts.value.size)
-        assertTrue(viewModel.drafts.value.all { it.documentId == document.id })
         assertEquals(
-            listOf(98, 98, 98, 85, 60),
+            listOf(98, 98, 98, 85, 65),
             viewModel.drafts.value.map(DraftTransactionEntity::confidence),
         )
+        assertTrue(viewModel.drafts.value.all { it.documentId == document.id })
+        assertEquals(1, repository.aiProcessCallCount)
     }
 
     @Test
-    fun acceptsOnlyHighConfidenceDraftsInBulk() {
-        val repository = FakeDocumentRepository(document)
-        viewModel = ReviewViewModel(repository)
-        viewModel.loadDocument(document.id)
-
-        viewModel.acceptAllHighConfidence()
+    fun savesDraftsAndReturnsDeduplicationCounts() {
+        viewModel.onProcessWithAi()
+        viewModel.saveConfirmed()
 
         assertEquals(
-            listOf(true, true, true, false, false),
-            viewModel.drafts.value.map(DraftTransactionEntity::isAccepted),
+            ReviewActionState.Saved(SaveDraftTransactionsResult(savedCount = 4, duplicateCount = 1)),
+            viewModel.actionState.value,
         )
     }
 
     @Test
-    fun savesAcceptedDraftsAndExposesSavedCount() {
-        val repository = FakeDocumentRepository(document)
-        viewModel = ReviewViewModel(repository)
+    fun addsAndEditsManualDrafts() {
+        viewModel.saveDraft(
+            draftId = null,
+            assetName = "Manual Holding",
+            transactionType = "BUY",
+            quantity = "2",
+            price = "100.00",
+            netAmount = "200.00",
+        )
+        val original = viewModel.drafts.value.single()
+        assertTrue(original.isManual)
+        assertEquals(100, original.confidence)
+
+        viewModel.saveDraft(
+            draftId = original.id,
+            assetName = "Updated Holding",
+            transactionType = "BUY",
+            quantity = "3",
+            price = "110.00",
+            netAmount = "330.00",
+        )
+
+        assertEquals(1, viewModel.drafts.value.size)
+        assertEquals("Updated Holding", viewModel.drafts.value.single().assetName)
+        assertEquals(original.id, viewModel.drafts.value.single().id)
+    }
+
+    @Test
+    fun doesNotStartAiWhenOcrIsNotComplete() {
+        repository.document = document.copy(status = DocumentStatus.PENDING_OCR.name)
         viewModel.loadDocument(document.id)
-        viewModel.acceptAllHighConfidence()
+        viewModel.onProcessWithAi()
 
-        viewModel.saveConfirmed()
-
-        assertEquals(3, (viewModel.actionState.value as ReviewActionState.Saved).count)
+        assertEquals(0, repository.aiProcessCallCount)
+        assertTrue(viewModel.actionState.value is ReviewActionState.Error)
     }
 
     @Test
     fun exposesMissingDocumentState() {
+        repository.document = null
         viewModel.loadDocument("missing")
 
         assertEquals(ReviewUiState.NotFound, viewModel.uiState.value)
     }
 
     private class FakeDocumentRepository(
-        private val document: DocumentEntity,
+        var document: DocumentEntity?,
     ) : DocumentRepository {
         private val drafts = MutableStateFlow<List<DraftTransactionEntity>>(emptyList())
+        var aiProcessCallCount = 0
+            private set
 
-        override fun getAllDocuments(): Flow<List<DocumentEntity>> = flowOf(listOf(document))
+        override fun getAllDocuments(): Flow<List<DocumentEntity>> =
+            flowOf(listOfNotNull(document))
 
         override suspend fun getDocumentById(id: String): DocumentEntity? =
-            document.takeIf { it.id == id }
+            document?.takeIf { it.id == id }
+
+        override fun observeDocumentById(id: String): Flow<DocumentEntity?> =
+            flowOf(document?.takeIf { it.id == id })
 
         override fun getDraftTransactions(
             documentId: String,
@@ -109,27 +152,43 @@ class ReviewViewModelTest {
             if (this.drafts.value.isEmpty()) this.drafts.value = drafts
         }
 
-        override suspend fun setDraftAccepted(draftId: String, accepted: Boolean) {
-            drafts.value = drafts.value.map {
-                if (it.id == draftId) it.copy(isAccepted = accepted) else it
-            }
+        override suspend fun insertDraftTransaction(draft: DraftTransactionEntity) {
+            drafts.value = drafts.value + draft
         }
+
+        override suspend fun updateDraftTransaction(draft: DraftTransactionEntity) {
+            drafts.value = drafts.value.map { if (it.id == draft.id) draft else it }
+        }
+
+        override suspend fun setDraftAccepted(draftId: String, accepted: Boolean) = Unit
 
         override suspend fun acceptHighConfidenceDrafts(
             documentId: String,
             minimumConfidence: Int,
-        ) {
-            drafts.value = drafts.value.map {
-                if (it.documentId == documentId && it.confidence >= minimumConfidence) {
-                    it.copy(isAccepted = true)
-                } else {
-                    it
-                }
-            }
-        }
+        ) = Unit
 
-        override suspend fun saveAcceptedDraftTransactions(documentId: String): Int =
-            drafts.value.count { it.documentId == documentId && it.isAccepted }
+        override suspend fun saveDraftTransactions(
+            documentId: String,
+        ): SaveDraftTransactionsResult =
+            SaveDraftTransactionsResult(savedCount = 4, duplicateCount = 1)
+
+        override suspend fun processDocumentWithMockAi(documentId: String) {
+            aiProcessCallCount++
+            insertDraftTransactionsIfEmpty(
+                documentId,
+                listOf(98, 98, 98, 85, 65).mapIndexed { index, confidence ->
+                    DraftTransactionEntity(
+                        documentId = documentId,
+                        assetName = "Test asset $index",
+                        transactionType = "BUY",
+                        quantity = "1",
+                        price = "10",
+                        netAmount = "10",
+                        confidence = confidence,
+                    )
+                },
+            )
+        }
 
         override suspend fun ingestFile(uri: Uri, context: Context): DocumentEntity =
             error("Not used in this test")

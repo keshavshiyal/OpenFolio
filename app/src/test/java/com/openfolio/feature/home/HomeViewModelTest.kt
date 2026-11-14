@@ -6,6 +6,7 @@ import com.openfolio.core.data.local.entity.DocumentEntity
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
 import com.openfolio.core.domain.repository.DocumentRepository
 import com.openfolio.core.domain.repository.DuplicateDocumentException
+import com.openfolio.core.domain.repository.SaveDraftTransactionsResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -101,6 +102,8 @@ class HomeViewModelTest {
 
         override suspend fun getDocumentById(id: String): DocumentEntity? = null
 
+        override fun observeDocumentById(id: String): Flow<DocumentEntity?> = flowOf(null)
+
         override fun getDraftTransactions(
             documentId: String,
         ): Flow<List<DraftTransactionEntity>> = flowOf(emptyList())
@@ -110,6 +113,10 @@ class HomeViewModelTest {
             drafts: List<DraftTransactionEntity>,
         ) = Unit
 
+        override suspend fun insertDraftTransaction(draft: DraftTransactionEntity) = Unit
+
+        override suspend fun updateDraftTransaction(draft: DraftTransactionEntity) = Unit
+
         override suspend fun setDraftAccepted(draftId: String, accepted: Boolean) = Unit
 
         override suspend fun acceptHighConfidenceDrafts(
@@ -117,7 +124,11 @@ class HomeViewModelTest {
             minimumConfidence: Int,
         ) = Unit
 
-        override suspend fun saveAcceptedDraftTransactions(documentId: String): Int = 0
+        override suspend fun saveDraftTransactions(
+            documentId: String,
+        ): SaveDraftTransactionsResult = SaveDraftTransactionsResult(0, 0)
+
+        override suspend fun processDocumentWithMockAi(documentId: String) = Unit
 
         override suspend fun ingestFile(
             uri: Uri,

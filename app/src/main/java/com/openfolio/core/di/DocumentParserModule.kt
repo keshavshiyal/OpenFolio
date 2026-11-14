@@ -2,6 +2,8 @@ package com.openfolio.core.di
 
 import com.openfolio.core.utils.CsvTextExtractor
 import com.openfolio.core.utils.DocumentParser
+import com.openfolio.core.utils.DocumentTextExtractor
+import com.openfolio.core.utils.LocalDocumentTextExtractor
 import com.openfolio.core.utils.PdfTextExtractor
 import dagger.Binds
 import dagger.Module
@@ -19,4 +21,9 @@ abstract class DocumentParserModule {
     @Binds
     @IntoSet
     abstract fun bindCsvTextExtractor(extractor: CsvTextExtractor): DocumentParser
+
+    @Binds
+    abstract fun bindDocumentTextExtractor(
+        extractor: LocalDocumentTextExtractor,
+    ): DocumentTextExtractor
 }

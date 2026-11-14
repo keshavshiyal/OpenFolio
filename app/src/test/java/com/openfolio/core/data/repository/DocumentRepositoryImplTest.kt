@@ -6,12 +6,18 @@ import android.database.Cursor
 import android.net.Uri
 import android.provider.OpenableColumns
 import com.openfolio.core.data.local.dao.DocumentDao
+import com.openfolio.core.data.local.dao.DraftTransactionDao
+import com.openfolio.core.data.local.dao.TransactionDao
 import com.openfolio.core.data.local.entity.DocumentEntity
+import com.openfolio.core.data.local.OpenFolioDatabase
+import com.openfolio.core.utils.DocumentTextExtractor
 import com.openfolio.core.domain.repository.DuplicateDocumentException
 import java.io.ByteArrayInputStream
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CoroutineScope
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.mockito.kotlin.anyOrNull
 import org.mockito.kotlin.eq
@@ -29,6 +35,37 @@ class DocumentRepositoryImplTest {
         assertEquals(
             "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
             hash,
+        )
+    }
+
+    @Test
+    fun transactionFingerprintIsStableAndIncludesTransactionFields() {
+        val fingerprint = createTransactionFingerprint(
+            assetName = "  Reliance Industries ",
+            transactionType = "buy",
+            quantity = "10",
+            netAmount = "28500.00",
+            date = 20_000L,
+        )
+
+        assertEquals(
+            fingerprint,
+            createTransactionFingerprint(
+                assetName = "reliance industries",
+                transactionType = "BUY",
+                quantity = "10",
+                netAmount = "28500.00",
+                date = 20_000L,
+            ),
+        )
+        assertTrue(
+            fingerprint != createTransactionFingerprint(
+                assetName = "Reliance Industries",
+                transactionType = "BUY",
+                quantity = "11",
+                netAmount = "28500.00",
+                date = 20_000L,
+            ),
         )
     }
 
@@ -74,10 +111,11 @@ class DocumentRepositoryImplTest {
 
         val repository = DocumentRepositoryImpl(
             documentDao = dao,
-            documentParsers = emptySet(),
-            draftTransactionDao = mock(),
-            transactionDao = mock(),
-            database = mock(),
+            draftTransactionDao = mock<DraftTransactionDao>(),
+            transactionDao = mock<TransactionDao>(),
+            database = mock<OpenFolioDatabase>(),
+            documentTextExtractor = mock<DocumentTextExtractor>(),
+            applicationScope = mock<CoroutineScope>(),
         )
 
         assertThrows(DuplicateDocumentException::class.java) {

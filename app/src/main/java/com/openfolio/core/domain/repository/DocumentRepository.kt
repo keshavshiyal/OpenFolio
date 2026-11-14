@@ -11,6 +11,8 @@ interface DocumentRepository {
 
     suspend fun getDocumentById(id: String): DocumentEntity?
 
+    fun observeDocumentById(id: String): Flow<DocumentEntity?>
+
     fun getDraftTransactions(documentId: String): Flow<List<DraftTransactionEntity>>
 
     suspend fun insertDraftTransactionsIfEmpty(
@@ -18,11 +20,22 @@ interface DocumentRepository {
         drafts: List<DraftTransactionEntity>,
     )
 
+    suspend fun insertDraftTransaction(draft: DraftTransactionEntity)
+
+    suspend fun updateDraftTransaction(draft: DraftTransactionEntity)
+
     suspend fun setDraftAccepted(draftId: String, accepted: Boolean)
 
     suspend fun acceptHighConfidenceDrafts(documentId: String, minimumConfidence: Int)
 
-    suspend fun saveAcceptedDraftTransactions(documentId: String): Int
+    suspend fun saveDraftTransactions(documentId: String): SaveDraftTransactionsResult
 
     suspend fun ingestFile(uri: Uri, context: Context): DocumentEntity
+
+    suspend fun processDocumentWithMockAi(documentId: String)
 }
+
+data class SaveDraftTransactionsResult(
+    val savedCount: Int,
+    val duplicateCount: Int,
+)

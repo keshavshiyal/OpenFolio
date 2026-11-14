@@ -21,6 +21,14 @@ interface DocumentDao {
     @Query("SELECT * FROM documents WHERE id = :id LIMIT 1")
     suspend fun getDocumentById(id: String): DocumentEntity?
 
+    @Query("SELECT * FROM documents WHERE id = :id LIMIT 1")
+    fun observeDocumentById(id: String): Flow<DocumentEntity?>
+
     @Query("UPDATE documents SET status = :status WHERE id = :id")
     suspend fun updateStatus(id: String, status: String)
+
+    @Query(
+        "UPDATE documents SET extractedText = :text, status = :status WHERE id = :id",
+    )
+    suspend fun updateExtractionResult(id: String, text: String?, status: String)
 }

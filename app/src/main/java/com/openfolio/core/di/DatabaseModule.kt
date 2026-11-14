@@ -37,6 +37,7 @@ object DatabaseModule {
                 OpenFolioDatabase.MIGRATION_2_3,
                 OpenFolioDatabase.MIGRATION_3_4,
                 OpenFolioDatabase.MIGRATION_4_5,
+                OpenFolioDatabase.MIGRATION_5_6,
             )
             .openHelperFactory(SupportFactory(passphraseProvider.getPassphrase()))
             .build()

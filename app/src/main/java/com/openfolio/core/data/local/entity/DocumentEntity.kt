@@ -6,9 +6,13 @@ import androidx.room.PrimaryKey
 import java.util.UUID
 
 enum class DocumentStatus {
+    PENDING_OCR,
+    OCR_COMPLETE,
+    OCR_FAILED,
+    AI_COMPLETE,
+    COMPLETED,
     PENDING,
     PROCESSING,
-    COMPLETED,
     FAILED,
 }
 
@@ -20,6 +24,6 @@ data class DocumentEntity(
     val fileHash: String,
     val fileSize: Long,
     val importDate: Long,
-    val status: String = DocumentStatus.PENDING.name,
+    val status: String = DocumentStatus.PENDING_OCR.name,
     val extractedText: String? = null,
 )

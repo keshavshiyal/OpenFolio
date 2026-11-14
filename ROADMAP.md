@@ -74,8 +74,8 @@ The AI must strictly adhere to these rules. No hardcoded colors outside of `core
 * [x] Implement SAF (Storage Access Framework) file picker (PDF, CSV, XLS, XLSX).
 * [x] Implement SHA-256 file hashing to prevent duplicate file imports.
 * [x] Store imported files in app-private storage and track them in the Room Inbox.
-* [ ] Setup `PdfBox` to extract raw text from local PDFs.
-* [ ] Setup ML Kit to OCR image files.
+* [x] Setup `PdfBox` to extract raw text from local PDFs.
+* [x] Setup ML Kit to OCR scanned PDF pages locally.
 * [ ] Setup password-protected PDF handling (prompt for password, decrypt locally in memory).
 * [x] Build **Inbox Screen**: Show files processing, failed jobs, and awaiting review.
 
@@ -83,7 +83,9 @@ The AI must strictly adhere to these rules. No hardcoded colors outside of `core
 **Goal:** Send text to AI, parse JSON, and let user review.
 * [x] Extract local text from PDF and CSV files during ingestion.
 * [x] Add a batch split-view review screen with confidence indicators.
-* [x] Persist draft transactions and save accepted records to the confirmed ledger.
+* [x] Persist draft transactions and deduplicate confirmed records by fingerprint.
+* [x] Add manual draft entry and editing to the review flow.
+* [x] Add mock chunked extraction to validate the review pipeline without network calls.
 * [ ] Build AI Provider interface (OpenAI-compatible, Ollama).
 * [ ] Implement a PII Redaction layer (strip names/account numbers before sending to cloud AI).
 * [ ] Define strict JSON schema for AI extraction (Asset, Txn Type, Qty, Price, Net Amount).

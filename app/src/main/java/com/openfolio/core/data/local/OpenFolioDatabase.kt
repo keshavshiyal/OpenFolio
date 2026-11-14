@@ -20,7 +20,7 @@ import com.openfolio.core.data.local.entity.DraftTransactionEntity
         DraftTransactionEntity::class,
         Transaction::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = false,
 )
 @TypeConverters(LedgerConverters::class)
@@ -143,6 +143,48 @@ abstract class OpenFolioDatabase : RoomDatabase() {
                     )
                     """.trimIndent(),
                 )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_draft_transactions_documentId` " +
+                        "ON `draft_transactions` (`documentId`)",
+                )
+            }
+        }
+
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE `draft_transactions_new` (
+                        `id` TEXT NOT NULL,
+                        `documentId` TEXT NOT NULL,
+                        `assetName` TEXT NOT NULL,
+                        `transactionType` TEXT NOT NULL,
+                        `quantity` TEXT NOT NULL,
+                        `price` TEXT NOT NULL,
+                        `netAmount` TEXT NOT NULL,
+                        `confidence` INTEGER NOT NULL,
+                        `isAccepted` INTEGER NOT NULL,
+                        `isManual` INTEGER NOT NULL DEFAULT 0,
+                        `fingerprint` TEXT NOT NULL DEFAULT '',
+                        PRIMARY KEY(`id`),
+                        FOREIGN KEY(`documentId`) REFERENCES `documents`(`id`)
+                            ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    """
+                    INSERT INTO `draft_transactions_new` (
+                        `id`, `documentId`, `assetName`, `transactionType`, `quantity`,
+                        `price`, `netAmount`, `confidence`, `isAccepted`
+                    )
+                    SELECT `id`, `documentId`, `assetName`, `transactionType`, `quantity`,
+                        `price`, `netAmount`, `confidence`, `isAccepted`
+                    FROM `draft_transactions`
+                    """.trimIndent(),
+                )
+                db.execSQL("DROP TABLE `draft_transactions`")
+                db.execSQL("ALTER TABLE `draft_transactions_new` RENAME TO `draft_transactions`")
                 db.execSQL(
                     "CREATE INDEX IF NOT EXISTS `index_draft_transactions_documentId` " +
                         "ON `draft_transactions` (`documentId`)",

@@ -5,6 +5,7 @@ import android.net.Uri
 import com.openfolio.core.data.local.entity.DocumentEntity
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
 import com.openfolio.core.domain.repository.DocumentRepository
+import com.openfolio.core.domain.repository.SaveDraftTransactionsResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -52,6 +53,9 @@ class InboxViewModelTest {
         override suspend fun getDocumentById(id: String): DocumentEntity? =
             items.firstOrNull { it.id == id }
 
+        override fun observeDocumentById(id: String): Flow<DocumentEntity?> =
+            flowOf(items.firstOrNull { it.id == id })
+
         override fun getDraftTransactions(
             documentId: String,
         ): Flow<List<DraftTransactionEntity>> = flowOf(emptyList())
@@ -61,6 +65,10 @@ class InboxViewModelTest {
             drafts: List<DraftTransactionEntity>,
         ) = Unit
 
+        override suspend fun insertDraftTransaction(draft: DraftTransactionEntity) = Unit
+
+        override suspend fun updateDraftTransaction(draft: DraftTransactionEntity) = Unit
+
         override suspend fun setDraftAccepted(draftId: String, accepted: Boolean) = Unit
 
         override suspend fun acceptHighConfidenceDrafts(
@@ -68,7 +76,11 @@ class InboxViewModelTest {
             minimumConfidence: Int,
         ) = Unit
 
-        override suspend fun saveAcceptedDraftTransactions(documentId: String): Int = 0
+        override suspend fun saveDraftTransactions(
+            documentId: String,
+        ): SaveDraftTransactionsResult = SaveDraftTransactionsResult(0, 0)
+
+        override suspend fun processDocumentWithMockAi(documentId: String) = Unit
 
         override suspend fun ingestFile(uri: Uri, context: Context): DocumentEntity =
             error("Not used in this test")

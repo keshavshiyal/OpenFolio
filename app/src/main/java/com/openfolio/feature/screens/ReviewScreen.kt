@@ -14,22 +14,26 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,6 +42,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.openfolio.core.data.local.entity.DocumentStatus
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
 import com.openfolio.core.ui.theme.LocalOpenFolioColors
 import com.openfolio.feature.review.ReviewActionState
@@ -51,17 +56,35 @@ fun ReviewScreen(
     actionState: ReviewActionState,
     onBack: () -> Unit,
     onSkip: () -> Unit,
-    onAcceptAllHighConfidence: () -> Unit,
-    onSetDraftAccepted: (String, Boolean) -> Unit,
+    onProcessWithAi: () -> Unit,
+    onSaveDraft: (String?, String, String, String, String, String) -> Unit,
     onSaveConfirmed: () -> Unit,
+    onSaveComplete: () -> Unit,
 ) {
     val colors = LocalOpenFolioColors.current
     val document = (uiState as? ReviewUiState.Loaded)?.document
+    val snackbarHostState = remember { SnackbarHostState() }
+    var showManualForm by remember { mutableStateOf(false) }
     var editingDraft by remember { mutableStateOf<DraftTransactionEntity?>(null) }
+
+    LaunchedEffect(actionState) {
+        when (actionState) {
+            is ReviewActionState.Saved -> {
+                snackbarHostState.showSnackbar(
+                    "Saved ${actionState.result.savedCount} records. " +
+                        "Skipped ${actionState.result.duplicateCount} duplicates.",
+                )
+                onSaveComplete()
+            }
+            is ReviewActionState.Error -> snackbarHostState.showSnackbar(actionState.message)
+            else -> Unit
+        }
+    }
 
     Scaffold(
         containerColor = colors.background,
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = {
@@ -141,27 +164,56 @@ fun ReviewScreen(
                         style = MaterialTheme.typography.titleLarge,
                         color = colors.content,
                     )
-                    Button(
-                        onClick = onAcceptAllHighConfidence,
-                        enabled = actionState != ReviewActionState.Working && drafts.isNotEmpty(),
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text("Accept All High Confidence (>90%)")
-                    }
 
                     if (drafts.isEmpty()) {
+                        Button(
+                            onClick = {
+                                editingDraft = null
+                                showManualForm = true
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Add Missing Record")
+                        }
                         Text(
-                            text = when (uiState) {
-                                ReviewUiState.Loading -> "Loading transactions…"
-                                is ReviewUiState.Error -> uiState.message
-                                ReviewUiState.NotFound -> "No document found."
-                                else -> "No transactions found."
+                            text = when {
+                                uiState is ReviewUiState.Loading -> "Loading document…"
+                                uiState is ReviewUiState.Error -> uiState.message
+                                uiState == ReviewUiState.NotFound -> "No document found."
+                                document?.status == DocumentStatus.PENDING_OCR.name ->
+                                    "Local text extraction is in progress."
+                                document?.status == DocumentStatus.OCR_FAILED.name ->
+                                    "Local text extraction failed. You can still add records manually."
+                                document?.status == DocumentStatus.OCR_COMPLETE.name ||
+                                    document?.status == DocumentStatus.AI_COMPLETE.name ->
+                                    "Ready to extract transactions from this statement."
+                                else -> "Waiting for local text extraction."
                             },
                             style = MaterialTheme.typography.bodyMedium,
                             color = colors.muted,
-                            modifier = Modifier.padding(vertical = 8.dp),
                         )
+                        if (
+                            document?.status == DocumentStatus.OCR_COMPLETE.name ||
+                            document?.status == DocumentStatus.AI_COMPLETE.name
+                        ) {
+                            Button(
+                                onClick = onProcessWithAi,
+                                enabled = actionState != ReviewActionState.ProcessingAi,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text("Process with AI")
+                            }
+                        }
                     } else {
+                        Button(
+                            onClick = {
+                                editingDraft = null
+                                showManualForm = true
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Add Missing Record")
+                        }
                         LazyColumn(
                             modifier = Modifier.weight(1f),
                             contentPadding = PaddingValues(vertical = 2.dp),
@@ -170,74 +222,73 @@ fun ReviewScreen(
                             items(drafts, key = DraftTransactionEntity::id) { draft ->
                                 DraftTransactionRow(
                                     draft = draft,
-                                    onClick = { editingDraft = draft },
-                                    onToggleAccepted = {
-                                        onSetDraftAccepted(draft.id, !draft.isAccepted)
+                                    onEdit = {
+                                        editingDraft = draft
+                                        showManualForm = true
                                     },
                                 )
                             }
                         }
-                    }
-
-                    (actionState as? ReviewActionState.Error)?.let { error ->
-                        Text(
-                            text = error.message,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = colors.lossGlyph,
-                        )
-                    }
-                    Button(
-                        onClick = onSaveConfirmed,
-                        enabled = drafts.any(DraftTransactionEntity::isAccepted) &&
-                            actionState != ReviewActionState.Working,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(
-                            if (actionState == ReviewActionState.Working) {
-                                "Saving…"
+                        (actionState as? ReviewActionState.Error)?.let { error ->
+                            Text(
+                                text = error.message,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colors.lossGlyph,
+                            )
+                        }
+                        Button(
+                            onClick = onSaveConfirmed,
+                            enabled = actionState != ReviewActionState.Saving &&
+                                actionState != ReviewActionState.ProcessingAi,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            if (actionState == ReviewActionState.Saving) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    color = colors.onAccent,
+                                    strokeWidth = 2.dp,
+                                )
+                                Text("  Saving…")
                             } else {
-                                "Save Confirmed"
-                            },
-                        )
+                                Text("Save Confirmed")
+                            }
+                        }
                     }
                 }
             }
         }
     }
 
-    editingDraft?.let { draft ->
+    if (actionState == ReviewActionState.ProcessingAi) {
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("Extracting transactions...") },
+            text = {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(color = colors.brand)
+                    Text("Analyzing statement chunks locally with mock extraction.")
+                }
+            },
+            confirmButton = {},
+            dismissButton = {},
+        )
+    }
+
+    if (showManualForm) {
         ModalBottomSheet(
-            onDismissRequest = { editingDraft = null },
+            onDismissRequest = { showManualForm = false },
             containerColor = colors.surface,
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 24.dp)
-                    .padding(bottom = 32.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                Text(
-                    text = "Transaction details",
-                    style = MaterialTheme.typography.titleLarge,
-                    color = colors.content,
-                )
-                ReviewDetailField("Asset", draft.assetName)
-                ReviewDetailField("Type", draft.transactionType)
-                ReviewDetailField("Quantity", draft.quantity)
-                ReviewDetailField("Price", draft.price)
-                ReviewDetailField("Net amount", draft.netAmount)
-                ReviewDetailField("Confidence", "${draft.confidence}%")
-                OutlinedButton(
-                    onClick = {
-                        onSetDraftAccepted(draft.id, !draft.isAccepted)
-                        editingDraft = null
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(if (draft.isAccepted) "Remove from confirmed" else "Accept transaction")
-                }
-            }
+            ManualDraftForm(
+                draft = editingDraft,
+                onSave = { draftId, asset, type, quantity, price, amount ->
+                    onSaveDraft(draftId, asset, type, quantity, price, amount)
+                    showManualForm = false
+                },
+            )
         }
     }
 }
@@ -245,17 +296,16 @@ fun ReviewScreen(
 @Composable
 private fun DraftTransactionRow(
     draft: DraftTransactionEntity,
-    onClick: () -> Unit,
-    onToggleAccepted: () -> Unit,
+    onEdit: () -> Unit,
 ) {
     val colors = LocalOpenFolioColors.current
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
-        color = if (draft.isAccepted) colors.brandSubtle else colors.background,
+        color = if (draft.isManual) colors.brandSubtle else colors.background,
     ) {
         Row(
-            modifier = Modifier.padding(start = 12.dp, top = 10.dp, end = 6.dp, bottom = 10.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(
@@ -280,28 +330,13 @@ private fun DraftTransactionRow(
                 )
             }
             ConfidenceBadge(draft.confidence)
-            IconButton(onClick = onClick) {
+            IconButton(onClick = onEdit) {
                 Icon(
                     imageVector = Icons.Filled.Edit,
                     contentDescription = "Edit transaction details",
                     tint = colors.muted,
                     modifier = Modifier.size(20.dp),
                 )
-            }
-            IconButton(onClick = onToggleAccepted) {
-                if (draft.isAccepted) {
-                    Icon(
-                        imageVector = Icons.Filled.Check,
-                        contentDescription = "Accepted",
-                        tint = colors.brand,
-                    )
-                } else {
-                    Surface(
-                        modifier = Modifier.size(20.dp),
-                        shape = RoundedCornerShape(50.dp),
-                        color = colors.border,
-                    ) {}
-                }
             }
         }
     }
@@ -328,15 +363,76 @@ private fun ConfidenceBadge(confidence: Int) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ReviewDetailField(label: String, value: String) {
+private fun ManualDraftForm(
+    draft: DraftTransactionEntity?,
+    onSave: (String?, String, String, String, String, String) -> Unit,
+) {
     val colors = LocalOpenFolioColors.current
-    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-        Text(label, style = MaterialTheme.typography.bodySmall, color = colors.muted)
+    var asset by remember(draft?.id) { mutableStateOf(draft?.assetName.orEmpty()) }
+    var type by remember(draft?.id) { mutableStateOf(draft?.transactionType ?: "BUY") }
+    var quantity by remember(draft?.id) { mutableStateOf(draft?.quantity.orEmpty()) }
+    var price by remember(draft?.id) { mutableStateOf(draft?.price.orEmpty()) }
+    var amount by remember(draft?.id) { mutableStateOf(draft?.netAmount.orEmpty()) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp)
+            .padding(bottom = 32.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
         Text(
-            value,
-            style = MaterialTheme.typography.bodyLarge.copy(fontFeatureSettings = "tnum"),
+            text = if (draft == null) "Add Missing Record" else "Edit Transaction",
+            style = MaterialTheme.typography.titleLarge,
             color = colors.content,
         )
+        OutlinedTextField(
+            value = asset,
+            onValueChange = { asset = it },
+            label = { Text("Asset") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+        )
+        OutlinedTextField(
+            value = type,
+            onValueChange = { type = it.uppercase() },
+            label = { Text("Type (BUY, SELL, DIVIDEND)") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+        )
+        OutlinedTextField(
+            value = quantity,
+            onValueChange = { quantity = it },
+            label = { Text("Quantity") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+        )
+        OutlinedTextField(
+            value = price,
+            onValueChange = { price = it },
+            label = { Text("Price") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+        )
+        OutlinedTextField(
+            value = amount,
+            onValueChange = { amount = it },
+            label = { Text("Amount") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+        )
+        Button(
+            onClick = { onSave(draft?.id, asset, type, quantity, price, amount) },
+            enabled = asset.isNotBlank() &&
+                type in setOf("BUY", "SELL", "DIVIDEND", "INTEREST", "FEE", "TAX") &&
+                quantity.toBigDecimalOrNull()?.let { it.signum() > 0 } == true &&
+                price.toBigDecimalOrNull()?.let { it.signum() >= 0 } == true &&
+                amount.toBigDecimalOrNull()?.let { it.signum() >= 0 } == true,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Save Record")
+        }
     }
 }

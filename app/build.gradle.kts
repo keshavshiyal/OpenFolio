@@ -61,6 +61,7 @@ dependencies {
     implementation(libs.sqlcipher)
     implementation(libs.hilt.android)
     implementation(libs.pdfbox.android)
+    implementation(libs.mlkit.text.recognition)
 
     kapt(libs.androidx.room.compiler)
     kapt(libs.hilt.android.compiler)

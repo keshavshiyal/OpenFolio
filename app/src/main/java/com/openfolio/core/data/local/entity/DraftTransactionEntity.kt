@@ -4,6 +4,7 @@ import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import androidx.room.ColumnInfo
 import java.util.UUID
 
 @Entity(
@@ -28,6 +29,8 @@ data class DraftTransactionEntity(
     val netAmount: String,
     val confidence: Int,
     val isAccepted: Boolean = false,
+    @ColumnInfo(defaultValue = "0") val isManual: Boolean = false,
+    @ColumnInfo(defaultValue = "''") val fingerprint: String = "",
 ) {
     init {
         require(confidence in 0..100) { "Confidence must be between 0 and 100." }
