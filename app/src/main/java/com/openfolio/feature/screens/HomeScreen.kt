@@ -121,7 +121,7 @@ fun HomeScreen(
                 start = 20.dp,
                 top = 8.dp,
                 end = 20.dp,
-                bottom = 16.dp,
+                bottom = 100.dp,
             ),
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
@@ -152,9 +152,6 @@ fun HomeScreen(
             }
             items(uiState.recentActivity) { activity ->
                 RecentActivityRow(activity = activity, showValues = uiState.showValues)
-            }
-            item {
-                Spacer(modifier = Modifier.height(80.dp))
             }
         }
     }
