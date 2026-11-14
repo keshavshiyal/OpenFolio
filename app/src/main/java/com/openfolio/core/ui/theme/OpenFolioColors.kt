@@ -13,6 +13,7 @@ data class OpenFolioColors(
     val content: Color,
     val muted: Color,
     val border: Color,
+    val chartPalette: List<Color>,
     val gainGlyph: Color,
     val lossGlyph: Color,
 )
@@ -25,6 +26,13 @@ val LightOpenFolioColors = OpenFolioColors(
     content = Color(0xFF1A1D1F),
     muted = Color(0xFF8B9094),
     border = Color(0xFFE8E6E1),
+    chartPalette = listOf(
+        Color(0xFF0F6E5C),
+        Color(0xFF4C5AA8),
+        Color(0xFFB8842A),
+        Color(0xFF8B4A6F),
+        Color(0xFF5A6A72),
+    ),
     gainGlyph = Color(0xFF1F7A4D),
     lossGlyph = Color(0xFFA93226),
 )
@@ -37,6 +45,13 @@ val DarkOpenFolioColors = OpenFolioColors(
     content = Color(0xFFE6E8E6),
     muted = Color(0xFF8B9094),
     border = Color(0xFF2A3033),
+    chartPalette = listOf(
+        Color(0xFF0F6E5C),
+        Color(0xFF4C5AA8),
+        Color(0xFFB8842A),
+        Color(0xFF8B4A6F),
+        Color(0xFF5A6A72),
+    ),
     gainGlyph = Color(0xFF1F7A4D),
     lossGlyph = Color(0xFFA93226),
 )

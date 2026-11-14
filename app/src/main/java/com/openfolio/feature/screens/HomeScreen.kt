@@ -1,6 +1,7 @@
 package com.openfolio.feature.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,7 +24,7 @@ import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
-import androidx.compose.material.icons.filled.ShoppingCart
+import androidx.compose.material.icons.outlined.ShowChart
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -35,10 +36,19 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.Fill
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -68,6 +78,7 @@ fun HomeScreen(
         topBar = {
             TopAppBar(
                 title = { Text("OpenFolio") },
+                windowInsets = TopAppBarDefaults.windowInsets,
                 actions = {
                     IconButton(onClick = onToggleValues) {
                         Icon(
@@ -124,7 +135,7 @@ fun HomeScreen(
                 )
             }
             item {
-                TrajectoryChartPlaceholder(selectedPeriod = uiState.selectedPeriod)
+                TrajectoryChart(points = uiState.trajectoryPoints)
             }
             item {
                 AssetLiabilityPair(uiState)
@@ -227,7 +238,7 @@ private fun PeriodSelector(
 }
 
 @Composable
-private fun TrajectoryChartPlaceholder(selectedPeriod: String) {
+private fun TrajectoryChart(points: List<Float>) {
     val colors = LocalOpenFolioColors.current
 
     Card(
@@ -237,16 +248,68 @@ private fun TrajectoryChartPlaceholder(selectedPeriod: String) {
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = colors.surface),
     ) {
-        Box(
+        Canvas(
             modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp),
-            contentAlignment = Alignment.Center,
+                .fillMaxWidth()
+                .height(152.dp)
+                .padding(horizontal = 16.dp, vertical = 16.dp),
         ) {
-            Text(
-                text = "Trajectory chart · $selectedPeriod",
-                style = MaterialTheme.typography.bodyMedium,
-                color = colors.muted,
+            if (points.size < 2) return@Canvas
+
+            val horizontalStep = size.width / (points.size - 1)
+            val topPadding = 8.dp.toPx()
+            val bottomPadding = 14.dp.toPx()
+            val chartHeight = size.height - topPadding - bottomPadding
+            fun point(index: Int): Offset = Offset(
+                x = index * horizontalStep,
+                y = topPadding + (1f - points[index].coerceIn(0f, 1f)) * chartHeight,
+            )
+
+            val linePath = Path().apply {
+                moveTo(point(0).x, point(0).y)
+                for (index in 1 until points.lastIndex) {
+                    val current = point(index)
+                    val next = point(index + 1)
+                    val midpoint = Offset(
+                        x = (current.x + next.x) / 2f,
+                        y = (current.y + next.y) / 2f,
+                    )
+                    quadraticBezierTo(current.x, current.y, midpoint.x, midpoint.y)
+                }
+                val lastPoint = point(points.lastIndex)
+                lineTo(lastPoint.x, lastPoint.y)
+            }
+            val fillPath = Path().apply {
+                addPath(linePath)
+                lineTo(size.width, size.height - bottomPadding)
+                lineTo(0f, size.height - bottomPadding)
+                close()
+            }
+
+            drawPath(
+                path = fillPath,
+                brush = Brush.verticalGradient(
+                    colors = listOf(colors.brand.copy(alpha = 0.16f), Color.Transparent),
+                    startY = topPadding,
+                    endY = size.height - bottomPadding,
+                ),
+                style = Fill,
+            )
+            drawPath(
+                path = linePath,
+                color = colors.brand,
+                style = Stroke(
+                    width = 3.dp.toPx(),
+                    cap = StrokeCap.Round,
+                    join = StrokeJoin.Round,
+                ),
+            )
+            drawLine(
+                color = colors.border,
+                start = Offset(0f, size.height - bottomPadding),
+                end = Offset(size.width, size.height - bottomPadding),
+                strokeWidth = 1.dp.toPx(),
+                pathEffect = PathEffect.dashPathEffect(floatArrayOf(2.dp.toPx(), 4.dp.toPx())),
             )
         }
     }
@@ -322,7 +385,7 @@ private fun AllocationSection(allocations: List<AssetAllocation>) {
                     modifier = Modifier
                         .weight(allocation.percentage.toFloat())
                         .fillMaxSize()
-                        .background(allocationColor(allocation.color), CircleShape),
+                        .background(allocationColor(allocation.color), RoundedCornerShape(4.dp)),
                 )
             }
         }
@@ -358,7 +421,7 @@ private fun AllocationLegendItem(
         Box(
             modifier = Modifier
                 .size(8.dp)
-                .background(allocationColor(allocation.color), CircleShape),
+                .background(allocationColor(allocation.color), RoundedCornerShape(4.dp)),
         )
         Text(
             text = "${allocation.label} ${allocation.percentage}%",
@@ -374,10 +437,11 @@ private fun AllocationLegendItem(
 private fun allocationColor(color: AllocationColor): Color {
     val colors = LocalOpenFolioColors.current
     return when (color) {
-        AllocationColor.Brand -> colors.brand
-        AllocationColor.Gain -> colors.gainGlyph
-        AllocationColor.Muted -> colors.muted
-        AllocationColor.Loss -> colors.lossGlyph
+        AllocationColor.Slot1 -> colors.chartPalette[0]
+        AllocationColor.Slot2 -> colors.chartPalette[1]
+        AllocationColor.Slot3 -> colors.chartPalette[2]
+        AllocationColor.Slot4 -> colors.chartPalette[3]
+        AllocationColor.Slot5 -> colors.chartPalette[4]
     }
 }
 
@@ -388,7 +452,7 @@ private fun RecentActivityRow(
 ) {
     val colors = LocalOpenFolioColors.current
     val icon = when (activity.icon) {
-        ActivityIcon.Buy -> Icons.Filled.ShoppingCart
+        ActivityIcon.Buy -> Icons.Outlined.ShowChart
         ActivityIcon.Investment -> Icons.Filled.AccountBalanceWallet
     }
 

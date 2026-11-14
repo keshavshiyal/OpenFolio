@@ -26,6 +26,23 @@ class HomeViewModelTest {
         assertEquals("6M", viewModel.uiState.value.selectedPeriod)
     }
 
+    @Test
+    fun providesTrajectoryPointsAndAllAllocationSlots() {
+        val state = viewModel.uiState.value
+
+        assertTrue(state.trajectoryPoints.size >= 2)
+        assertEquals(
+            listOf(
+                AllocationColor.Slot1,
+                AllocationColor.Slot2,
+                AllocationColor.Slot3,
+                AllocationColor.Slot4,
+                AllocationColor.Slot5,
+            ),
+            state.allocations.map { it.color },
+        )
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun rejectsUnsupportedChartPeriod() {
         viewModel.selectPeriod("2Y")

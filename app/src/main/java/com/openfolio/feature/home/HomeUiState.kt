@@ -10,11 +10,24 @@ data class HomeUiState(
     val assets: BigDecimal = BigDecimal("3120000"),
     val liabilities: BigDecimal = BigDecimal("661700"),
     val selectedPeriod: String = "1M",
+    val trajectoryPoints: List<Float> = listOf(
+        0.34f,
+        0.42f,
+        0.38f,
+        0.55f,
+        0.49f,
+        0.63f,
+        0.58f,
+        0.76f,
+        0.69f,
+        0.84f,
+    ),
     val allocations: List<AssetAllocation> = listOf(
-        AssetAllocation("Equity", 50, AllocationColor.Brand),
-        AssetAllocation("Mutual funds", 25, AllocationColor.Gain),
-        AssetAllocation("Fixed deposits", 15, AllocationColor.Muted),
-        AssetAllocation("Other", 10, AllocationColor.Loss),
+        AssetAllocation("Equity", 35, AllocationColor.Slot1),
+        AssetAllocation("Mutual funds", 25, AllocationColor.Slot2),
+        AssetAllocation("Fixed deposits", 18, AllocationColor.Slot3),
+        AssetAllocation("Gold", 12, AllocationColor.Slot4),
+        AssetAllocation("Cash", 10, AllocationColor.Slot5),
     ),
     val recentActivity: List<RecentActivity> = listOf(
         RecentActivity(
@@ -39,10 +52,11 @@ data class AssetAllocation(
 )
 
 enum class AllocationColor {
-    Brand,
-    Gain,
-    Muted,
-    Loss,
+    Slot1,
+    Slot2,
+    Slot3,
+    Slot4,
+    Slot5,
 }
 
 data class RecentActivity(
