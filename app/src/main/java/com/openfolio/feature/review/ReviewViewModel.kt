@@ -66,7 +66,7 @@ class ReviewViewModel @Inject constructor(
                     viewModelScope.launch {
                         runAction(ReviewActionState.LoadingMapping) {
                             _structuredHeaders.value =
-                                documentRepository.getStructuredFileHeaders(documentId)
+                                documentRepository.getStructuredFileHeaders(documentId, 1)
                         }
                     }
                 }
@@ -96,6 +96,18 @@ class ReviewViewModel @Inject constructor(
         }
     }
 
+    fun loadHeadersForHeaderRow(headerRowNumber: Int) {
+        val document = (uiState.value as? ReviewUiState.Loaded)?.document ?: return
+        if (document.status != DocumentStatus.READY_FOR_MAPPING.name) return
+        if (headerRowNumber < 1) return
+        viewModelScope.launch {
+            runAction(ReviewActionState.LoadingMapping) {
+                _structuredHeaders.value =
+                    documentRepository.getStructuredFileHeaders(document.id, headerRowNumber)
+            }
+        }
+    }
+
     fun processMappedData(
         brokerName: String,
         assetColumn: String,
@@ -104,6 +116,7 @@ class ReviewViewModel @Inject constructor(
         priceColumn: String,
         amountColumn: String,
         dateColumn: String,
+        headerRowNumber: Int = 1,
     ) {
         val document = (uiState.value as? ReviewUiState.Loaded)?.document ?: return
         if (document.status != DocumentStatus.READY_FOR_MAPPING.name) return
@@ -119,6 +132,7 @@ class ReviewViewModel @Inject constructor(
                         priceColumn = priceColumn,
                         amountColumn = amountColumn,
                         dateColumn = dateColumn,
+                        headerRowNumber = headerRowNumber,
                     ),
                 )
             }

@@ -135,10 +135,30 @@ class ReviewViewModelTest {
             priceColumn = "Price",
             amountColumn = "Amount",
             dateColumn = "Date",
+            headerRowNumber = 3,
         )
 
         assertEquals(1, repository.structuredProcessCallCount)
+        assertEquals(3, repository.lastProcessedMapping?.headerRowNumber)
         assertEquals("Mapped asset", viewModel.drafts.value.single().assetName)
+    }
+
+    @Test
+    fun reloadsHeadersWhenHeaderRowChanges() {
+        repository.document = document.copy(status = DocumentStatus.READY_FOR_MAPPING.name)
+        viewModel.loadDocument(document.id)
+
+        assertEquals(
+            listOf("Symbol", "Type", "Quantity", "Price", "Amount", "Date"),
+            viewModel.structuredHeaders.value,
+        )
+
+        viewModel.loadHeadersForHeaderRow(3)
+
+        assertEquals(
+            listOf("H3_Symbol", "H3_Type", "H3_Quantity", "H3_Price", "H3_Amount", "H3_Date"),
+            viewModel.structuredHeaders.value,
+        )
     }
 
     @Test
@@ -156,6 +176,9 @@ class ReviewViewModelTest {
         var aiProcessCallCount = 0
             private set
         var structuredProcessCallCount = 0
+            private set
+
+        var lastProcessedMapping: ColumnMappingEntity? = null
             private set
 
         override fun getAllDocuments(): Flow<List<DocumentEntity>> =
@@ -216,14 +239,22 @@ class ReviewViewModelTest {
             )
         }
 
-        override suspend fun getStructuredFileHeaders(documentId: String): List<String> =
-            listOf("Symbol", "Type", "Quantity", "Price", "Amount", "Date")
+        override suspend fun getStructuredFileHeaders(
+            documentId: String,
+            headerRowNumber: Int,
+        ): List<String> =
+            if (headerRowNumber == 3) {
+                listOf("H3_Symbol", "H3_Type", "H3_Quantity", "H3_Price", "H3_Amount", "H3_Date")
+            } else {
+                listOf("Symbol", "Type", "Quantity", "Price", "Amount", "Date")
+            }
 
         override suspend fun processStructuredDocument(
             documentId: String,
             mapping: ColumnMappingEntity,
         ) {
             structuredProcessCallCount++
+            lastProcessedMapping = mapping
             drafts.value = listOf(
                 DraftTransactionEntity(
                     documentId = documentId,

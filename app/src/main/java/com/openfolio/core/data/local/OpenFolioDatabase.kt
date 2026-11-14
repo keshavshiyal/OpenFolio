@@ -23,7 +23,7 @@ import com.openfolio.core.data.local.entity.DraftTransactionEntity
         DraftTransactionEntity::class,
         Transaction::class,
     ],
-    version = 7,
+    version = 8,
     exportSchema = false,
 )
 @TypeConverters(LedgerConverters::class)
@@ -218,6 +218,14 @@ abstract class OpenFolioDatabase : RoomDatabase() {
                 db.execSQL(
                     "CREATE UNIQUE INDEX IF NOT EXISTS `index_column_mappings_brokerName` " +
                         "ON `column_mappings` (`brokerName`)",
+                )
+            }
+        }
+
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `column_mappings` ADD COLUMN `headerRowNumber` INTEGER NOT NULL DEFAULT 1",
                 )
             }
         }

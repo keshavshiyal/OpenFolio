@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Edit
@@ -42,6 +43,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.openfolio.core.data.local.entity.DocumentStatus
@@ -60,7 +62,8 @@ fun ReviewScreen(
     onBack: () -> Unit,
     onSkip: () -> Unit,
     onProcessWithAi: () -> Unit,
-    onProcessMappedData: (String, String, String, String, String, String, String) -> Unit,
+    onProcessMappedData: (String, String, String, String, String, String, String, Int) -> Unit,
+    onReloadHeaders: (Int) -> Unit,
     onSaveDraft: (String?, String, String, String, String, String) -> Unit,
     onSaveConfirmed: () -> Unit,
     onSaveComplete: () -> Unit,
@@ -184,6 +187,7 @@ fun ReviewScreen(
                             headers = structuredHeaders,
                             isProcessing = actionState == ReviewActionState.ProcessingMapping ||
                                 actionState == ReviewActionState.LoadingMapping,
+                            onReloadHeaders = onReloadHeaders,
                             onProcess = onProcessMappedData,
                             modifier = Modifier.weight(1f),
                         )
@@ -320,10 +324,12 @@ fun ReviewScreen(
 private fun ColumnMappingForm(
     headers: List<String>,
     isProcessing: Boolean,
-    onProcess: (String, String, String, String, String, String, String) -> Unit,
+    onReloadHeaders: (Int) -> Unit,
+    onProcess: (String, String, String, String, String, String, String, Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalOpenFolioColors.current
+    var headerRowText by remember { mutableStateOf("1") }
     var brokerName by remember(headers) { mutableStateOf("") }
     var assetColumn by remember(headers) { mutableStateOf(suggestHeader(headers, "asset", "symbol", "security", "name")) }
     var typeColumn by remember(headers) { mutableStateOf(suggestHeader(headers, "type", "side", "action")) }
@@ -331,8 +337,12 @@ private fun ColumnMappingForm(
     var priceColumn by remember(headers) { mutableStateOf(suggestHeader(headers, "price", "rate", "unit price")) }
     var amountColumn by remember(headers) { mutableStateOf(suggestHeader(headers, "amount", "value", "total")) }
     var dateColumn by remember(headers) { mutableStateOf(suggestHeader(headers, "date", "trade date")) }
+
+    val headerRowNum = headerRowText.toIntOrNull()
+    val isValidHeaderRow = headerRowNum != null && headerRowNum >= 1
     val requiredColumns = listOf(assetColumn, typeColumn, quantityColumn, priceColumn, amountColumn)
     val canProcess = !isProcessing &&
+        isValidHeaderRow &&
         headers.isNotEmpty() &&
         brokerName.isNotBlank() &&
         requiredColumns.all(String::isNotBlank) &&
@@ -348,6 +358,39 @@ private fun ColumnMappingForm(
                 style = MaterialTheme.typography.bodySmall,
                 color = colors.muted,
             )
+        }
+        item {
+            OutlinedTextField(
+                value = headerRowText,
+                onValueChange = { newText ->
+                    val digitsOnly = newText.filter { it.isDigit() }
+                    headerRowText = digitsOnly
+                    val parsed = digitsOnly.toIntOrNull()
+                    if (parsed != null && parsed >= 1) {
+                        onReloadHeaders(parsed)
+                    }
+                },
+                label = { Text("Header Row Number") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+        }
+        item {
+            if (headers.isNotEmpty()) {
+                val previewHeaders = headers.take(4).joinToString(", ")
+                Text(
+                    text = "Detected headers: $previewHeaders",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.muted,
+                )
+            } else if (!isProcessing) {
+                Text(
+                    text = "No headers detected on row ${headerRowText.ifBlank { "0" }}.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.lossGlyph,
+                )
+            }
         }
         item {
             MappingColumnDropdown("Asset", headers, assetColumn) { assetColumn = it }
@@ -393,6 +436,7 @@ private fun ColumnMappingForm(
                         priceColumn,
                         amountColumn,
                         dateColumn,
+                        headerRowNum ?: 1,
                     )
                 },
                 enabled = canProcess,

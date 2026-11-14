@@ -165,6 +165,7 @@ fun OpenFolioApp(
                     onSkip = { navController.popBackStack() },
                     onProcessWithAi = reviewViewModel::onProcessWithAi,
                     onProcessMappedData = reviewViewModel::processMappedData,
+                    onReloadHeaders = reviewViewModel::loadHeadersForHeaderRow,
                     onSaveDraft = reviewViewModel::saveDraft,
                     onSaveConfirmed = reviewViewModel::saveConfirmed,
                     onSaveComplete = { navController.popBackStack() },

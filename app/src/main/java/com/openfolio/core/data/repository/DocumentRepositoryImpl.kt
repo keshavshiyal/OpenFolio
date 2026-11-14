@@ -191,7 +191,10 @@ class DocumentRepositoryImpl @Inject constructor(
             insertDraftTransactionsIfEmpty(documentId, mockAiDraftTransactions(documentId))
         }
 
-    override suspend fun getStructuredFileHeaders(documentId: String): List<String> =
+    override suspend fun getStructuredFileHeaders(
+        documentId: String,
+        headerRowNumber: Int,
+    ): List<String> =
         withContext(Dispatchers.IO) {
             val document = requireNotNull(documentDao.getDocumentById(documentId)) {
                 "Document not found: $documentId"
@@ -199,7 +202,7 @@ class DocumentRepositoryImpl @Inject constructor(
             require(document.status == DocumentStatus.READY_FOR_MAPPING.name) {
                 "This document is not waiting for column mapping."
             }
-            structuredFileParser.read(File(document.localPath)).headers
+            structuredFileParser.read(File(document.localPath), headerRowNumber).headers
         }
 
     override suspend fun processStructuredDocument(
@@ -212,7 +215,7 @@ class DocumentRepositoryImpl @Inject constructor(
         require(document.status == DocumentStatus.READY_FOR_MAPPING.name) {
             "This document is not waiting for column mapping."
         }
-        val table = structuredFileParser.read(File(document.localPath))
+        val table = structuredFileParser.read(File(document.localPath), mapping.headerRowNumber)
         val drafts = createMappedDrafts(document, table, mapping)
         persistMappedDrafts(document, mapping, drafts)
     }
@@ -281,11 +284,17 @@ class DocumentRepositoryImpl @Inject constructor(
                 documentDao.insert(document)
                 insertedDocument = document
                 if (extension in STRUCTURED_EXTENSIONS) {
-                    val table = structuredFileParser.read(destination)
-                    val matchingMapping = columnMappingDao.getAll().lastOrNull { mapping ->
-                        mapping.matchesHeaders(table.headers)
+                    val mappings = columnMappingDao.getAll()
+                    val matchingMapping = mappings.lastOrNull { mapping ->
+                        try {
+                            val table = structuredFileParser.read(destination, mapping.headerRowNumber)
+                            mapping.matchesHeaders(table.headers)
+                        } catch (_: Exception) {
+                            false
+                        }
                     }
                     if (matchingMapping != null) {
+                        val table = structuredFileParser.read(destination, matchingMapping.headerRowNumber)
                         val drafts = createMappedDrafts(document, table, matchingMapping)
                         if (drafts.isNotEmpty()) {
                             persistMappedDrafts(

@@ -35,7 +35,10 @@ interface DocumentRepository {
 
     suspend fun processDocumentWithMockAi(documentId: String)
 
-    suspend fun getStructuredFileHeaders(documentId: String): List<String>
+    suspend fun getStructuredFileHeaders(
+        documentId: String,
+        headerRowNumber: Int = 1,
+    ): List<String>
 
     suspend fun processStructuredDocument(
         documentId: String,

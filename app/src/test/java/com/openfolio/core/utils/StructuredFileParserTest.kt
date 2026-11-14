@@ -54,6 +54,35 @@ class StructuredFileParserTest {
     }
 
     @Test
+    fun skipsMetadataRowsAndReadsCsvHeadersAtGivenRowIndex() {
+        val file = File.createTempFile("openfolio-mapping", ".csv")
+        try {
+            file.writeText(
+                """
+                Broker Account Statement
+                Account Number: 12345678
+                Date Range: 01-Jan-2026 to 31-Jan-2026
+                Symbol,Type,Qty,Rate,Amount,Date
+                INFY,BUY,10,1400.00,14000.00,2026-01-15
+                """.trimIndent(),
+            )
+
+            val table = StructuredFileParser().read(file, headerRowNumber = 4)
+
+            assertEquals(
+                listOf("Symbol", "Type", "Qty", "Rate", "Amount", "Date"),
+                table.headers,
+            )
+            assertEquals(
+                listOf("INFY", "BUY", "10", "1400.00", "14000.00", "2026-01-15"),
+                table.rows.single(),
+            )
+        } finally {
+            file.delete()
+        }
+    }
+
+    @Test
     fun columnReferenceToIndexCalculatesCorrectZeroBasedIndex() {
         assertEquals(0, columnReferenceToIndex("A1"))
         assertEquals(1, columnReferenceToIndex("B12"))
@@ -155,6 +184,59 @@ class StructuredFileParserTest {
     }
 
     @Test
+    fun skipsMetadataRowsAndReadsXlsxHeadersAtGivenRowNumber() {
+        val sharedStringsXml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="7" uniqueCount="7">
+                <si><t>Zerodha Statement</t></si>
+                <si><t>Symbol</t></si>
+                <si><t>Type</t></si>
+                <si><t>Qty</t></si>
+                <si><t>Amount</t></si>
+                <si><t>TATASTEEL</t></si>
+                <si><t>BUY</t></si>
+            </sst>
+        """.trimIndent()
+
+        val sheetXml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                <sheetData>
+                    <row r="1">
+                        <c r="A1" t="s"><v>0</v></c>
+                    </row>
+                    <row r="3">
+                        <c r="A3" t="s"><v>1</v></c>
+                        <c r="B3" t="s"><v>2</v></c>
+                        <c r="C3" t="s"><v>3</v></c>
+                        <c r="D3" t="s"><v>4</v></c>
+                    </row>
+                    <row r="4">
+                        <c r="A4" t="s"><v>5</v></c>
+                        <c r="B4" t="s"><v>6</v></c>
+                        <c r="C4"><v>50</v></c>
+                        <c r="D4"><v>7500.00</v></c>
+                    </row>
+                </sheetData>
+            </worksheet>
+        """.trimIndent()
+
+        val file = createTestXlsx(sheetXml = sheetXml, sharedStringsXml = sharedStringsXml)
+        try {
+            val table = StructuredFileParser().read(file, headerRowNumber = 3)
+
+            assertEquals(
+                listOf("Symbol", "Type", "Qty", "Amount"),
+                table.headers,
+            )
+            assertEquals(
+                listOf("TATASTEEL", "BUY", "50", "7500.00"),
+                table.rows.single(),
+            )
+        } finally {
+            file.delete()
+        }
+    }
+
+    @Test
     fun throwsWhenXlsxHasNoHeaders() {
         val sheetXml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
             <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
@@ -167,7 +249,21 @@ class StructuredFileParserTest {
             val error = assertThrows(IllegalArgumentException::class.java) {
                 StructuredFileParser().read(file)
             }
-            assertEquals("The selected workbook has no header row.", error.message)
+            assertEquals("The specified header row does not exist in this file.", error.message)
+        } finally {
+            file.delete()
+        }
+    }
+
+    @Test
+    fun throwsWhenRequestedHeaderRowOutOfBounds() {
+        val file = File.createTempFile("openfolio-mapping", ".csv")
+        try {
+            file.writeText("A,B,C\n1,2,3")
+            val error = assertThrows(IllegalArgumentException::class.java) {
+                StructuredFileParser().read(file, headerRowNumber = 10)
+            }
+            assertEquals("The specified header row does not exist in this file.", error.message)
         } finally {
             file.delete()
         }

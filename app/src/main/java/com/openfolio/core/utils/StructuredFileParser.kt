@@ -3,7 +3,6 @@ package com.openfolio.core.utils
 import com.opencsv.CSVReader
 import java.io.File
 import java.io.FileInputStream
-import java.io.InputStream
 import java.io.InputStreamReader
 import java.nio.charset.StandardCharsets
 import java.util.zip.ZipEntry
@@ -20,20 +19,34 @@ data class StructuredTable(
 )
 
 class StructuredFileParser @Inject constructor() {
-    fun read(file: File): StructuredTable =
-        when (file.extension.lowercase()) {
-            "csv" -> readCsv(file)
-            "xlsx" -> readXlsx(file)
+    fun read(file: File, headerRowNumber: Int = 1): StructuredTable {
+        require(headerRowNumber >= 1) { "Header row number must be at least 1." }
+        val headerRowIndex = headerRowNumber - 1
+        return when (file.extension.lowercase()) {
+            "csv" -> readCsv(file, headerRowIndex)
+            "xlsx" -> readXlsx(file, headerRowIndex)
             else -> throw IllegalArgumentException(
                 "Structured mapping supports CSV and XLSX files only.",
             )
         }
+    }
 
-    private fun readCsv(file: File): StructuredTable =
+    private fun readCsv(file: File, headerRowIndex: Int): StructuredTable =
         InputStreamReader(FileInputStream(file), StandardCharsets.UTF_8).use { input ->
             CSVReader(input).use { reader ->
-                val rawHeaders = reader.readNext()?.toList()
-                    ?: throw IllegalArgumentException("The selected file has no header row.")
+                var currentRowIndex = 0
+                var rawHeaders: List<String>? = null
+                while (true) {
+                    val row = reader.readNext()?.toList() ?: break
+                    if (currentRowIndex == headerRowIndex) {
+                        rawHeaders = row
+                        break
+                    }
+                    currentRowIndex++
+                }
+                if (rawHeaders == null) {
+                    throw IllegalArgumentException("The specified header row does not exist in this file.")
+                }
                 val headers = uniqueHeaders(rawHeaders)
                 val rows = mutableListOf<List<String>>()
                 while (true) {
@@ -44,7 +57,7 @@ class StructuredFileParser @Inject constructor() {
             }
         }
 
-    private fun readXlsx(file: File): StructuredTable {
+    private fun readXlsx(file: File, headerRowIndex: Int): StructuredTable {
         val zip = try {
             ZipFile(file)
         } catch (exception: Exception) {
@@ -74,15 +87,18 @@ class StructuredFileParser @Inject constructor() {
                 parser.parse(input, sheetHandler)
             }
 
-            val nonEmptyRows = sheetHandler.rows.filter { row -> row.any(String::isNotBlank) }
-            if (nonEmptyRows.isEmpty()) {
-                throw IllegalArgumentException("The selected workbook has no header row.")
+            val allRows = sheetHandler.allRows
+            if (headerRowIndex !in allRows.indices) {
+                throw IllegalArgumentException("The specified header row does not exist in this file.")
             }
 
-            val headers = uniqueHeaders(nonEmptyRows.first())
-            val dataRows = nonEmptyRows.drop(1).map { row ->
-                headers.indices.map { index -> row.getOrNull(index).orEmpty().trim() }
-            }
+            val headerRow = allRows[headerRowIndex]
+            val headers = uniqueHeaders(headerRow)
+            val dataRows = allRows.drop(headerRowIndex + 1)
+                .filter { row -> row.any(String::isNotBlank) }
+                .map { row ->
+                    headers.indices.map { index -> row.getOrNull(index).orEmpty().trim() }
+                }
             return StructuredTable(headers, dataRows)
         }
     }
@@ -141,9 +157,11 @@ class StructuredFileParser @Inject constructor() {
 
     private fun uniqueHeaders(rawHeaders: List<String>): List<String> {
         val trimmedHeaders = rawHeaders.map { it.removePrefix("\uFEFF").trim() }
-        require(trimmedHeaders.any(String::isNotBlank)) { "The selected file has no columns." }
+        val lastNonBlankIndex = trimmedHeaders.indexOfLast(String::isNotBlank)
+        require(lastNonBlankIndex >= 0) { "The selected header row has no columns." }
+        val activeHeaders = trimmedHeaders.take(lastNonBlankIndex + 1)
         val seen = mutableMapOf<String, Int>()
-        return trimmedHeaders.mapIndexed { index, raw ->
+        return activeHeaders.mapIndexed { index, raw ->
             val base = raw.ifEmpty { "Column ${index + 1}" }
             val occurrence = (seen[base] ?: 0) + 1
             seen[base] = occurrence
@@ -225,12 +243,14 @@ private class SharedStringsHandler : DefaultHandler() {
 private class SheetHandler(
     private val sharedStrings: List<String>,
 ) : DefaultHandler() {
-    val rows = mutableListOf<List<String>>()
+    val allRows = mutableListOf<List<String>>()
     private val currentRow = mutableListOf<String>()
     private val currentCellValue = StringBuilder()
     private var currentCellType: String? = null
     private var currentCellColIndex: Int = -1
     private var nextDefaultColIndex: Int = 0
+    private var currentRowIndex: Int = -1
+    private var nextDefaultRowIndex: Int = 0
     private var insideValueTag = false
     private var insideInlineTextTag = false
 
@@ -245,6 +265,8 @@ private class SheetHandler(
             tag.equals("row", ignoreCase = true) -> {
                 currentRow.clear()
                 nextDefaultColIndex = 0
+                val rowNum = attributes.getValue("r")?.toIntOrNull()
+                currentRowIndex = if (rowNum != null && rowNum > 0) rowNum - 1 else nextDefaultRowIndex
             }
             tag.equals("c", ignoreCase = true) -> {
                 currentCellValue.setLength(0)
@@ -313,7 +335,16 @@ private class SheetHandler(
                 nextDefaultColIndex = targetCol + 1
             }
             tag.equals("row", ignoreCase = true) -> {
-                rows.add(ArrayList(currentRow))
+                val targetRow = if (currentRowIndex >= 0) currentRowIndex else nextDefaultRowIndex
+                while (allRows.size < targetRow) {
+                    allRows.add(emptyList())
+                }
+                if (allRows.size == targetRow) {
+                    allRows.add(ArrayList(currentRow))
+                } else {
+                    allRows[targetRow] = ArrayList(currentRow)
+                }
+                nextDefaultRowIndex = targetRow + 1
             }
         }
     }
