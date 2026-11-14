@@ -121,7 +121,7 @@ fun HomeScreen(
                 start = 20.dp,
                 top = 8.dp,
                 end = 20.dp,
-                bottom = 96.dp,
+                bottom = 16.dp,
             ),
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
@@ -152,6 +152,9 @@ fun HomeScreen(
             }
             items(uiState.recentActivity) { activity ->
                 RecentActivityRow(activity = activity, showValues = uiState.showValues)
+            }
+            item {
+                Spacer(modifier = Modifier.height(80.dp))
             }
         }
     }
@@ -367,6 +370,8 @@ private fun StatCard(
 @Composable
 private fun AllocationSection(allocations: List<AssetAllocation>) {
     val colors = LocalOpenFolioColors.current
+    val segmentGap = 2.dp
+    val segmentShape = RoundedCornerShape(4.dp)
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(
@@ -378,14 +383,14 @@ private fun AllocationSection(allocations: List<AssetAllocation>) {
             modifier = Modifier
                 .fillMaxWidth()
                 .height(12.dp),
-            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            horizontalArrangement = Arrangement.spacedBy(segmentGap),
         ) {
             allocations.forEach { allocation ->
                 Box(
                     modifier = Modifier
                         .weight(allocation.percentage.toFloat())
                         .fillMaxSize()
-                        .background(allocationColor(allocation.color), RoundedCornerShape(4.dp)),
+                        .background(allocationColor(allocation.color), segmentShape),
                 )
             }
         }

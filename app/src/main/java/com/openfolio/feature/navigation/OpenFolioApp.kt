@@ -1,5 +1,6 @@
 package com.openfolio.feature.navigation
 
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -35,6 +36,7 @@ fun OpenFolioApp(homeViewModel: HomeViewModel) {
 
     Scaffold(
         containerColor = colors.background,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
             NavigationBar(
                 modifier = Modifier.drawBehind {
