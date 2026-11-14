@@ -1,5 +1,6 @@
 package com.openfolio.feature.navigation
 
+import androidx.compose.foundation.drawBehind
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -11,6 +12,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.unit.dp
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -28,8 +31,21 @@ fun OpenFolioApp() {
     val currentRoute = backStackEntry?.destination?.route
 
     Scaffold(
+        containerColor = colors.background,
         bottomBar = {
-            NavigationBar {
+            NavigationBar(
+                modifier = Modifier.drawBehind {
+                    val strokeWidth = 1.dp.toPx()
+                    drawLine(
+                        color = colors.border,
+                        start = Offset(0f, 0f),
+                        end = Offset(size.width, 0f),
+                        strokeWidth = strokeWidth,
+                    )
+                },
+                containerColor = colors.background,
+                contentColor = colors.content,
+            ) {
                 AppDestination.entries.forEach { destination ->
                     NavigationBarItem(
                         selected = currentRoute == destination.route,
@@ -100,9 +116,7 @@ fun OpenFolioApp() {
             composable(AppDestination.Settings.route) {
                 EmptyScreen(
                     destination = AppDestination.Settings,
-                    message = "Manage privacy, backups, and your AI preferences here.",
-                    actionLabel = "Go to Home",
-                    onAction = { navController.navigate(AppDestination.Home.route) },
+                    message = "Settings coming soon in Phase 6",
                 )
             }
         }

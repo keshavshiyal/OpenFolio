@@ -22,8 +22,8 @@ import com.openfolio.feature.navigation.AppDestination
 fun EmptyScreen(
     destination: AppDestination,
     message: String,
-    actionLabel: String,
-    onAction: () -> Unit,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
     secondaryActionLabel: String? = null,
     onSecondaryAction: (() -> Unit)? = null,
     showTitle: Boolean = true,
@@ -51,9 +51,11 @@ fun EmptyScreen(
             color = colors.content,
             textAlign = TextAlign.Center,
         )
-        Spacer(modifier = Modifier.height(24.dp))
-        Button(onClick = onAction) {
-            Text(text = actionLabel)
+        if (actionLabel != null && onAction != null) {
+            Spacer(modifier = Modifier.height(24.dp))
+            Button(onClick = onAction) {
+                Text(text = actionLabel)
+            }
         }
         if (secondaryActionLabel != null && onSecondaryAction != null) {
             Spacer(modifier = Modifier.height(8.dp))
