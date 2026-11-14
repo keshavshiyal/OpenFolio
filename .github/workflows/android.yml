@@ -33,6 +33,9 @@ jobs:
       - name: Compile debug Kotlin sources
         run: bash ./gradlew --no-daemon :app:compileDebugKotlin
 
+      - name: Run unit tests
+        run: bash ./gradlew --no-daemon :app:testDebugUnitTest
+
       - name: Build debug APK
         run: bash ./gradlew --no-daemon assembleDebug
 

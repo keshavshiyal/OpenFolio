@@ -14,19 +14,22 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.openfolio.core.ui.theme.LocalOpenFolioColors
+import com.openfolio.feature.home.HomeViewModel
 import com.openfolio.feature.screens.EmptyScreen
 import com.openfolio.feature.screens.HomeScreen
 
 @Composable
-fun OpenFolioApp() {
+fun OpenFolioApp(homeViewModel: HomeViewModel) {
     val navController = rememberNavController()
     val colors = LocalOpenFolioColors.current
+    val homeUiState by homeViewModel.uiState.collectAsStateWithLifecycle()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
 
@@ -84,8 +87,10 @@ fun OpenFolioApp() {
         ) {
             composable(AppDestination.Home.route) {
                 HomeScreen(
+                    uiState = homeUiState,
+                    onToggleValues = homeViewModel::toggleValuesVisibility,
+                    onSelectPeriod = homeViewModel::selectPeriod,
                     onImport = { navController.navigate(AppDestination.Inbox.route) },
-                    onAddManually = { navController.navigate(AppDestination.Assets.route) },
                     onSettings = { navController.navigate(AppDestination.Settings.route) },
                 )
             }

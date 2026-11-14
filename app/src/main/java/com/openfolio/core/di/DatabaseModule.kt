@@ -29,6 +29,7 @@ object DatabaseModule {
             OpenFolioDatabase::class.java,
             "openfolio.db",
         )
+            .addMigrations(OpenFolioDatabase.MIGRATION_1_2)
             .openHelperFactory(SupportFactory(passphraseProvider.getPassphrase()))
             .build()
     }
