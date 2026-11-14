@@ -6,11 +6,13 @@ import android.database.Cursor
 import android.net.Uri
 import android.provider.OpenableColumns
 import com.openfolio.core.data.local.dao.DocumentDao
+import com.openfolio.core.data.local.dao.ColumnMappingDao
 import com.openfolio.core.data.local.dao.DraftTransactionDao
 import com.openfolio.core.data.local.dao.TransactionDao
 import com.openfolio.core.data.local.entity.DocumentEntity
 import com.openfolio.core.data.local.OpenFolioDatabase
 import com.openfolio.core.utils.DocumentTextExtractor
+import com.openfolio.core.utils.StructuredFileParser
 import com.openfolio.core.domain.repository.DuplicateDocumentException
 import java.io.ByteArrayInputStream
 import kotlinx.coroutines.runBlocking
@@ -111,10 +113,12 @@ class DocumentRepositoryImplTest {
 
         val repository = DocumentRepositoryImpl(
             documentDao = dao,
+            columnMappingDao = mock<ColumnMappingDao>(),
             draftTransactionDao = mock<DraftTransactionDao>(),
             transactionDao = mock<TransactionDao>(),
             database = mock<OpenFolioDatabase>(),
             documentTextExtractor = mock<DocumentTextExtractor>(),
+            structuredFileParser = mock<StructuredFileParser>(),
             applicationScope = mock<CoroutineScope>(),
         )
 

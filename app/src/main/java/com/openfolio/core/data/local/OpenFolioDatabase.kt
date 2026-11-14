@@ -6,9 +6,11 @@ import androidx.room.TypeConverters
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.openfolio.core.data.local.dao.DocumentDao
+import com.openfolio.core.data.local.dao.ColumnMappingDao
 import com.openfolio.core.data.local.dao.DraftTransactionDao
 import com.openfolio.core.data.local.dao.TransactionDao
 import com.openfolio.core.data.local.entity.DocumentEntity
+import com.openfolio.core.data.local.entity.ColumnMappingEntity
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
 
 @Database(
@@ -16,11 +18,12 @@ import com.openfolio.core.data.local.entity.DraftTransactionEntity
         Account::class,
         AppMetadataEntity::class,
         Asset::class,
+        ColumnMappingEntity::class,
         DocumentEntity::class,
         DraftTransactionEntity::class,
         Transaction::class,
     ],
-    version = 6,
+    version = 7,
     exportSchema = false,
 )
 @TypeConverters(LedgerConverters::class)
@@ -28,6 +31,8 @@ abstract class OpenFolioDatabase : RoomDatabase() {
     abstract fun appMetadataDao(): AppMetadataDao
 
     abstract fun documentDao(): DocumentDao
+
+    abstract fun columnMappingDao(): ColumnMappingDao
 
     abstract fun draftTransactionDao(): DraftTransactionDao
 
@@ -188,6 +193,31 @@ abstract class OpenFolioDatabase : RoomDatabase() {
                 db.execSQL(
                     "CREATE INDEX IF NOT EXISTS `index_draft_transactions_documentId` " +
                         "ON `draft_transactions` (`documentId`)",
+                )
+            }
+        }
+
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `draft_transactions` ADD COLUMN `tradeDate` INTEGER")
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `column_mappings` (
+                        `id` TEXT NOT NULL,
+                        `brokerName` TEXT NOT NULL,
+                        `assetColumn` TEXT NOT NULL,
+                        `typeColumn` TEXT NOT NULL,
+                        `quantityColumn` TEXT NOT NULL,
+                        `priceColumn` TEXT NOT NULL,
+                        `amountColumn` TEXT NOT NULL,
+                        `dateColumn` TEXT NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_column_mappings_brokerName` " +
+                        "ON `column_mappings` (`brokerName`)",
                 )
             }
         }

@@ -48,6 +48,7 @@ fun OpenFolioApp(
     val inboxDocuments by inboxViewModel.documents.collectAsStateWithLifecycle()
     val reviewUiState by reviewViewModel.uiState.collectAsStateWithLifecycle()
     val reviewDrafts by reviewViewModel.drafts.collectAsStateWithLifecycle()
+    val structuredHeaders by reviewViewModel.structuredHeaders.collectAsStateWithLifecycle()
     val reviewActionState by reviewViewModel.actionState.collectAsStateWithLifecycle()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
@@ -158,10 +159,12 @@ fun OpenFolioApp(
                 ReviewScreen(
                     uiState = reviewUiState,
                     drafts = reviewDrafts,
+                    structuredHeaders = structuredHeaders,
                     actionState = reviewActionState,
                     onBack = { navController.popBackStack() },
                     onSkip = { navController.popBackStack() },
                     onProcessWithAi = reviewViewModel::onProcessWithAi,
+                    onProcessMappedData = reviewViewModel::processMappedData,
                     onSaveDraft = reviewViewModel::saveDraft,
                     onSaveConfirmed = reviewViewModel::saveConfirmed,
                     onSaveComplete = { navController.popBackStack() },

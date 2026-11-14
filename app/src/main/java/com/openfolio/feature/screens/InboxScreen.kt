@@ -164,11 +164,12 @@ private fun DocumentStatusBadge(status: String) {
             background = colors.lossGlyph.copy(alpha = 0.12f)
         }
         DocumentStatus.OCR_COMPLETE.name,
+        DocumentStatus.READY_FOR_MAPPING.name,
         DocumentStatus.AI_COMPLETE.name -> {
-            label = if (status == DocumentStatus.OCR_COMPLETE.name) {
-                "Ready for AI"
-            } else {
-                "Ready for review"
+            label = when (status) {
+                DocumentStatus.OCR_COMPLETE.name -> "Ready for AI"
+                DocumentStatus.READY_FOR_MAPPING.name -> "Map columns"
+                else -> "Ready for review"
             }
             foreground = colors.brand
             background = colors.brandSubtle

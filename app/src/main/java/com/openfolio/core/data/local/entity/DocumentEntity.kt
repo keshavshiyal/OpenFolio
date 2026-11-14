@@ -9,6 +9,7 @@ enum class DocumentStatus {
     PENDING_OCR,
     OCR_COMPLETE,
     OCR_FAILED,
+    READY_FOR_MAPPING,
     AI_COMPLETE,
     COMPLETED,
     PENDING,

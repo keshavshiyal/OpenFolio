@@ -5,6 +5,7 @@ import android.net.Uri
 import com.openfolio.core.data.local.entity.DocumentEntity
 import com.openfolio.core.data.local.entity.DocumentStatus
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
+import com.openfolio.core.data.local.entity.ColumnMappingEntity
 import com.openfolio.core.domain.repository.DocumentRepository
 import com.openfolio.core.domain.repository.SaveDraftTransactionsResult
 import kotlinx.coroutines.Dispatchers
@@ -118,6 +119,29 @@ class ReviewViewModelTest {
     }
 
     @Test
+    fun mapsStructuredDocumentAndLoadsFileHeaders() {
+        repository.document = document.copy(status = DocumentStatus.READY_FOR_MAPPING.name)
+        viewModel.loadDocument(document.id)
+
+        assertEquals(
+            listOf("Symbol", "Type", "Quantity", "Price", "Amount", "Date"),
+            viewModel.structuredHeaders.value,
+        )
+        viewModel.processMappedData(
+            brokerName = "Zerodha",
+            assetColumn = "Symbol",
+            typeColumn = "Type",
+            quantityColumn = "Quantity",
+            priceColumn = "Price",
+            amountColumn = "Amount",
+            dateColumn = "Date",
+        )
+
+        assertEquals(1, repository.structuredProcessCallCount)
+        assertEquals("Mapped asset", viewModel.drafts.value.single().assetName)
+    }
+
+    @Test
     fun exposesMissingDocumentState() {
         repository.document = null
         viewModel.loadDocument("missing")
@@ -130,6 +154,8 @@ class ReviewViewModelTest {
     ) : DocumentRepository {
         private val drafts = MutableStateFlow<List<DraftTransactionEntity>>(emptyList())
         var aiProcessCallCount = 0
+            private set
+        var structuredProcessCallCount = 0
             private set
 
         override fun getAllDocuments(): Flow<List<DocumentEntity>> =
@@ -188,6 +214,27 @@ class ReviewViewModelTest {
                     )
                 },
             )
+        }
+
+        override suspend fun getStructuredFileHeaders(documentId: String): List<String> =
+            listOf("Symbol", "Type", "Quantity", "Price", "Amount", "Date")
+
+        override suspend fun processStructuredDocument(
+            documentId: String,
+            mapping: ColumnMappingEntity,
+        ) {
+            structuredProcessCallCount++
+            drafts.value = listOf(
+                DraftTransactionEntity(
+                    documentId = documentId,
+                    assetName = "Mapped asset",
+                    transactionType = "BUY",
+                    quantity = "1",
+                    price = "10",
+                    netAmount = "10",
+                ),
+            )
+            document = document?.copy(status = DocumentStatus.AI_COMPLETE.name)
         }
 
         override suspend fun ingestFile(uri: Uri, context: Context): DocumentEntity =

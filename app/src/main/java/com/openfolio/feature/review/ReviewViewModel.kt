@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.openfolio.core.data.local.entity.DocumentEntity
 import com.openfolio.core.data.local.entity.DocumentStatus
+import com.openfolio.core.data.local.entity.ColumnMappingEntity
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
 import com.openfolio.core.domain.repository.DocumentRepository
 import com.openfolio.core.domain.repository.SaveDraftTransactionsResult
@@ -27,6 +28,9 @@ class ReviewViewModel @Inject constructor(
     private val _drafts = MutableStateFlow<List<DraftTransactionEntity>>(emptyList())
     val drafts: StateFlow<List<DraftTransactionEntity>> = _drafts.asStateFlow()
 
+    private val _structuredHeaders = MutableStateFlow<List<String>>(emptyList())
+    val structuredHeaders: StateFlow<List<String>> = _structuredHeaders.asStateFlow()
+
     private val _actionState = MutableStateFlow<ReviewActionState>(ReviewActionState.Idle)
     val actionState: StateFlow<ReviewActionState> = _actionState.asStateFlow()
 
@@ -38,6 +42,7 @@ class ReviewViewModel @Inject constructor(
         documentJob?.cancel()
         _uiState.value = ReviewUiState.Loading
         _drafts.value = emptyList()
+        _structuredHeaders.value = emptyList()
         _actionState.value = ReviewActionState.Idle
         viewModelScope.launch {
             try {
@@ -55,6 +60,14 @@ class ReviewViewModel @Inject constructor(
                 draftsJob = viewModelScope.launch {
                     documentRepository.getDraftTransactions(documentId).collect { items ->
                         _drafts.value = items
+                    }
+                }
+                if (document.status == DocumentStatus.READY_FOR_MAPPING.name) {
+                    viewModelScope.launch {
+                        runAction(ReviewActionState.LoadingMapping) {
+                            _structuredHeaders.value =
+                                documentRepository.getStructuredFileHeaders(documentId)
+                        }
                     }
                 }
             } catch (exception: CancellationException) {
@@ -79,6 +92,35 @@ class ReviewViewModel @Inject constructor(
         viewModelScope.launch {
             runAction(ReviewActionState.ProcessingAi) {
                 documentRepository.processDocumentWithMockAi(document.id)
+            }
+        }
+    }
+
+    fun processMappedData(
+        brokerName: String,
+        assetColumn: String,
+        typeColumn: String,
+        quantityColumn: String,
+        priceColumn: String,
+        amountColumn: String,
+        dateColumn: String,
+    ) {
+        val document = (uiState.value as? ReviewUiState.Loaded)?.document ?: return
+        if (document.status != DocumentStatus.READY_FOR_MAPPING.name) return
+        viewModelScope.launch {
+            runAction(ReviewActionState.ProcessingMapping) {
+                documentRepository.processStructuredDocument(
+                    documentId = document.id,
+                    mapping = ColumnMappingEntity(
+                        brokerName = brokerName.trim(),
+                        assetColumn = assetColumn,
+                        typeColumn = typeColumn,
+                        quantityColumn = quantityColumn,
+                        priceColumn = priceColumn,
+                        amountColumn = amountColumn,
+                        dateColumn = dateColumn,
+                    ),
+                )
             }
         }
     }
@@ -175,6 +217,8 @@ sealed interface ReviewUiState {
 sealed interface ReviewActionState {
     data object Idle : ReviewActionState
     data object ProcessingAi : ReviewActionState
+    data object LoadingMapping : ReviewActionState
+    data object ProcessingMapping : ReviewActionState
     data object Saving : ReviewActionState
     data class Saved(val result: SaveDraftTransactionsResult) : ReviewActionState
     data class Error(val message: String) : ReviewActionState

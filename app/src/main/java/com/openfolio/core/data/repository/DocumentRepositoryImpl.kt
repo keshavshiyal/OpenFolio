@@ -9,9 +9,11 @@ import com.openfolio.core.data.local.Transaction
 import com.openfolio.core.data.local.TransactionStatus
 import com.openfolio.core.data.local.TransactionType
 import com.openfolio.core.data.local.dao.DocumentDao
+import com.openfolio.core.data.local.dao.ColumnMappingDao
 import com.openfolio.core.data.local.dao.DraftTransactionDao
 import com.openfolio.core.data.local.dao.TransactionDao
 import com.openfolio.core.data.local.entity.DocumentEntity
+import com.openfolio.core.data.local.entity.ColumnMappingEntity
 import com.openfolio.core.data.local.entity.DocumentStatus
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
 import com.openfolio.core.di.ApplicationScope
@@ -19,11 +21,16 @@ import com.openfolio.core.domain.repository.DocumentRepository
 import com.openfolio.core.domain.repository.DuplicateDocumentException
 import com.openfolio.core.domain.repository.SaveDraftTransactionsResult
 import com.openfolio.core.utils.DocumentTextExtractor
+import com.openfolio.core.utils.StructuredFileParser
+import com.openfolio.core.utils.StructuredTable
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.math.BigDecimal
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
+import java.time.format.DateTimeParseException
 import java.security.MessageDigest
 import java.util.UUID
 import javax.inject.Inject
@@ -37,10 +44,12 @@ import kotlinx.coroutines.withContext
 
 class DocumentRepositoryImpl @Inject constructor(
     private val documentDao: DocumentDao,
+    private val columnMappingDao: ColumnMappingDao,
     private val draftTransactionDao: DraftTransactionDao,
     private val transactionDao: TransactionDao,
     private val database: OpenFolioDatabase,
     private val documentTextExtractor: DocumentTextExtractor,
+    private val structuredFileParser: StructuredFileParser,
     @ApplicationScope private val applicationScope: CoroutineScope,
 ) : DocumentRepository {
     override fun getAllDocuments(): Flow<List<DocumentEntity>> =
@@ -122,7 +131,7 @@ class DocumentRepositoryImpl @Inject constructor(
                     transactionType = draft.transactionType,
                     quantity = draft.quantity,
                     netAmount = draft.netAmount,
-                    date = Math.floorDiv(document.importDate, MILLIS_PER_DAY),
+                    date = Math.floorDiv(draft.tradeDate ?: document.importDate, MILLIS_PER_DAY),
                 )
                 if (transactionDao.containsFingerprint(fingerprint)) {
                     duplicateCount++
@@ -134,7 +143,7 @@ class DocumentRepositoryImpl @Inject constructor(
                             id = draft.id,
                             assetId = null,
                             type = TransactionType.valueOf(draft.transactionType),
-                            tradeDate = document.importDate,
+                            tradeDate = draft.tradeDate ?: document.importDate,
                             settlementDate = null,
                             quantity = quantity,
                             grossAmount = quantity.multiply(price),
@@ -182,6 +191,32 @@ class DocumentRepositoryImpl @Inject constructor(
             insertDraftTransactionsIfEmpty(documentId, mockAiDraftTransactions(documentId))
         }
 
+    override suspend fun getStructuredFileHeaders(documentId: String): List<String> =
+        withContext(Dispatchers.IO) {
+            val document = requireNotNull(documentDao.getDocumentById(documentId)) {
+                "Document not found: $documentId"
+            }
+            require(document.status == DocumentStatus.READY_FOR_MAPPING.name) {
+                "This document is not waiting for column mapping."
+            }
+            structuredFileParser.read(File(document.localPath)).headers
+        }
+
+    override suspend fun processStructuredDocument(
+        documentId: String,
+        mapping: ColumnMappingEntity,
+    ) = withContext(Dispatchers.IO) {
+        val document = requireNotNull(documentDao.getDocumentById(documentId)) {
+            "Document not found: $documentId"
+        }
+        require(document.status == DocumentStatus.READY_FOR_MAPPING.name) {
+            "This document is not waiting for column mapping."
+        }
+        val table = structuredFileParser.read(File(document.localPath))
+        val drafts = createMappedDrafts(document, table, mapping)
+        persistMappedDrafts(document, mapping, drafts)
+    }
+
     override suspend fun ingestFile(uri: Uri, context: Context): DocumentEntity =
         withContext(Dispatchers.IO) {
             val resolver = context.contentResolver
@@ -209,6 +244,12 @@ class DocumentRepositoryImpl @Inject constructor(
                 }
             } ?: FileMetadata(UNKNOWN_FILE_NAME, null)
 
+            val extension = metadata.fileName.substringAfterLast('.', "")
+                .lowercase()
+                .takeIf { it in SUPPORTED_EXTENSIONS }
+                ?: throw IllegalArgumentException(
+                    "Unsupported file type. Select a PDF, CSV, XLSX, PNG, or JPG file.",
+                )
             val hash = resolver.openInputStream(uri)?.use { calculateSha256(it) }
                 ?: throw IOException("Unable to read the selected file.")
             if (documentDao.getDocumentByHash(hash) != null) {
@@ -219,11 +260,8 @@ class DocumentRepositoryImpl @Inject constructor(
             if (!documentsDirectory.exists() && !documentsDirectory.mkdirs()) {
                 throw IOException("Unable to create the private documents directory.")
             }
-            val extension = metadata.fileName.substringAfterLast('.', "pdf")
-                .lowercase()
-                .takeIf { it in SUPPORTED_EXTENSIONS }
-                ?: "pdf"
             val destination = File(documentsDirectory, "${UUID.randomUUID()}.$extension")
+            var insertedDocument: DocumentEntity? = null
             try {
                 val copiedSize = resolver.openInputStream(uri)?.use { input ->
                     FileOutputStream(destination).use { output -> input.copyTo(output) }
@@ -234,15 +272,38 @@ class DocumentRepositoryImpl @Inject constructor(
                     fileHash = hash,
                     fileSize = metadata.fileSize ?: copiedSize,
                     importDate = System.currentTimeMillis(),
-                    status = DocumentStatus.PENDING_OCR.name,
+                    status = if (extension in STRUCTURED_EXTENSIONS) {
+                        DocumentStatus.READY_FOR_MAPPING.name
+                    } else {
+                        DocumentStatus.PENDING_OCR.name
+                    },
                 )
                 documentDao.insert(document)
+                insertedDocument = document
+                if (extension in STRUCTURED_EXTENSIONS) {
+                    val table = structuredFileParser.read(destination)
+                    val matchingMapping = columnMappingDao.getAll().lastOrNull { mapping ->
+                        mapping.matchesHeaders(table.headers)
+                    }
+                    if (matchingMapping != null) {
+                        val drafts = createMappedDrafts(document, table, matchingMapping)
+                        if (drafts.isNotEmpty()) {
+                            persistMappedDrafts(
+                                document = document,
+                                mapping = matchingMapping,
+                                drafts = drafts,
+                                saveMapping = false,
+                            )
+                            return@withContext document.copy(
+                                status = DocumentStatus.AI_COMPLETE.name,
+                            )
+                        }
+                    }
+                    return@withContext document
+                }
                 applicationScope.launch {
                     try {
-                        val extractedText = documentTextExtractor.extractText(
-                            destination,
-                            document.fileName,
-                        )
+                        val extractedText = documentTextExtractor.extractText(destination, document.fileName)
                         require(extractedText.isNotBlank()) {
                             "No text could be extracted from this document."
                         }
@@ -263,6 +324,7 @@ class DocumentRepositoryImpl @Inject constructor(
                 }
                 document
             } catch (exception: Exception) {
+                insertedDocument?.let { documentDao.deleteById(it.id) }
                 if (destination.exists() && !destination.delete()) {
                     exception.addSuppressed(
                         IOException("Unable to remove the incomplete imported file."),
@@ -272,6 +334,116 @@ class DocumentRepositoryImpl @Inject constructor(
             }
         }
 
+    private suspend fun persistMappedDrafts(
+        document: DocumentEntity,
+        mapping: ColumnMappingEntity,
+        drafts: List<DraftTransactionEntity>,
+        saveMapping: Boolean = true,
+    ) {
+        require(drafts.isNotEmpty()) { "No transaction rows were found in this file." }
+        database.withTransaction {
+            if (saveMapping) columnMappingDao.insert(mapping)
+            draftTransactionDao.insertAll(drafts)
+            documentDao.updateStatus(document.id, DocumentStatus.AI_COMPLETE.name)
+        }
+    }
+
+    private fun createMappedDrafts(
+        document: DocumentEntity,
+        table: StructuredTable,
+        mapping: ColumnMappingEntity,
+    ): List<DraftTransactionEntity> {
+        require(mapping.brokerName.isNotBlank()) { "Enter a name for this column mapping." }
+        val columns = listOf(
+            mapping.assetColumn,
+            mapping.typeColumn,
+            mapping.quantityColumn,
+            mapping.priceColumn,
+            mapping.amountColumn,
+        )
+        require(columns.all { it in table.headers }) {
+            "The saved mapping does not match this file's headers."
+        }
+        require(mapping.dateColumn.isBlank() || mapping.dateColumn in table.headers) {
+            "The selected date column is not present in this file."
+        }
+        val indexes = columns.map(table.headers::indexOf)
+        val dateIndex = mapping.dateColumn.takeIf(String::isNotBlank)?.let(table.headers::indexOf)
+
+        return table.rows.mapNotNull { row ->
+            if (row.all(String::isBlank)) return@mapNotNull null
+            val values = indexes.map { index -> row.getOrNull(index).orEmpty().trim() }
+            val assetName = values[0]
+            require(assetName.isNotBlank()) { "A transaction row has no asset name." }
+            val type = normalizeTransactionType(values[1])
+            val quantity = normalizeNumber(values[2], "quantity")
+            val price = normalizeNumber(values[3], "price")
+            val amount = normalizeNumber(values[4], "amount")
+            DraftTransactionEntity(
+                documentId = document.id,
+                assetName = assetName,
+                transactionType = type,
+                quantity = quantity,
+                price = price,
+                netAmount = amount,
+                confidence = 100,
+                tradeDate = dateIndex?.let { index ->
+                    parseMappedDate(row.getOrNull(index).orEmpty())
+                },
+            )
+        }
+    }
+
+    private fun ColumnMappingEntity.matchesHeaders(headers: List<String>): Boolean {
+        val headerSet = headers.toSet()
+        return listOf(assetColumn, typeColumn, quantityColumn, priceColumn, amountColumn)
+            .all { it in headerSet } &&
+            (dateColumn.isBlank() || dateColumn in headerSet)
+    }
+
+    private fun normalizeTransactionType(value: String): String {
+        val normalized = when (value.trim().uppercase()) {
+            "PURCHASE", "BOUGHT" -> "BUY"
+            "SALE", "SOLD" -> "SELL"
+            "DIV" -> "DIVIDEND"
+            else -> value.trim().uppercase()
+        }
+        return TransactionType.entries.firstOrNull { it.name == normalized }?.name
+            ?: throw IllegalArgumentException("Unsupported transaction type: $value")
+    }
+
+    private fun normalizeNumber(value: String, field: String): String {
+        val normalized = value.replace(",", "").replace("₹", "").trim()
+        require(normalized.toBigDecimalOrNull() != null) {
+            "A transaction row has an invalid $field value."
+        }
+        return normalized
+    }
+
+    private fun parseMappedDate(value: String): Long? {
+        val date = value.trim().takeIf(String::isNotEmpty) ?: return null
+        val formats = listOf(
+            DateTimeFormatter.ISO_LOCAL_DATE,
+            DateTimeFormatter.ofPattern("d/M/uuuu"),
+            DateTimeFormatter.ofPattern("d-M-uuuu"),
+            DateTimeFormatter.ofPattern("M/d/uuuu"),
+        )
+        formats.forEach { format ->
+            try {
+                return LocalDate.parse(date, format).atStartOfDay()
+                    .toInstant(java.time.ZoneOffset.UTC).toEpochMilli()
+            } catch (_: DateTimeParseException) {
+                Unit
+            }
+        }
+        val excelSerial = date.toBigDecimalOrNull()?.toLong()
+        require(excelSerial != null && excelSerial in 1..100_000) {
+            "A transaction row has an invalid date value."
+        }
+        return LocalDate.of(1899, 12, 30).plusDays(excelSerial).atStartOfDay()
+            .toInstant(java.time.ZoneOffset.UTC).toEpochMilli()
+    }
+
     private data class FileMetadata(
         val fileName: String,
         val fileSize: Long?,
@@ -279,10 +451,11 @@ class DocumentRepositoryImpl @Inject constructor(
 
     private companion object {
         const val DOCUMENTS_DIRECTORY = "documents"
-        const val UNKNOWN_FILE_NAME = "unknown_file.pdf"
+        const val UNKNOWN_FILE_NAME = "unknown_file"
         const val AI_CHUNK_SIZE = 3_000
         const val MILLIS_PER_DAY = 86_400_000L
-        val SUPPORTED_EXTENSIONS = setOf("pdf", "csv")
+        val SUPPORTED_EXTENSIONS = setOf("pdf", "csv", "xlsx", "png", "jpg", "jpeg")
+        val STRUCTURED_EXTENSIONS = setOf("csv", "xlsx")
     }
 }
 

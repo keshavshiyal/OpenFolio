@@ -211,7 +211,10 @@ fun HomeScreen(
 
 private val DOCUMENT_MIME_TYPES = arrayOf(
     "application/pdf",
+    "image/*",
     "text/csv",
+    "text/comma-separated-values",
+    "application/csv",
     "application/vnd.ms-excel",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )

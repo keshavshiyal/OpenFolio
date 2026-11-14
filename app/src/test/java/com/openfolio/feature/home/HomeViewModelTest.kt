@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import com.openfolio.core.data.local.entity.DocumentEntity
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
+import com.openfolio.core.data.local.entity.ColumnMappingEntity
 import com.openfolio.core.domain.repository.DocumentRepository
 import com.openfolio.core.domain.repository.DuplicateDocumentException
 import com.openfolio.core.domain.repository.SaveDraftTransactionsResult
@@ -129,6 +130,13 @@ class HomeViewModelTest {
         ): SaveDraftTransactionsResult = SaveDraftTransactionsResult(0, 0)
 
         override suspend fun processDocumentWithMockAi(documentId: String) = Unit
+
+        override suspend fun getStructuredFileHeaders(documentId: String): List<String> = emptyList()
+
+        override suspend fun processStructuredDocument(
+            documentId: String,
+            mapping: ColumnMappingEntity,
+        ) = Unit
 
         override suspend fun ingestFile(
             uri: Uri,

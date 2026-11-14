@@ -18,6 +18,10 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExposedDropdownMenu
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuAnchorType
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -53,10 +57,12 @@ import com.openfolio.feature.review.ReviewUiState
 fun ReviewScreen(
     uiState: ReviewUiState,
     drafts: List<DraftTransactionEntity>,
+    structuredHeaders: List<String>,
     actionState: ReviewActionState,
     onBack: () -> Unit,
     onSkip: () -> Unit,
     onProcessWithAi: () -> Unit,
+    onProcessMappedData: (String, String, String, String, String, String, String) -> Unit,
     onSaveDraft: (String?, String, String, String, String, String) -> Unit,
     onSaveConfirmed: () -> Unit,
     onSaveComplete: () -> Unit,
@@ -160,12 +166,30 @@ fun ReviewScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Text(
-                        text = "${drafts.size} Extracted Transactions",
+                        text = if (
+                            document?.status == DocumentStatus.READY_FOR_MAPPING.name &&
+                            drafts.isEmpty()
+                        ) {
+                            "Map File Columns"
+                        } else {
+                            "${drafts.size} Extracted Transactions"
+                        },
                         style = MaterialTheme.typography.titleLarge,
                         color = colors.content,
                     )
 
-                    if (drafts.isEmpty()) {
+                    if (
+                        document?.status == DocumentStatus.READY_FOR_MAPPING.name &&
+                        drafts.isEmpty()
+                    ) {
+                        ColumnMappingForm(
+                            headers = structuredHeaders,
+                            isProcessing = actionState == ReviewActionState.ProcessingMapping ||
+                                actionState == ReviewActionState.LoadingMapping,
+                            onProcess = onProcessMappedData,
+                            modifier = Modifier.weight(1f),
+                        )
+                    } else if (drafts.isEmpty()) {
                         Button(
                             onClick = {
                                 editingDraft = null
@@ -292,6 +316,174 @@ fun ReviewScreen(
         }
     }
 }
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ColumnMappingForm(
+    headers: List<String>,
+    isProcessing: Boolean,
+    onProcess: (String, String, String, String, String, String, String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = LocalOpenFolioColors.current
+    var brokerName by remember(headers) { mutableStateOf("") }
+    var assetColumn by remember(headers) { mutableStateOf(suggestHeader(headers, "asset", "symbol", "security", "name")) }
+    var typeColumn by remember(headers) { mutableStateOf(suggestHeader(headers, "type", "side", "action")) }
+    var quantityColumn by remember(headers) { mutableStateOf(suggestHeader(headers, "quantity", "qty", "units")) }
+    var priceColumn by remember(headers) { mutableStateOf(suggestHeader(headers, "price", "rate", "unit price")) }
+    var amountColumn by remember(headers) { mutableStateOf(suggestHeader(headers, "amount", "value", "total")) }
+    var dateColumn by remember(headers) { mutableStateOf(suggestHeader(headers, "date", "trade date")) }
+    val requiredColumns = listOf(assetColumn, typeColumn, quantityColumn, priceColumn, amountColumn)
+    val canProcess = !isProcessing &&
+        headers.isNotEmpty() &&
+        brokerName.isNotBlank() &&
+        requiredColumns.all(String::isNotBlank) &&
+        requiredColumns.toSet().size == requiredColumns.size
+
+    LazyColumn(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        item {
+            Text(
+                text = "Choose which file column matches each transaction field.",
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.muted,
+            )
+        }
+        item {
+            MappingColumnDropdown("Asset", headers, assetColumn) { assetColumn = it }
+        }
+        item {
+            MappingColumnDropdown("Type", headers, typeColumn) { typeColumn = it }
+        }
+        item {
+            MappingColumnDropdown("Quantity", headers, quantityColumn) { quantityColumn = it }
+        }
+        item {
+            MappingColumnDropdown("Price", headers, priceColumn) { priceColumn = it }
+        }
+        item {
+            MappingColumnDropdown("Amount", headers, amountColumn) { amountColumn = it }
+        }
+        item {
+            MappingColumnDropdown(
+                label = "Date (optional)",
+                headers = headers,
+                selected = dateColumn,
+                allowUnmapped = true,
+                onSelect = { dateColumn = it },
+            )
+        }
+        item {
+            OutlinedTextField(
+                value = brokerName,
+                onValueChange = { brokerName = it },
+                label = { Text("Save this mapping as (e.g., Zerodha)") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+        }
+        item {
+            Button(
+                onClick = {
+                    onProcess(
+                        brokerName,
+                        assetColumn,
+                        typeColumn,
+                        quantityColumn,
+                        priceColumn,
+                        amountColumn,
+                        dateColumn,
+                    )
+                },
+                enabled = canProcess,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                if (isProcessing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        color = colors.onAccent,
+                        strokeWidth = 2.dp,
+                    )
+                    Text("  Processing mapped data…")
+                } else {
+                    Text("Process Mapped Data")
+                }
+            }
+        }
+        if (headers.isEmpty() && !isProcessing) {
+            item {
+                Text(
+                    text = "Could not read the file headers.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.lossGlyph,
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MappingColumnDropdown(
+    label: String,
+    headers: List<String>,
+    selected: String,
+    allowUnmapped: Boolean = false,
+    onSelect: (String) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it },
+    ) {
+        OutlinedTextField(
+            value = selected.ifBlank { "Select a column" },
+            onValueChange = {},
+            readOnly = true,
+            label = { Text(label) },
+            trailingIcon = {
+                androidx.compose.material3.ExposedDropdownMenuDefaults.TrailingIcon(expanded)
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
+            singleLine = true,
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            if (allowUnmapped) {
+                DropdownMenuItem(
+                    text = { Text("Not mapped") },
+                    onClick = {
+                        onSelect("")
+                        expanded = false
+                    },
+                )
+            }
+            headers.forEach { header ->
+                DropdownMenuItem(
+                    text = { Text(header) },
+                    onClick = {
+                        onSelect(header)
+                        expanded = false
+                    },
+                )
+            }
+        }
+    }
+}
+
+private fun suggestHeader(headers: List<String>, vararg suggestions: String): String =
+    headers.firstOrNull { header ->
+        val normalized = header.lowercase().replace(Regex("[^a-z0-9]"), "")
+        suggestions.any { suggestion ->
+            normalized.contains(suggestion.lowercase().replace(Regex("[^a-z0-9]"), ""))
+        }
+    }.orEmpty()
 
 @Composable
 private fun DraftTransactionRow(

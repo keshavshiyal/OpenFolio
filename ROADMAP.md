@@ -71,17 +71,19 @@ The AI must strictly adhere to these rules. No hardcoded colors outside of `core
 
 ### Phase 3: Ingestion Engine (Files & PDF)
 **Goal:** Import documents and extract raw text.
-* [x] Implement SAF (Storage Access Framework) file picker (PDF, CSV, XLS, XLSX).
+* [x] Implement SAF (Storage Access Framework) file picker (PDF, CSV, XLSX, PNG, JPG).
 * [x] Implement SHA-256 file hashing to prevent duplicate file imports.
 * [x] Store imported files in app-private storage and track them in the Room Inbox.
 * [x] Setup `PdfBox` to extract raw text from local PDFs.
 * [x] Setup ML Kit to OCR scanned PDF pages locally.
+* [x] Parse CSV/XLSX directly and persist reusable broker column mappings.
 * [ ] Setup password-protected PDF handling (prompt for password, decrypt locally in memory).
 * [x] Build **Inbox Screen**: Show files processing, failed jobs, and awaiting review.
 
 ### Phase 4: AI Extraction & Review Loop
 **Goal:** Send text to AI, parse JSON, and let user review.
-* [x] Extract local text from PDF and CSV files during ingestion.
+* [x] Extract local text from PDFs and images during ingestion.
+* [x] Map structured CSV/XLSX columns directly into review drafts without OCR or AI.
 * [x] Add a batch split-view review screen with confidence indicators.
 * [x] Persist draft transactions and deduplicate confirmed records by fingerprint.
 * [x] Add manual draft entry and editing to the review flow.

@@ -1,5 +1,7 @@
 package com.openfolio.core.utils
 
+import android.content.Context
+import android.net.Uri
 import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
@@ -9,18 +11,31 @@ import com.tom_roush.pdfbox.rendering.PDFRenderer
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import java.io.File
 import javax.inject.Inject
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-class LocalDocumentTextExtractor @Inject constructor() : DocumentTextExtractor {
+class LocalDocumentTextExtractor @Inject constructor(
+    @ApplicationContext private val context: Context,
+) : DocumentTextExtractor {
     override suspend fun extractText(file: File, fileName: String): String =
         withContext(Dispatchers.IO) {
             when (fileName.substringAfterLast('.', "").lowercase()) {
                 "pdf" -> extractPdfText(file)
-                "csv" -> file.readText(Charsets.UTF_8)
+                "png", "jpg", "jpeg" -> extractImageText(file)
                 else -> throw IllegalArgumentException("Unsupported document type: $fileName")
             }
         }
+
+    private fun extractImageText(file: File): String {
+        val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+        try {
+            val image = InputImage.fromFilePath(context, Uri.fromFile(file))
+            return Tasks.await(recognizer.process(image)).text
+        } finally {
+            recognizer.close()
+        }
+    }
 
     private fun extractPdfText(file: File): String {
         PDDocument.load(file).use { document ->

@@ -12,6 +12,9 @@ interface DocumentDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insert(document: DocumentEntity)
 
+    @Query("DELETE FROM documents WHERE id = :id")
+    suspend fun deleteById(id: String)
+
     @Query("SELECT * FROM documents ORDER BY importDate DESC")
     fun getAllDocuments(): Flow<List<DocumentEntity>>
 

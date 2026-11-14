@@ -3,6 +3,7 @@ package com.openfolio.core.domain.repository
 import android.content.Context
 import android.net.Uri
 import com.openfolio.core.data.local.entity.DocumentEntity
+import com.openfolio.core.data.local.entity.ColumnMappingEntity
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
 import kotlinx.coroutines.flow.Flow
 
@@ -33,6 +34,13 @@ interface DocumentRepository {
     suspend fun ingestFile(uri: Uri, context: Context): DocumentEntity
 
     suspend fun processDocumentWithMockAi(documentId: String)
+
+    suspend fun getStructuredFileHeaders(documentId: String): List<String>
+
+    suspend fun processStructuredDocument(
+        documentId: String,
+        mapping: ColumnMappingEntity,
+    )
 }
 
 data class SaveDraftTransactionsResult(
