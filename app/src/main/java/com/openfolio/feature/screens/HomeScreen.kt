@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -112,6 +113,7 @@ fun HomeScreen(
                 contentColor = colors.onAccent,
             )
         },
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
     ) { innerPadding ->
         LazyColumn(
             modifier = Modifier
@@ -121,7 +123,7 @@ fun HomeScreen(
                 start = 20.dp,
                 top = 8.dp,
                 end = 20.dp,
-                bottom = 100.dp,
+                bottom = 160.dp,
             ),
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
