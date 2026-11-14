@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -23,6 +24,9 @@ fun EmptyScreen(
     message: String,
     actionLabel: String,
     onAction: () -> Unit,
+    secondaryActionLabel: String? = null,
+    onSecondaryAction: (() -> Unit)? = null,
+    showTitle: Boolean = true,
 ) {
     val colors = LocalOpenFolioColors.current
 
@@ -33,12 +37,14 @@ fun EmptyScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Text(
-            text = destination.title,
-            style = MaterialTheme.typography.headlineMedium,
-            color = colors.content,
-        )
-        Spacer(modifier = Modifier.height(12.dp))
+        if (showTitle) {
+            Text(
+                text = destination.title,
+                style = MaterialTheme.typography.headlineMedium,
+                color = colors.content,
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+        }
         Text(
             text = message,
             style = MaterialTheme.typography.bodyLarge,
@@ -48,6 +54,12 @@ fun EmptyScreen(
         Spacer(modifier = Modifier.height(24.dp))
         Button(onClick = onAction) {
             Text(text = actionLabel)
+        }
+        if (secondaryActionLabel != null && onSecondaryAction != null) {
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedButton(onClick = onSecondaryAction) {
+                Text(text = secondaryActionLabel)
+            }
         }
     }
 }

@@ -4,21 +4,26 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.openfolio.core.ui.theme.LocalOpenFolioColors
 import com.openfolio.feature.screens.EmptyScreen
+import com.openfolio.feature.screens.HomeScreen
 
 @Composable
 fun OpenFolioApp() {
     val navController = rememberNavController()
+    val colors = LocalOpenFolioColors.current
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
 
@@ -37,6 +42,13 @@ fun OpenFolioApp() {
                                 restoreState = true
                             }
                         },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = colors.primary,
+                            selectedTextColor = colors.primary,
+                            unselectedIconColor = colors.muted,
+                            unselectedTextColor = colors.muted,
+                            indicatorColor = Color.Transparent,
+                        ),
                         icon = {
                             Icon(
                                 imageVector = destination.icon,
@@ -55,11 +67,10 @@ fun OpenFolioApp() {
             modifier = Modifier.padding(innerPadding),
         ) {
             composable(AppDestination.Home.route) {
-                EmptyScreen(
-                    destination = AppDestination.Home,
-                    message = "Add your first asset to start tracking your net worth.",
-                    actionLabel = "Browse assets",
-                    onAction = { navController.navigate(AppDestination.Assets.route) },
+                HomeScreen(
+                    onImport = { navController.navigate(AppDestination.Inbox.route) },
+                    onAddManually = { navController.navigate(AppDestination.Assets.route) },
+                    onSettings = { navController.navigate(AppDestination.Settings.route) },
                 )
             }
             composable(AppDestination.Assets.route) {

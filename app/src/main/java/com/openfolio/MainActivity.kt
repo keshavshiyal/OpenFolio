@@ -17,7 +17,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         setContent {
-            OpenFolioTheme {
+            OpenFolioTheme(dynamicColor = false) {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     OpenFolioApp()
                 }
