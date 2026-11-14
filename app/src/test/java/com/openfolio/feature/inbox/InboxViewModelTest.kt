@@ -48,6 +48,9 @@ class InboxViewModelTest {
     ) : DocumentRepository {
         override fun getAllDocuments(): Flow<List<DocumentEntity>> = flowOf(items)
 
+        override suspend fun getDocumentById(id: String): DocumentEntity? =
+            items.firstOrNull { it.id == id }
+
         override suspend fun ingestFile(uri: Uri, context: Context): DocumentEntity =
             error("Not used in this test")
     }

@@ -9,6 +9,7 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
@@ -17,24 +18,35 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import com.openfolio.core.ui.theme.LocalOpenFolioColors
 import com.openfolio.feature.home.HomeViewModel
 import com.openfolio.feature.inbox.InboxViewModel
 import com.openfolio.feature.screens.EmptyScreen
 import com.openfolio.feature.screens.HomeScreen
 import com.openfolio.feature.screens.InboxScreen
+import com.openfolio.feature.screens.ReviewScreen
+import com.openfolio.feature.review.ReviewViewModel
+
+private const val REVIEW_ROUTE = "review/{documentId}"
 
 @Composable
-fun OpenFolioApp(homeViewModel: HomeViewModel, inboxViewModel: InboxViewModel) {
+fun OpenFolioApp(
+    homeViewModel: HomeViewModel,
+    inboxViewModel: InboxViewModel,
+    reviewViewModel: ReviewViewModel,
+) {
     val navController = rememberNavController()
     val colors = LocalOpenFolioColors.current
     val homeUiState by homeViewModel.uiState.collectAsStateWithLifecycle()
     val ingestionState by homeViewModel.ingestionState.collectAsStateWithLifecycle()
     val inboxDocuments by inboxViewModel.documents.collectAsStateWithLifecycle()
+    val reviewUiState by reviewViewModel.uiState.collectAsStateWithLifecycle()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
 
@@ -42,46 +54,48 @@ fun OpenFolioApp(homeViewModel: HomeViewModel, inboxViewModel: InboxViewModel) {
         containerColor = colors.background,
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
-            NavigationBar(
-                modifier = Modifier.drawBehind {
-                    val strokeWidth = 1.dp.toPx()
-                    drawLine(
-                        color = colors.border,
-                        start = Offset(0f, 0f),
-                        end = Offset(size.width, 0f),
-                        strokeWidth = strokeWidth,
-                    )
-                },
-                containerColor = colors.background,
-                contentColor = colors.content,
-            ) {
-                AppDestination.entries.forEach { destination ->
-                    NavigationBarItem(
-                        selected = currentRoute == destination.route,
-                        onClick = {
-                            navController.navigate(destination.route) {
-                                popUpTo(navController.graph.findStartDestination().id) {
-                                    saveState = true
+            if (currentRoute != REVIEW_ROUTE) {
+                NavigationBar(
+                    modifier = Modifier.drawBehind {
+                        val strokeWidth = 1.dp.toPx()
+                        drawLine(
+                            color = colors.border,
+                            start = Offset(0f, 0f),
+                            end = Offset(size.width, 0f),
+                            strokeWidth = strokeWidth,
+                        )
+                    },
+                    containerColor = colors.background,
+                    contentColor = colors.content,
+                ) {
+                    AppDestination.entries.forEach { destination ->
+                        NavigationBarItem(
+                            selected = currentRoute == destination.route,
+                            onClick = {
+                                navController.navigate(destination.route) {
+                                    popUpTo(navController.graph.findStartDestination().id) {
+                                        saveState = true
+                                    }
+                                    launchSingleTop = true
+                                    restoreState = true
                                 }
-                                launchSingleTop = true
-                                restoreState = true
-                            }
-                        },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = colors.brand,
-                            selectedTextColor = colors.brand,
-                            unselectedIconColor = colors.muted,
-                            unselectedTextColor = colors.muted,
-                            indicatorColor = Color.Transparent,
-                        ),
-                        icon = {
-                            Icon(
-                                imageVector = destination.icon,
-                                contentDescription = destination.label,
-                            )
-                        },
-                        label = { Text(destination.label) },
-                    )
+                            },
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = colors.brand,
+                                selectedTextColor = colors.brand,
+                                unselectedIconColor = colors.muted,
+                                unselectedTextColor = colors.muted,
+                                indicatorColor = Color.Transparent,
+                            ),
+                            icon = {
+                                Icon(
+                                    imageVector = destination.icon,
+                                    contentDescription = destination.label,
+                                )
+                            },
+                            label = { Text(destination.label) },
+                        )
+                    }
                 }
             }
         },
@@ -124,7 +138,28 @@ fun OpenFolioApp(homeViewModel: HomeViewModel, inboxViewModel: InboxViewModel) {
                 )
             }
             composable(AppDestination.Inbox.route) {
-                InboxScreen(documents = inboxDocuments)
+                InboxScreen(
+                    documents = inboxDocuments,
+                    onDocumentClick = { documentId ->
+                        navController.navigate("review/$documentId")
+                    },
+                )
+            }
+            composable(
+                route = REVIEW_ROUTE,
+                arguments = listOf(navArgument("documentId") { type = NavType.StringType }),
+            ) { entry ->
+                val documentId = entry.arguments?.getString("documentId").orEmpty()
+                LaunchedEffect(documentId) {
+                    reviewViewModel.loadDocument(documentId)
+                }
+                ReviewScreen(
+                    uiState = reviewUiState,
+                    onBack = { navController.popBackStack() },
+                    onSkip = { navController.popBackStack() },
+                    onReject = { navController.popBackStack() },
+                    onAccept = { navController.popBackStack() },
+                )
             }
             composable(AppDestination.Settings.route) {
                 EmptyScreen(

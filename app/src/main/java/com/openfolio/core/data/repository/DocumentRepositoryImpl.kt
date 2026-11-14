@@ -7,6 +7,7 @@ import com.openfolio.core.data.local.dao.DocumentDao
 import com.openfolio.core.data.local.entity.DocumentEntity
 import com.openfolio.core.domain.repository.DocumentRepository
 import com.openfolio.core.domain.repository.DuplicateDocumentException
+import com.openfolio.core.utils.DocumentParser
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -20,9 +21,15 @@ import kotlinx.coroutines.withContext
 
 class DocumentRepositoryImpl @Inject constructor(
     private val documentDao: DocumentDao,
+    private val documentParsers: Set<@JvmSuppressWildcards DocumentParser>,
 ) : DocumentRepository {
     override fun getAllDocuments(): Flow<List<DocumentEntity>> =
         documentDao.getAllDocuments()
+
+    override suspend fun getDocumentById(id: String): DocumentEntity? =
+        withContext(Dispatchers.IO) {
+            documentDao.getDocumentById(id)
+        }
 
     override suspend fun ingestFile(uri: Uri, context: Context): DocumentEntity =
         withContext(Dispatchers.IO) {
@@ -70,12 +77,16 @@ class DocumentRepositoryImpl @Inject constructor(
                     }
                 } ?: throw IOException("Unable to read the selected file.")
 
+                val extractedText = documentParsers
+                    .firstOrNull { it.supports(metadata.fileName) }
+                    ?.extractText(destination)
                 val document = DocumentEntity(
                     fileName = metadata.fileName,
                     localPath = destination.absolutePath,
                     fileHash = hash,
                     fileSize = metadata.fileSize ?: copiedSize,
                     importDate = System.currentTimeMillis(),
+                    extractedText = extractedText,
                 )
                 documentDao.insert(document)
                 document

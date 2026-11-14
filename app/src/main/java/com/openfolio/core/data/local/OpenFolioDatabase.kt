@@ -16,7 +16,7 @@ import com.openfolio.core.data.local.entity.DocumentEntity
         DocumentEntity::class,
         Transaction::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 @TypeConverters(LedgerConverters::class)
@@ -106,6 +106,12 @@ abstract class OpenFolioDatabase : RoomDatabase() {
                 db.execSQL(
                     "CREATE INDEX IF NOT EXISTS `index_documents_fileHash` ON `documents` (`fileHash`)",
                 )
+            }
+        }
+
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `documents` ADD COLUMN `extractedText` TEXT")
             }
         }
     }

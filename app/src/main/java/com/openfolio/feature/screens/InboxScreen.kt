@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -31,7 +32,10 @@ import com.openfolio.core.ui.theme.LocalOpenFolioColors
 import java.util.Locale
 
 @Composable
-fun InboxScreen(documents: List<DocumentEntity>) {
+fun InboxScreen(
+    documents: List<DocumentEntity>,
+    onDocumentClick: (String) -> Unit,
+) {
     val colors = LocalOpenFolioColors.current
     val awaitingReview = documents.count { it.status == DocumentStatus.PENDING.name }
 
@@ -76,19 +80,27 @@ fun InboxScreen(documents: List<DocumentEntity>) {
             }
         } else {
             items(documents, key = DocumentEntity::id) { document ->
-                DocumentCard(document)
+                DocumentCard(
+                    document = document,
+                    onClick = { onDocumentClick(document.id) },
+                )
             }
         }
     }
 }
 
 @Composable
-fun DocumentCard(document: DocumentEntity) {
+fun DocumentCard(
+    document: DocumentEntity,
+    onClick: () -> Unit,
+) {
     val colors = LocalOpenFolioColors.current
     val shape = RoundedCornerShape(12.dp)
 
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
         shape = shape,
         color = colors.surface,
         border = BorderStroke(1.dp, colors.border),

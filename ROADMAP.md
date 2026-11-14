@@ -81,6 +81,8 @@ The AI must strictly adhere to these rules. No hardcoded colors outside of `core
 
 ### Phase 4: AI Extraction & Review Loop
 **Goal:** Send text to AI, parse JSON, and let user review.
+* [x] Extract local text from PDF and CSV files during ingestion.
+* [x] Add a mock split-view review screen with confidence indicators.
 * [ ] Build AI Provider interface (OpenAI-compatible, Ollama).
 * [ ] Implement a PII Redaction layer (strip names/account numbers before sending to cloud AI).
 * [ ] Define strict JSON schema for AI extraction (Asset, Txn Type, Qty, Price, Net Amount).

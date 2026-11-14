@@ -60,6 +60,7 @@ dependencies {
     implementation(libs.androidx.sqlite.ktx)
     implementation(libs.sqlcipher)
     implementation(libs.hilt.android)
+    implementation(libs.pdfbox.android)
 
     kapt(libs.androidx.room.compiler)
     kapt(libs.hilt.android.compiler)

@@ -8,5 +8,7 @@ import kotlinx.coroutines.flow.Flow
 interface DocumentRepository {
     fun getAllDocuments(): Flow<List<DocumentEntity>>
 
+    suspend fun getDocumentById(id: String): DocumentEntity?
+
     suspend fun ingestFile(uri: Uri, context: Context): DocumentEntity
 }

@@ -98,6 +98,8 @@ class HomeViewModelTest {
     ) : DocumentRepository {
         override fun getAllDocuments(): Flow<List<DocumentEntity>> = flowOf(emptyList())
 
+        override suspend fun getDocumentById(id: String): DocumentEntity? = null
+
         override suspend fun ingestFile(
             uri: Uri,
             context: Context,

@@ -17,4 +17,7 @@ interface DocumentDao {
 
     @Query("SELECT * FROM documents WHERE fileHash = :hash LIMIT 1")
     suspend fun getDocumentByHash(hash: String): DocumentEntity?
+
+    @Query("SELECT * FROM documents WHERE id = :id LIMIT 1")
+    suspend fun getDocumentById(id: String): DocumentEntity?
 }

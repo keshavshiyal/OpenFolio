@@ -21,4 +21,5 @@ data class DocumentEntity(
     val fileSize: Long,
     val importDate: Long,
     val status: String = DocumentStatus.PENDING.name,
+    val extractedText: String? = null,
 )
