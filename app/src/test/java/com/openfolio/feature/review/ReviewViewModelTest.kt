@@ -232,6 +232,7 @@ class ReviewViewModelTest {
                     quantity = "1",
                     price = "10",
                     netAmount = "10",
+                    confidence = 100,
                 ),
             )
             document = document?.copy(status = DocumentStatus.AI_COMPLETE.name)
