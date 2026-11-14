@@ -206,14 +206,15 @@ fun HomeScreen(
             }
         }
 
-        private val DOCUMENT_MIME_TYPES = arrayOf(
-            "application/pdf",
-            "text/csv",
-            "application/vnd.ms-excel",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
     }
 }
+
+private val DOCUMENT_MIME_TYPES = arrayOf(
+    "application/pdf",
+    "text/csv",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+)
 
 @Composable
 private fun NetWorthSection(uiState: HomeUiState) {
