@@ -63,7 +63,6 @@ dependencies {
     implementation(libs.pdfbox.android)
     implementation(libs.mlkit.text.recognition)
     implementation(libs.opencsv)
-    implementation(libs.fastexcel.reader)
 
     kapt(libs.androidx.room.compiler)
     kapt(libs.hilt.android.compiler)

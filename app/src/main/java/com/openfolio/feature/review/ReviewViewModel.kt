@@ -72,9 +72,9 @@ class ReviewViewModel @Inject constructor(
                 }
             } catch (exception: CancellationException) {
                 throw exception
-            } catch (exception: Exception) {
+            } catch (throwable: Throwable) {
                 _uiState.value = ReviewUiState.Error(
-                    exception.message ?: "Unable to load this document.",
+                    throwable.message ?: "Unable to load this document.",
                 )
             }
         }
@@ -195,9 +195,9 @@ class ReviewViewModel @Inject constructor(
         } catch (exception: CancellationException) {
             _actionState.value = ReviewActionState.Idle
             throw exception
-        } catch (exception: Exception) {
+        } catch (throwable: Throwable) {
             _actionState.value = ReviewActionState.Error(
-                exception.message ?: "Unable to complete this action.",
+                throwable.message ?: "Unable to complete this action.",
             )
         }
     }

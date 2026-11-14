@@ -17,7 +17,6 @@ coroutines = "1.9.0"
 pdfboxAndroid = "2.0.27.0"
 mlkitTextRecognition = "16.0.1"
 opencsv = "5.9"
-fastexcelReader = "0.15.7"
 
 [libraries]
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
@@ -48,7 +47,6 @@ kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-cor
 pdfbox-android = { group = "com.tom-roush", name = "pdfbox-android", version.ref = "pdfboxAndroid" }
 mlkit-text-recognition = { group = "com.google.mlkit", name = "text-recognition", version.ref = "mlkitTextRecognition" }
 opencsv = { group = "com.opencsv", name = "opencsv", version.ref = "opencsv" }
-fastexcel-reader = { group = "org.dhatim", name = "fastexcel-reader", version.ref = "fastexcelReader" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

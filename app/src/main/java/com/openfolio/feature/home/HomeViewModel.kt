@@ -60,9 +60,9 @@ class HomeViewModel @Inject constructor(
                 throw exception
             } catch (exception: DuplicateDocumentException) {
                 _ingestionState.value = IngestionState.Error("File already imported")
-            } catch (exception: Exception) {
+            } catch (throwable: Throwable) {
                 _ingestionState.value = IngestionState.Error(
-                    exception.message ?: "Failed to read file",
+                    throwable.message ?: "Failed to read file",
                 )
             }
         }
