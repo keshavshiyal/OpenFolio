@@ -59,8 +59,8 @@ fun OpenFolioApp() {
                             }
                         },
                         colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = colors.primary,
-                            selectedTextColor = colors.primary,
+                            selectedIconColor = colors.brand,
+                            selectedTextColor = colors.brand,
                             unselectedIconColor = colors.muted,
                             unselectedTextColor = colors.muted,
                             indicatorColor = Color.Transparent,

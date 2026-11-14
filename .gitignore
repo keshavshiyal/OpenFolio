@@ -7,3 +7,5 @@ captures/
 .cxx/
 *.iml
 .idea/
+export_project.py
+project_export.txt

@@ -52,8 +52,8 @@ fun OpenFolioTheme(
     val openFolioColors = if (darkTheme) DarkOpenFolioColors else LightOpenFolioColors
     val materialColors = if (darkTheme) {
         darkColorScheme(
-            primary = openFolioColors.primary,
-            onPrimary = openFolioColors.surface,
+            primary = openFolioColors.brand,
+            onPrimary = openFolioColors.onAccent,
             background = openFolioColors.background,
             onBackground = openFolioColors.content,
             surface = openFolioColors.surface,
@@ -61,8 +61,8 @@ fun OpenFolioTheme(
         )
     } else {
         lightColorScheme(
-            primary = openFolioColors.primary,
-            onPrimary = openFolioColors.surface,
+            primary = openFolioColors.brand,
+            onPrimary = openFolioColors.onAccent,
             background = openFolioColors.background,
             onBackground = openFolioColors.content,
             surface = openFolioColors.surface,

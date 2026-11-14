@@ -8,7 +8,8 @@ import androidx.compose.ui.graphics.Color
 data class OpenFolioColors(
     val background: Color,
     val surface: Color,
-    val primary: Color,
+    val brand: Color,
+    val onAccent: Color,
     val content: Color,
     val muted: Color,
     val border: Color,
@@ -19,7 +20,8 @@ data class OpenFolioColors(
 val LightOpenFolioColors = OpenFolioColors(
     background = Color(0xFFFAFAF7),
     surface = Color(0xFFFFFFFF),
-    primary = Color(0xFF0F6E5C),
+    brand = Color(0xFF0F6E5C),
+    onAccent = Color(0xFFFFFFFF),
     content = Color(0xFF1A1D1F),
     muted = Color(0xFF8B9094),
     border = Color(0xFFE8E6E1),
@@ -30,7 +32,8 @@ val LightOpenFolioColors = OpenFolioColors(
 val DarkOpenFolioColors = OpenFolioColors(
     background = Color(0xFF0E1113),
     surface = Color(0xFF171B1E),
-    primary = Color(0xFF2A9C86),
+    brand = Color(0xFF2A9C86),
+    onAccent = Color(0xFFFFFFFF),
     content = Color(0xFFE6E8E6),
     muted = Color(0xFF8B9094),
     border = Color(0xFF2A3033),

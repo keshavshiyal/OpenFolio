@@ -20,6 +20,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import com.openfolio.core.ui.theme.LocalOpenFolioColors
 import com.openfolio.feature.navigation.AppDestination
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -30,6 +31,7 @@ fun HomeScreen(
     onSettings: () -> Unit,
 ) {
     var showValues by rememberSaveable { mutableStateOf(true) }
+    val colors = LocalOpenFolioColors.current
 
     Scaffold(
         topBar = {
@@ -64,6 +66,8 @@ fun HomeScreen(
                 onClick = onImport,
                 icon = { Icon(Icons.Filled.Add, contentDescription = null) },
                 text = { Text("Import") },
+                containerColor = colors.brand,
+                contentColor = colors.onAccent,
             )
         },
     ) { innerPadding ->
