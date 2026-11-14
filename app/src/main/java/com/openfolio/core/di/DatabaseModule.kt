@@ -24,7 +24,7 @@ object DatabaseModule {
         passphraseProvider: DatabasePassphraseProvider,
     ): OpenFolioDatabase {
         SQLiteDatabase.loadLibs(context)
-        Room.databaseBuilder(
+        return Room.databaseBuilder(
             context,
             OpenFolioDatabase::class.java,
             "openfolio.db",
