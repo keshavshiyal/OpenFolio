@@ -6,6 +6,8 @@ import com.openfolio.core.data.local.AppMetadataDao
 import com.openfolio.core.data.local.DatabasePassphraseProvider
 import com.openfolio.core.data.local.OpenFolioDatabase
 import com.openfolio.core.data.local.dao.DocumentDao
+import com.openfolio.core.data.local.dao.DraftTransactionDao
+import com.openfolio.core.data.local.dao.TransactionDao
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -34,6 +36,7 @@ object DatabaseModule {
                 OpenFolioDatabase.MIGRATION_1_2,
                 OpenFolioDatabase.MIGRATION_2_3,
                 OpenFolioDatabase.MIGRATION_3_4,
+                OpenFolioDatabase.MIGRATION_4_5,
             )
             .openHelperFactory(SupportFactory(passphraseProvider.getPassphrase()))
             .build()
@@ -46,4 +49,12 @@ object DatabaseModule {
     @Provides
     fun provideDocumentDao(database: OpenFolioDatabase): DocumentDao =
         database.documentDao()
+
+    @Provides
+    fun provideDraftTransactionDao(database: OpenFolioDatabase): DraftTransactionDao =
+        database.draftTransactionDao()
+
+    @Provides
+    fun provideTransactionDao(database: OpenFolioDatabase): TransactionDao =
+        database.transactionDao()
 }

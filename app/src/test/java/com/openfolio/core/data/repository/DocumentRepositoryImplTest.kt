@@ -72,7 +72,13 @@ class DocumentRepositoryImplTest {
             )
         }
 
-        val repository = DocumentRepositoryImpl(dao, emptySet())
+        val repository = DocumentRepositoryImpl(
+            documentDao = dao,
+            documentParsers = emptySet(),
+            draftTransactionDao = mock(),
+            transactionDao = mock(),
+            database = mock(),
+        )
 
         assertThrows(DuplicateDocumentException::class.java) {
             runBlocking { repository.ingestFile(uri, context) }

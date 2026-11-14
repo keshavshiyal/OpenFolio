@@ -3,8 +3,17 @@ package com.openfolio.core.data.repository
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import androidx.room.withTransaction
+import com.openfolio.core.data.local.OpenFolioDatabase
+import com.openfolio.core.data.local.Transaction
+import com.openfolio.core.data.local.TransactionStatus
+import com.openfolio.core.data.local.TransactionType
 import com.openfolio.core.data.local.dao.DocumentDao
+import com.openfolio.core.data.local.dao.DraftTransactionDao
+import com.openfolio.core.data.local.dao.TransactionDao
 import com.openfolio.core.data.local.entity.DocumentEntity
+import com.openfolio.core.data.local.entity.DocumentStatus
+import com.openfolio.core.data.local.entity.DraftTransactionEntity
 import com.openfolio.core.domain.repository.DocumentRepository
 import com.openfolio.core.domain.repository.DuplicateDocumentException
 import com.openfolio.core.utils.DocumentParser
@@ -12,6 +21,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
+import java.math.BigDecimal
 import java.security.MessageDigest
 import java.util.UUID
 import javax.inject.Inject
@@ -22,6 +32,9 @@ import kotlinx.coroutines.withContext
 class DocumentRepositoryImpl @Inject constructor(
     private val documentDao: DocumentDao,
     private val documentParsers: Set<@JvmSuppressWildcards DocumentParser>,
+    private val draftTransactionDao: DraftTransactionDao,
+    private val transactionDao: TransactionDao,
+    private val database: OpenFolioDatabase,
 ) : DocumentRepository {
     override fun getAllDocuments(): Flow<List<DocumentEntity>> =
         documentDao.getAllDocuments()
@@ -29,6 +42,87 @@ class DocumentRepositoryImpl @Inject constructor(
     override suspend fun getDocumentById(id: String): DocumentEntity? =
         withContext(Dispatchers.IO) {
             documentDao.getDocumentById(id)
+        }
+
+    override fun getDraftTransactions(documentId: String) =
+        draftTransactionDao.getByDocumentId(documentId)
+
+    override suspend fun insertDraftTransactionsIfEmpty(
+        documentId: String,
+        drafts: List<DraftTransactionEntity>,
+    ) = withContext(Dispatchers.IO) {
+        database.withTransaction {
+            require(documentDao.getDocumentById(documentId) != null) {
+                "Document not found: $documentId"
+            }
+            if (draftTransactionDao.getByDocumentIdOnce(documentId).isEmpty()) {
+                require(drafts.all { it.documentId == documentId }) {
+                    "Draft transactions must belong to the requested document."
+                }
+                draftTransactionDao.insertAll(drafts)
+            }
+        }
+    }
+
+    override suspend fun setDraftAccepted(draftId: String, accepted: Boolean) {
+        withContext(Dispatchers.IO) {
+            draftTransactionDao.setAccepted(draftId, accepted)
+        }
+    }
+
+    override suspend fun acceptHighConfidenceDrafts(
+        documentId: String,
+        minimumConfidence: Int,
+    ) {
+        require(minimumConfidence in 0..100)
+        withContext(Dispatchers.IO) {
+            draftTransactionDao.acceptHighConfidence(documentId, minimumConfidence)
+        }
+    }
+
+    override suspend fun saveAcceptedDraftTransactions(documentId: String): Int =
+        withContext(Dispatchers.IO) {
+            database.withTransaction {
+                val document = requireNotNull(documentDao.getDocumentById(documentId)) {
+                    "Document not found: $documentId"
+                }
+                if (document.status == DocumentStatus.COMPLETED.name) return@withTransaction 0
+
+                val acceptedDrafts = draftTransactionDao
+                    .getByDocumentIdOnce(documentId)
+                    .filter(DraftTransactionEntity::isAccepted)
+                require(acceptedDrafts.isNotEmpty()) {
+                    "Accept at least one transaction before saving."
+                }
+                val confirmedTransactions = acceptedDrafts.map { draft ->
+                    val quantity = BigDecimal(draft.quantity)
+                    val price = BigDecimal(draft.price)
+                    Transaction(
+                        id = draft.id,
+                        assetId = null,
+                        type = TransactionType.valueOf(draft.transactionType),
+                        tradeDate = document.importDate,
+                        settlementDate = null,
+                        quantity = quantity,
+                        grossAmount = quantity.multiply(price),
+                        fees = BigDecimal.ZERO,
+                        taxes = BigDecimal.ZERO,
+                        netAmount = BigDecimal(draft.netAmount),
+                        currency = "INR",
+                        fingerprint = draft.id,
+                        documentId = document.id,
+                        sourcePage = null,
+                        confidenceScore = draft.confidence / 100f,
+                        status = TransactionStatus.CONFIRMED,
+                        isManual = false,
+                        fxRate = null,
+                        baseCurrencyAmount = null,
+                    )
+                }
+                transactionDao.insertAll(confirmedTransactions)
+                documentDao.updateStatus(documentId, DocumentStatus.COMPLETED.name)
+                acceptedDrafts.size
+            }
         }
 
     override suspend fun ingestFile(uri: Uri, context: Context): DocumentEntity =

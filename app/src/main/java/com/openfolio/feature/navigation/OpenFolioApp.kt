@@ -27,6 +27,7 @@ import androidx.navigation.navArgument
 import com.openfolio.core.ui.theme.LocalOpenFolioColors
 import com.openfolio.feature.home.HomeViewModel
 import com.openfolio.feature.inbox.InboxViewModel
+import com.openfolio.feature.review.ReviewActionState
 import com.openfolio.feature.screens.EmptyScreen
 import com.openfolio.feature.screens.HomeScreen
 import com.openfolio.feature.screens.InboxScreen
@@ -47,6 +48,8 @@ fun OpenFolioApp(
     val ingestionState by homeViewModel.ingestionState.collectAsStateWithLifecycle()
     val inboxDocuments by inboxViewModel.documents.collectAsStateWithLifecycle()
     val reviewUiState by reviewViewModel.uiState.collectAsStateWithLifecycle()
+    val reviewDrafts by reviewViewModel.drafts.collectAsStateWithLifecycle()
+    val reviewActionState by reviewViewModel.actionState.collectAsStateWithLifecycle()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
 
@@ -153,12 +156,20 @@ fun OpenFolioApp(
                 LaunchedEffect(documentId) {
                     reviewViewModel.loadDocument(documentId)
                 }
+                LaunchedEffect(reviewActionState) {
+                    if (reviewActionState is ReviewActionState.Saved) {
+                        navController.popBackStack()
+                    }
+                }
                 ReviewScreen(
                     uiState = reviewUiState,
+                    drafts = reviewDrafts,
+                    actionState = reviewActionState,
                     onBack = { navController.popBackStack() },
                     onSkip = { navController.popBackStack() },
-                    onReject = { navController.popBackStack() },
-                    onAccept = { navController.popBackStack() },
+                    onAcceptAllHighConfidence = reviewViewModel::acceptAllHighConfidence,
+                    onSetDraftAccepted = reviewViewModel::setDraftAccepted,
+                    onSaveConfirmed = reviewViewModel::saveConfirmed,
                 )
             }
             composable(AppDestination.Settings.route) {

@@ -3,6 +3,7 @@ package com.openfolio.feature.home
 import android.content.Context
 import android.net.Uri
 import com.openfolio.core.data.local.entity.DocumentEntity
+import com.openfolio.core.data.local.entity.DraftTransactionEntity
 import com.openfolio.core.domain.repository.DocumentRepository
 import com.openfolio.core.domain.repository.DuplicateDocumentException
 import kotlinx.coroutines.Dispatchers
@@ -99,6 +100,24 @@ class HomeViewModelTest {
         override fun getAllDocuments(): Flow<List<DocumentEntity>> = flowOf(emptyList())
 
         override suspend fun getDocumentById(id: String): DocumentEntity? = null
+
+        override fun getDraftTransactions(
+            documentId: String,
+        ): Flow<List<DraftTransactionEntity>> = flowOf(emptyList())
+
+        override suspend fun insertDraftTransactionsIfEmpty(
+            documentId: String,
+            drafts: List<DraftTransactionEntity>,
+        ) = Unit
+
+        override suspend fun setDraftAccepted(draftId: String, accepted: Boolean) = Unit
+
+        override suspend fun acceptHighConfidenceDrafts(
+            documentId: String,
+            minimumConfidence: Int,
+        ) = Unit
+
+        override suspend fun saveAcceptedDraftTransactions(documentId: String): Int = 0
 
         override suspend fun ingestFile(
             uri: Uri,

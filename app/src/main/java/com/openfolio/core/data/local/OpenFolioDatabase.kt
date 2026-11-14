@@ -6,7 +6,10 @@ import androidx.room.TypeConverters
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.openfolio.core.data.local.dao.DocumentDao
+import com.openfolio.core.data.local.dao.DraftTransactionDao
+import com.openfolio.core.data.local.dao.TransactionDao
 import com.openfolio.core.data.local.entity.DocumentEntity
+import com.openfolio.core.data.local.entity.DraftTransactionEntity
 
 @Database(
     entities = [
@@ -14,9 +17,10 @@ import com.openfolio.core.data.local.entity.DocumentEntity
         AppMetadataEntity::class,
         Asset::class,
         DocumentEntity::class,
+        DraftTransactionEntity::class,
         Transaction::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = false,
 )
 @TypeConverters(LedgerConverters::class)
@@ -24,6 +28,10 @@ abstract class OpenFolioDatabase : RoomDatabase() {
     abstract fun appMetadataDao(): AppMetadataDao
 
     abstract fun documentDao(): DocumentDao
+
+    abstract fun draftTransactionDao(): DraftTransactionDao
+
+    abstract fun transactionDao(): TransactionDao
 
     companion object {
         val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -112,6 +120,33 @@ abstract class OpenFolioDatabase : RoomDatabase() {
         val MIGRATION_3_4 = object : Migration(3, 4) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE `documents` ADD COLUMN `extractedText` TEXT")
+            }
+        }
+
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `draft_transactions` (
+                        `id` TEXT NOT NULL,
+                        `documentId` TEXT NOT NULL,
+                        `assetName` TEXT NOT NULL,
+                        `transactionType` TEXT NOT NULL,
+                        `quantity` TEXT NOT NULL,
+                        `price` TEXT NOT NULL,
+                        `netAmount` TEXT NOT NULL,
+                        `confidence` INTEGER NOT NULL,
+                        `isAccepted` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`),
+                        FOREIGN KEY(`documentId`) REFERENCES `documents`(`id`)
+                            ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_draft_transactions_documentId` " +
+                        "ON `draft_transactions` (`documentId`)",
+                )
             }
         }
     }

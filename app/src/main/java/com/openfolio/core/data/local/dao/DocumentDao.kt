@@ -20,4 +20,7 @@ interface DocumentDao {
 
     @Query("SELECT * FROM documents WHERE id = :id LIMIT 1")
     suspend fun getDocumentById(id: String): DocumentEntity?
+
+    @Query("UPDATE documents SET status = :status WHERE id = :id")
+    suspend fun updateStatus(id: String, status: String)
 }
