@@ -5,20 +5,25 @@ import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.openfolio.core.data.local.dao.DocumentDao
+import com.openfolio.core.data.local.entity.DocumentEntity
 
 @Database(
     entities = [
         Account::class,
         AppMetadataEntity::class,
         Asset::class,
+        DocumentEntity::class,
         Transaction::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 @TypeConverters(LedgerConverters::class)
 abstract class OpenFolioDatabase : RoomDatabase() {
     abstract fun appMetadataDao(): AppMetadataDao
+
+    abstract fun documentDao(): DocumentDao
 
     companion object {
         val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -77,6 +82,29 @@ abstract class OpenFolioDatabase : RoomDatabase() {
                         PRIMARY KEY(`id`)
                     )
                     """.trimIndent(),
+                )
+            }
+
+        }
+
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `documents` (
+                        `id` TEXT NOT NULL,
+                        `fileName` TEXT NOT NULL,
+                        `localPath` TEXT NOT NULL,
+                        `fileHash` TEXT NOT NULL,
+                        `fileSize` INTEGER NOT NULL,
+                        `importDate` INTEGER NOT NULL,
+                        `status` TEXT NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_documents_fileHash` ON `documents` (`fileHash`)",
                 )
             }
         }

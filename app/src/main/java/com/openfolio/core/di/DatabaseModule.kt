@@ -5,6 +5,7 @@ import androidx.room.Room
 import com.openfolio.core.data.local.AppMetadataDao
 import com.openfolio.core.data.local.DatabasePassphraseProvider
 import com.openfolio.core.data.local.OpenFolioDatabase
+import com.openfolio.core.data.local.dao.DocumentDao
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -29,7 +30,7 @@ object DatabaseModule {
             OpenFolioDatabase::class.java,
             "openfolio.db",
         )
-            .addMigrations(OpenFolioDatabase.MIGRATION_1_2)
+            .addMigrations(OpenFolioDatabase.MIGRATION_1_2, OpenFolioDatabase.MIGRATION_2_3)
             .openHelperFactory(SupportFactory(passphraseProvider.getPassphrase()))
             .build()
     }
@@ -37,4 +38,8 @@ object DatabaseModule {
     @Provides
     fun provideAppMetadataDao(database: OpenFolioDatabase): AppMetadataDao =
         database.appMetadataDao()
+
+    @Provides
+    fun provideDocumentDao(database: OpenFolioDatabase): DocumentDao =
+        database.documentDao()
 }

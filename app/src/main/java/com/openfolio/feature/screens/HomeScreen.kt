@@ -1,5 +1,8 @@
 package com.openfolio.feature.screens
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
@@ -34,11 +37,16 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -60,6 +68,7 @@ import com.openfolio.feature.home.ActivityIcon
 import com.openfolio.feature.home.AllocationColor
 import com.openfolio.feature.home.AssetAllocation
 import com.openfolio.feature.home.HomeUiState
+import com.openfolio.feature.home.IngestionState
 import com.openfolio.feature.home.RecentActivity
 import java.math.BigDecimal
 
@@ -67,15 +76,38 @@ import java.math.BigDecimal
 @Composable
 fun HomeScreen(
     uiState: HomeUiState,
+    ingestionState: IngestionState,
     onToggleValues: () -> Unit,
     onSelectPeriod: (String) -> Unit,
-    onImport: () -> Unit,
+    onImport: (Uri) -> Unit,
+    onImportSuccess: () -> Unit,
+    onIngestionHandled: () -> Unit,
     onSettings: () -> Unit,
 ) {
     val colors = LocalOpenFolioColors.current
+    val snackbarHostState = remember { SnackbarHostState() }
+    val documentPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+        onResult = { uri -> uri?.let(onImport) },
+    )
+
+    LaunchedEffect(ingestionState) {
+        when (val state = ingestionState) {
+            is IngestionState.Error -> {
+                snackbarHostState.showSnackbar(state.message)
+                onIngestionHandled()
+            }
+            is IngestionState.Success -> {
+                onImportSuccess()
+                onIngestionHandled()
+            }
+            IngestionState.Idle, IngestionState.Loading -> Unit
+        }
+    }
 
     Scaffold(
         containerColor = colors.background,
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text("OpenFolio") },
@@ -106,11 +138,28 @@ fun HomeScreen(
         },
         floatingActionButton = {
             ExtendedFloatingActionButton(
-                onClick = onImport,
-                icon = { Icon(Icons.Filled.Add, contentDescription = null) },
-                text = { Text("Import") },
+                onClick = {
+                    if (ingestionState != IngestionState.Loading) {
+                        documentPicker.launch(DOCUMENT_MIME_TYPES)
+                    }
+                },
+                icon = {
+                    if (ingestionState == IngestionState.Loading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            color = colors.onAccent,
+                            strokeWidth = 2.dp,
+                        )
+                    } else {
+                        Icon(Icons.Filled.Add, contentDescription = null)
+                    }
+                },
+                text = {
+                    Text(if (ingestionState == IngestionState.Loading) "Importing" else "Import")
+                },
                 containerColor = colors.brand,
                 contentColor = colors.onAccent,
+                expanded = true,
             )
         },
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
@@ -156,6 +205,13 @@ fun HomeScreen(
                 RecentActivityRow(activity = activity, showValues = uiState.showValues)
             }
         }
+
+        private val DOCUMENT_MIME_TYPES = arrayOf(
+            "application/pdf",
+            "text/csv",
+            "application/vnd.ms-excel",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
     }
 }
 

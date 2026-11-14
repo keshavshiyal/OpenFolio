@@ -23,14 +23,18 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.openfolio.core.ui.theme.LocalOpenFolioColors
 import com.openfolio.feature.home.HomeViewModel
+import com.openfolio.feature.inbox.InboxViewModel
 import com.openfolio.feature.screens.EmptyScreen
 import com.openfolio.feature.screens.HomeScreen
+import com.openfolio.feature.screens.InboxScreen
 
 @Composable
-fun OpenFolioApp(homeViewModel: HomeViewModel) {
+fun OpenFolioApp(homeViewModel: HomeViewModel, inboxViewModel: InboxViewModel) {
     val navController = rememberNavController()
     val colors = LocalOpenFolioColors.current
     val homeUiState by homeViewModel.uiState.collectAsStateWithLifecycle()
+    val ingestionState by homeViewModel.ingestionState.collectAsStateWithLifecycle()
+    val inboxDocuments by inboxViewModel.documents.collectAsStateWithLifecycle()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
 
@@ -90,9 +94,16 @@ fun OpenFolioApp(homeViewModel: HomeViewModel) {
             composable(AppDestination.Home.route) {
                 HomeScreen(
                     uiState = homeUiState,
+                    ingestionState = ingestionState,
                     onToggleValues = homeViewModel::toggleValuesVisibility,
                     onSelectPeriod = homeViewModel::selectPeriod,
-                    onImport = { navController.navigate(AppDestination.Inbox.route) },
+                    onImport = homeViewModel::ingestFile,
+                    onImportSuccess = {
+                        navController.navigate(AppDestination.Inbox.route) {
+                            launchSingleTop = true
+                        }
+                    },
+                    onIngestionHandled = homeViewModel::clearIngestionState,
                     onSettings = { navController.navigate(AppDestination.Settings.route) },
                 )
             }
@@ -113,12 +124,7 @@ fun OpenFolioApp(homeViewModel: HomeViewModel) {
                 )
             }
             composable(AppDestination.Inbox.route) {
-                EmptyScreen(
-                    destination = AppDestination.Inbox,
-                    message = "No documents to review. Import a statement to get started.",
-                    actionLabel = "View assets",
-                    onAction = { navController.navigate(AppDestination.Assets.route) },
-                )
+                InboxScreen(documents = inboxDocuments)
             }
             composable(AppDestination.Settings.route) {
                 EmptyScreen(
