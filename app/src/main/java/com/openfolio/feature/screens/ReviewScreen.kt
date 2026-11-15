@@ -340,13 +340,15 @@ private fun ColumnMappingForm(
 
     val headerRowNum = headerRowText.toIntOrNull()
     val isValidHeaderRow = headerRowNum != null && headerRowNum >= 1
-    val requiredColumns = listOf(assetColumn, typeColumn, quantityColumn, priceColumn, amountColumn)
+    val mappedColumns = listOf(assetColumn, typeColumn, quantityColumn, priceColumn, amountColumn, dateColumn)
+        .filter(String::isNotBlank)
     val canProcess = !isProcessing &&
         isValidHeaderRow &&
         headers.isNotEmpty() &&
         brokerName.isNotBlank() &&
-        requiredColumns.all(String::isNotBlank) &&
-        requiredColumns.toSet().size == requiredColumns.size
+        assetColumn.isNotBlank() &&
+        (quantityColumn.isNotBlank() || amountColumn.isNotBlank()) &&
+        mappedColumns.toSet().size == mappedColumns.size
 
     LazyColumn(
         modifier = modifier,
@@ -408,13 +410,7 @@ private fun ColumnMappingForm(
             MappingColumnDropdown("Amount", headers, amountColumn) { amountColumn = it }
         }
         item {
-            MappingColumnDropdown(
-                label = "Date (optional)",
-                headers = headers,
-                selected = dateColumn,
-                allowUnmapped = true,
-                onSelect = { dateColumn = it },
-            )
+            MappingColumnDropdown("Date", headers, dateColumn) { dateColumn = it }
         }
         item {
             OutlinedTextField(
@@ -472,7 +468,7 @@ private fun MappingColumnDropdown(
     label: String,
     headers: List<String>,
     selected: String,
-    allowUnmapped: Boolean = false,
+    allowUnmapped: Boolean = true,
     onSelect: (String) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -481,7 +477,7 @@ private fun MappingColumnDropdown(
         onExpandedChange = { expanded = it },
     ) {
         OutlinedTextField(
-            value = selected.ifBlank { "Select a column" },
+            value = if (selected.isBlank()) "-- No map --" else selected,
             onValueChange = {},
             readOnly = true,
             label = { Text(label) },
@@ -499,7 +495,7 @@ private fun MappingColumnDropdown(
         ) {
             if (allowUnmapped) {
                 DropdownMenuItem(
-                    text = { Text("Not mapped") },
+                    text = { Text("-- No map --") },
                     onClick = {
                         onSelect("")
                         expanded = false

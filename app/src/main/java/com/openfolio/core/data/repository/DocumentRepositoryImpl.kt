@@ -28,6 +28,7 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.math.BigDecimal
+import java.math.RoundingMode
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
@@ -357,37 +358,57 @@ class DocumentRepositoryImpl @Inject constructor(
         }
     }
 
-    private fun createMappedDrafts(
+    internal fun createMappedDrafts(
         document: DocumentEntity,
         table: StructuredTable,
         mapping: ColumnMappingEntity,
     ): List<DraftTransactionEntity> {
         require(mapping.brokerName.isNotBlank()) { "Enter a name for this column mapping." }
-        val columns = listOf(
+        val mappedColumns = listOf(
             mapping.assetColumn,
             mapping.typeColumn,
             mapping.quantityColumn,
             mapping.priceColumn,
             mapping.amountColumn,
-        )
-        require(columns.all { it in table.headers }) {
+            mapping.dateColumn,
+        ).filter(String::isNotBlank)
+
+        require(mappedColumns.all { it in table.headers }) {
             "The saved mapping does not match this file's headers."
         }
-        require(mapping.dateColumn.isBlank() || mapping.dateColumn in table.headers) {
-            "The selected date column is not present in this file."
-        }
-        val indexes = columns.map(table.headers::indexOf)
+
+        val assetIndex = mapping.assetColumn.takeIf(String::isNotBlank)?.let(table.headers::indexOf)
+        val typeIndex = mapping.typeColumn.takeIf(String::isNotBlank)?.let(table.headers::indexOf)
+        val quantityIndex = mapping.quantityColumn.takeIf(String::isNotBlank)?.let(table.headers::indexOf)
+        val priceIndex = mapping.priceColumn.takeIf(String::isNotBlank)?.let(table.headers::indexOf)
+        val amountIndex = mapping.amountColumn.takeIf(String::isNotBlank)?.let(table.headers::indexOf)
         val dateIndex = mapping.dateColumn.takeIf(String::isNotBlank)?.let(table.headers::indexOf)
 
         return table.rows.mapNotNull { row ->
             if (row.all(String::isBlank)) return@mapNotNull null
-            val values = indexes.map { index -> row.getOrNull(index).orEmpty().trim() }
-            val assetName = values[0]
+
+            val assetName = assetIndex?.let { row.getOrNull(it) }?.trim().orEmpty().ifBlank {
+                document.fileName.substringBeforeLast('.')
+            }
             require(assetName.isNotBlank()) { "A transaction row has no asset name." }
-            val type = normalizeTransactionType(values[1])
-            val quantity = normalizeNumber(values[2], "quantity")
-            val price = normalizeNumber(values[3], "price")
-            val amount = normalizeNumber(values[4], "amount")
+
+            val rawType = typeIndex?.let { row.getOrNull(it) }?.trim().orEmpty()
+            val type = if (rawType.isNotBlank()) normalizeTransactionType(rawType) else "BUY"
+
+            val rawQty = quantityIndex?.let { row.getOrNull(it) }?.trim().orEmpty()
+            val rawPrice = priceIndex?.let { row.getOrNull(it) }?.trim().orEmpty()
+            val rawAmount = amountIndex?.let { row.getOrNull(it) }?.trim().orEmpty()
+
+            val normalizedQty = if (rawQty.isNotBlank()) normalizeNumber(rawQty, "quantity") else null
+            val normalizedPrice = if (rawPrice.isNotBlank()) normalizeNumber(rawPrice, "price") else null
+            val normalizedAmount = if (rawAmount.isNotBlank()) normalizeNumber(rawAmount, "amount") else null
+
+            val (quantity, price, amount) = computeMissingFinancials(
+                qty = normalizedQty,
+                price = normalizedPrice,
+                amount = normalizedAmount,
+            )
+
             DraftTransactionEntity(
                 documentId = document.id,
                 assetName = assetName,
@@ -403,11 +424,59 @@ class DocumentRepositoryImpl @Inject constructor(
         }
     }
 
+    private fun computeMissingFinancials(
+        qty: String?,
+        price: String?,
+        amount: String?,
+    ): Triple<String, String, String> {
+        val qtyBd = qty?.toBigDecimalOrNull()
+        val priceBd = price?.toBigDecimalOrNull()
+        val amountBd = amount?.toBigDecimalOrNull()
+
+        return when {
+            qtyBd != null && priceBd != null && amountBd != null -> {
+                Triple(qtyBd.toPlainString(), priceBd.toPlainString(), amountBd.toPlainString())
+            }
+            qtyBd != null && priceBd != null -> {
+                val calculatedAmount = qtyBd.multiply(priceBd).stripTrailingZeros()
+                Triple(qtyBd.toPlainString(), priceBd.toPlainString(), calculatedAmount.toPlainString())
+            }
+            qtyBd != null && amountBd != null -> {
+                val calculatedPrice = if (qtyBd.compareTo(BigDecimal.ZERO) != 0) {
+                    amountBd.divide(qtyBd, 4, RoundingMode.HALF_UP).stripTrailingZeros()
+                } else {
+                    BigDecimal.ZERO
+                }
+                Triple(qtyBd.toPlainString(), calculatedPrice.toPlainString(), amountBd.toPlainString())
+            }
+            priceBd != null && amountBd != null -> {
+                val calculatedQty = if (priceBd.compareTo(BigDecimal.ZERO) != 0) {
+                    amountBd.divide(priceBd, 4, RoundingMode.HALF_UP).stripTrailingZeros()
+                } else {
+                    BigDecimal.ONE
+                }
+                Triple(calculatedQty.toPlainString(), priceBd.toPlainString(), amountBd.toPlainString())
+            }
+            qtyBd != null -> {
+                Triple(qtyBd.toPlainString(), "0", "0")
+            }
+            amountBd != null -> {
+                Triple("1", amountBd.toPlainString(), amountBd.toPlainString())
+            }
+            priceBd != null -> {
+                Triple("1", priceBd.toPlainString(), priceBd.toPlainString())
+            }
+            else -> {
+                Triple("1", "0", "0")
+            }
+        }
+    }
+
     private fun ColumnMappingEntity.matchesHeaders(headers: List<String>): Boolean {
         val headerSet = headers.toSet()
-        return listOf(assetColumn, typeColumn, quantityColumn, priceColumn, amountColumn)
-            .all { it in headerSet } &&
-            (dateColumn.isBlank() || dateColumn in headerSet)
+        val mapped = listOf(assetColumn, typeColumn, quantityColumn, priceColumn, amountColumn, dateColumn)
+            .filter(String::isNotBlank)
+        return mapped.isNotEmpty() && mapped.all { it in headerSet }
     }
 
     private fun normalizeTransactionType(value: String): String {

@@ -9,10 +9,12 @@ import com.openfolio.core.data.local.dao.DocumentDao
 import com.openfolio.core.data.local.dao.ColumnMappingDao
 import com.openfolio.core.data.local.dao.DraftTransactionDao
 import com.openfolio.core.data.local.dao.TransactionDao
+import com.openfolio.core.data.local.entity.ColumnMappingEntity
 import com.openfolio.core.data.local.entity.DocumentEntity
 import com.openfolio.core.data.local.OpenFolioDatabase
 import com.openfolio.core.utils.DocumentTextExtractor
 import com.openfolio.core.utils.StructuredFileParser
+import com.openfolio.core.utils.StructuredTable
 import com.openfolio.core.domain.repository.DuplicateDocumentException
 import java.io.ByteArrayInputStream
 import kotlinx.coroutines.runBlocking
@@ -129,4 +131,119 @@ class DocumentRepositoryImplTest {
             verify(dao, never()).insert(org.mockito.kotlin.any())
         }
     }
+
+    @Test
+    fun createMappedDraftsComputesMissingAmountWhenUnmapped() {
+        val repository = createTestRepository()
+        val document = DocumentEntity(
+            id = "doc-1",
+            fileName = "statement.csv",
+            localPath = "/tmp/statement.csv",
+            fileHash = "hash1",
+            fileSize = 100L,
+            importDate = 1000L,
+        )
+        val table = StructuredTable(
+            headers = listOf("Symbol", "Type", "Qty", "Rate"),
+            rows = listOf(listOf("RELIANCE", "BUY", "10", "2500.00")),
+        )
+        val mapping = ColumnMappingEntity(
+            brokerName = "TestBroker",
+            assetColumn = "Symbol",
+            typeColumn = "Type",
+            quantityColumn = "Qty",
+            priceColumn = "Rate",
+            amountColumn = "",
+            dateColumn = "",
+        )
+
+        val drafts = repository.createMappedDrafts(document, table, mapping)
+
+        assertEquals(1, drafts.size)
+        val draft = drafts.single()
+        assertEquals("RELIANCE", draft.assetName)
+        assertEquals("BUY", draft.transactionType)
+        assertEquals("10", draft.quantity)
+        assertEquals("2500.00", draft.price)
+        assertEquals("25000", draft.netAmount)
+    }
+
+    @Test
+    fun createMappedDraftsComputesMissingPriceWhenUnmapped() {
+        val repository = createTestRepository()
+        val document = DocumentEntity(
+            id = "doc-1",
+            fileName = "statement.csv",
+            localPath = "/tmp/statement.csv",
+            fileHash = "hash1",
+            fileSize = 100L,
+            importDate = 1000L,
+        )
+        val table = StructuredTable(
+            headers = listOf("Symbol", "Type", "Qty", "Total"),
+            rows = listOf(listOf("TCS", "BUY", "10", "35000.00")),
+        )
+        val mapping = ColumnMappingEntity(
+            brokerName = "TestBroker",
+            assetColumn = "Symbol",
+            typeColumn = "Type",
+            quantityColumn = "Qty",
+            priceColumn = "",
+            amountColumn = "Total",
+            dateColumn = "",
+        )
+
+        val drafts = repository.createMappedDrafts(document, table, mapping)
+
+        assertEquals(1, drafts.size)
+        val draft = drafts.single()
+        assertEquals("TCS", draft.assetName)
+        assertEquals("10", draft.quantity)
+        assertEquals("3500", draft.price)
+        assertEquals("35000.00", draft.netAmount)
+    }
+
+    @Test
+    fun createMappedDraftsDefaultsUnmappedTypeToBuy() {
+        val repository = createTestRepository()
+        val document = DocumentEntity(
+            id = "doc-1",
+            fileName = "statement.csv",
+            localPath = "/tmp/statement.csv",
+            fileHash = "hash1",
+            fileSize = 100L,
+            importDate = 1000L,
+        )
+        val table = StructuredTable(
+            headers = listOf("Symbol", "Qty", "Rate", "Total"),
+            rows = listOf(listOf("INFY", "5", "1400.00", "7000.00")),
+        )
+        val mapping = ColumnMappingEntity(
+            brokerName = "TestBroker",
+            assetColumn = "Symbol",
+            typeColumn = "",
+            quantityColumn = "Qty",
+            priceColumn = "Rate",
+            amountColumn = "Total",
+            dateColumn = "",
+        )
+
+        val drafts = repository.createMappedDrafts(document, table, mapping)
+
+        assertEquals(1, drafts.size)
+        val draft = drafts.single()
+        assertEquals("INFY", draft.assetName)
+        assertEquals("BUY", draft.transactionType)
+    }
+
+    private fun createTestRepository() = DocumentRepositoryImpl(
+        documentDao = mock<DocumentDao>(),
+        columnMappingDao = mock<ColumnMappingDao>(),
+        draftTransactionDao = mock<DraftTransactionDao>(),
+        transactionDao = mock<TransactionDao>(),
+        database = mock<OpenFolioDatabase>(),
+        documentTextExtractor = mock<DocumentTextExtractor>(),
+        structuredFileParser = mock<StructuredFileParser>(),
+        applicationScope = mock<CoroutineScope>(),
+    )
 }
