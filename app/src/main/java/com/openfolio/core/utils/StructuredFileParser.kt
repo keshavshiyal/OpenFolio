@@ -39,12 +39,11 @@ class StructuredFileParser @Inject constructor(
 }
 
 internal fun uniqueHeaders(rawHeaders: List<String>): List<String> {
+    require(rawHeaders.isNotEmpty()) { "The selected header row has no columns." }
     val trimmedHeaders = rawHeaders.map { it.removePrefix("\uFEFF").trim() }
-    val lastNonBlankIndex = trimmedHeaders.indexOfLast(String::isNotBlank)
-    require(lastNonBlankIndex >= 0) { "The selected header row has no columns." }
-    val activeHeaders = trimmedHeaders.take(lastNonBlankIndex + 1)
+    require(trimmedHeaders.any(String::isNotBlank)) { "The selected header row has no columns." }
     val seen = mutableMapOf<String, Int>()
-    return activeHeaders.mapIndexed { index, raw ->
+    return trimmedHeaders.mapIndexed { index, raw ->
         val base = raw.ifEmpty { "Column ${index + 1}" }
         val occurrence = (seen[base] ?: 0) + 1
         seen[base] = occurrence
