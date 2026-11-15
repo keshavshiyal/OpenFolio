@@ -162,6 +162,25 @@ class ReviewViewModelTest {
     }
 
     @Test
+    fun clearsHeadersWhenHeaderRowFails() {
+        repository.document = document.copy(status = DocumentStatus.READY_FOR_MAPPING.name)
+        viewModel.loadDocument(document.id)
+
+        assertEquals(
+            listOf("Symbol", "Type", "Quantity", "Price", "Amount", "Date"),
+            viewModel.structuredHeaders.value,
+        )
+
+        viewModel.loadHeadersForHeaderRow(99)
+
+        assertEquals(emptyList<String>(), viewModel.structuredHeaders.value)
+        assertEquals(
+            ReviewActionState.Error("The specified header row does not exist in this file."),
+            viewModel.actionState.value,
+        )
+    }
+
+    @Test
     fun exposesMissingDocumentState() {
         repository.document = null
         viewModel.loadDocument("missing")
@@ -243,10 +262,10 @@ class ReviewViewModelTest {
             documentId: String,
             headerRowNumber: Int,
         ): List<String> =
-            if (headerRowNumber == 3) {
-                listOf("H3_Symbol", "H3_Type", "H3_Quantity", "H3_Price", "H3_Amount", "H3_Date")
-            } else {
-                listOf("Symbol", "Type", "Quantity", "Price", "Amount", "Date")
+            when (headerRowNumber) {
+                3 -> listOf("H3_Symbol", "H3_Type", "H3_Quantity", "H3_Price", "H3_Amount", "H3_Date")
+                99 -> throw IllegalArgumentException("The specified header row does not exist in this file.")
+                else -> listOf("Symbol", "Type", "Quantity", "Price", "Amount", "Date")
             }
 
         override suspend fun processStructuredDocument(

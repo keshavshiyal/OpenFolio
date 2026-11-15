@@ -102,8 +102,13 @@ class ReviewViewModel @Inject constructor(
         if (headerRowNumber < 1) return
         viewModelScope.launch {
             runAction(ReviewActionState.LoadingMapping) {
-                _structuredHeaders.value =
-                    documentRepository.getStructuredFileHeaders(document.id, headerRowNumber)
+                try {
+                    _structuredHeaders.value =
+                        documentRepository.getStructuredFileHeaders(document.id, headerRowNumber)
+                } catch (throwable: Throwable) {
+                    _structuredHeaders.value = emptyList()
+                    throw throwable
+                }
             }
         }
     }

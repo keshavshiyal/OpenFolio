@@ -330,7 +330,7 @@ private fun ColumnMappingForm(
 ) {
     val colors = LocalOpenFolioColors.current
     var headerRowText by remember { mutableStateOf("1") }
-    var brokerName by remember(headers) { mutableStateOf("") }
+    var brokerName by remember { mutableStateOf("") }
     var assetColumn by remember(headers) { mutableStateOf(suggestHeader(headers, "asset", "symbol", "security", "name")) }
     var typeColumn by remember(headers) { mutableStateOf(suggestHeader(headers, "type", "side", "action")) }
     var quantityColumn by remember(headers) { mutableStateOf(suggestHeader(headers, "quantity", "qty", "units")) }
