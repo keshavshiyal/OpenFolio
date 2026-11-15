@@ -9,9 +9,11 @@ data class StructuredTable(
 )
 
 class StructuredFileParser @Inject constructor(
-    private val csvExtractor: CsvExtractor = CsvExtractor(),
-    private val xlsxExtractor: XlsxExtractor = XlsxExtractor(),
+    private val csvExtractor: CsvExtractor,
+    private val xlsxExtractor: XlsxExtractor,
 ) {
+    constructor() : this(CsvExtractor(), XlsxExtractor())
+
     fun read(file: File, headerRowNumber: Int = 1): StructuredTable {
         require(headerRowNumber >= 1) { "Header row number must be at least 1." }
         val headerRowIndex = headerRowNumber - 1

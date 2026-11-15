@@ -83,7 +83,10 @@ class InboxViewModelTest {
 
         override suspend fun processDocumentWithMockAi(documentId: String) = Unit
 
-        override suspend fun getStructuredFileHeaders(documentId: String): List<String> = emptyList()
+        override suspend fun getStructuredFileHeaders(
+            documentId: String,
+            headerRowNumber: Int,
+        ): List<String> = emptyList()
 
         override suspend fun processStructuredDocument(
             documentId: String,
