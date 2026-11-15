@@ -2,11 +2,12 @@ package com.openfolio.feature.review
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.openfolio.core.data.local.entity.ColumnMappingEntity
 import com.openfolio.core.data.local.entity.DocumentEntity
 import com.openfolio.core.data.local.entity.DocumentStatus
-import com.openfolio.core.data.local.entity.ColumnMappingEntity
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
 import com.openfolio.core.domain.repository.DocumentRepository
+import com.openfolio.core.domain.repository.MissingApiKeyException
 import com.openfolio.core.domain.repository.SaveDraftTransactionsResult
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -83,7 +84,7 @@ class ReviewViewModel @Inject constructor(
     fun onProcessWithAi() {
         val document = (uiState.value as? ReviewUiState.Loaded)?.document ?: return
         if (_drafts.value.isNotEmpty() || _actionState.value == ReviewActionState.ProcessingAi) return
-        if (document.status != DocumentStatus.OCR_COMPLETE.name) {
+        if (document.status != DocumentStatus.OCR_COMPLETE.name && document.status != DocumentStatus.AI_COMPLETE.name) {
             _actionState.value = ReviewActionState.Error(
                 "Wait for local text extraction to finish before processing.",
             )
@@ -91,8 +92,20 @@ class ReviewViewModel @Inject constructor(
         }
         viewModelScope.launch {
             runAction(ReviewActionState.ProcessingAi) {
-                documentRepository.processDocumentWithMockAi(document.id)
+                documentRepository.processDocumentWithAi(document.id)
             }
+        }
+    }
+
+    fun dismissMissingApiKeyDialog() {
+        if (_actionState.value == ReviewActionState.MissingApiKey) {
+            _actionState.value = ReviewActionState.Idle
+        }
+    }
+
+    fun dismissError() {
+        if (_actionState.value is ReviewActionState.Error) {
+            _actionState.value = ReviewActionState.Idle
         }
     }
 
@@ -214,9 +227,11 @@ class ReviewViewModel @Inject constructor(
         } catch (exception: CancellationException) {
             _actionState.value = ReviewActionState.Idle
             throw exception
+        } catch (missingKey: MissingApiKeyException) {
+            _actionState.value = ReviewActionState.MissingApiKey
         } catch (throwable: Throwable) {
             _actionState.value = ReviewActionState.Error(
-                throwable.message ?: "Unable to complete this action.",
+                throwable.message ?: "AI extraction failed. Please try again or add manually.",
             )
         }
     }
@@ -236,6 +251,7 @@ sealed interface ReviewUiState {
 sealed interface ReviewActionState {
     data object Idle : ReviewActionState
     data object ProcessingAi : ReviewActionState
+    data object MissingApiKey : ReviewActionState
     data object LoadingMapping : ReviewActionState
     data object ProcessingMapping : ReviewActionState
     data object Saving : ReviewActionState

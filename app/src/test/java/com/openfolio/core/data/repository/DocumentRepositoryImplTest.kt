@@ -14,7 +14,12 @@ import com.openfolio.core.data.local.entity.DocumentEntity
 import com.openfolio.core.data.local.OpenFolioDatabase
 import com.openfolio.core.utils.DocumentTextExtractor
 import com.openfolio.core.utils.StructuredFileParser
+import com.openfolio.core.data.remote.ai.AiProvider
+import com.openfolio.core.data.repository.SettingsRepository
 import com.openfolio.core.utils.StructuredTable
+import com.openfolio.core.data.local.entity.DocumentStatus
+import com.openfolio.core.data.local.entity.DraftTransactionEntity
+import com.openfolio.core.domain.repository.MissingApiKeyException
 import com.openfolio.core.domain.repository.DuplicateDocumentException
 import java.io.ByteArrayInputStream
 import kotlinx.coroutines.runBlocking
@@ -121,6 +126,8 @@ class DocumentRepositoryImplTest {
             database = mock<OpenFolioDatabase>(),
             documentTextExtractor = mock<DocumentTextExtractor>(),
             structuredFileParser = mock<StructuredFileParser>(),
+            settingsRepository = mock<SettingsRepository>(),
+            aiProvider = mock<AiProvider>(),
             applicationScope = mock<CoroutineScope>(),
         )
 
@@ -236,6 +243,98 @@ class DocumentRepositoryImplTest {
         assertEquals("BUY", draft.transactionType)
     }
 
+    @Test
+    fun processDocumentWithAiThrowsWhenApiKeyMissing() {
+        runBlocking {
+            val dao = mock<DocumentDao>()
+            val settings = mock<SettingsRepository>()
+            val aiProvider = mock<AiProvider>()
+            whenever(settings.getGeminiApiKey()).thenReturn("")
+            whenever(dao.getDocumentById("doc-1")).thenReturn(
+                DocumentEntity(
+                    id = "doc-1",
+                    fileName = "statement.pdf",
+                    localPath = "/tmp/statement.pdf",
+                    fileHash = "hash1",
+                    fileSize = 100L,
+                    importDate = 1000L,
+                    status = DocumentStatus.OCR_COMPLETE.name,
+                    extractedText = "Sample statement text",
+                ),
+            )
+
+            val repository = DocumentRepositoryImpl(
+                documentDao = dao,
+                columnMappingDao = mock<ColumnMappingDao>(),
+                draftTransactionDao = mock<DraftTransactionDao>(),
+                transactionDao = mock<TransactionDao>(),
+                database = mock<OpenFolioDatabase>(),
+                documentTextExtractor = mock<DocumentTextExtractor>(),
+                structuredFileParser = mock<StructuredFileParser>(),
+                settingsRepository = settings,
+                aiProvider = aiProvider,
+                applicationScope = mock<CoroutineScope>(),
+            )
+
+            assertThrows(MissingApiKeyException::class.java) {
+                runBlocking { repository.processDocumentWithAi("doc-1") }
+            }
+        }
+    }
+
+    @Test
+    fun processDocumentWithAiChunksAndPersistsDrafts() {
+        runBlocking {
+            val dao = mock<DocumentDao>()
+            val draftsDao = mock<DraftTransactionDao>()
+            val settings = mock<SettingsRepository>()
+            val aiProvider = mock<AiProvider>()
+            whenever(settings.getGeminiApiKey()).thenReturn("test-api-key")
+            whenever(dao.getDocumentById("doc-1")).thenReturn(
+                DocumentEntity(
+                    id = "doc-1",
+                    fileName = "statement.pdf",
+                    localPath = "/tmp/statement.pdf",
+                    fileHash = "hash1",
+                    fileSize = 100L,
+                    importDate = 1000L,
+                    status = DocumentStatus.OCR_COMPLETE.name,
+                    extractedText = "Transaction statement text",
+                ),
+            )
+            val mockDraft = DraftTransactionEntity(
+                id = "draft-1",
+                documentId = "doc-1",
+                assetName = "TCS",
+                transactionType = "BUY",
+                quantity = "10",
+                price = "3500",
+                netAmount = "35000",
+                confidence = 90,
+            )
+            whenever(aiProvider.extractTransactions("Transaction statement text", "test-api-key", "doc-1"))
+                .thenReturn(Result.success(listOf(mockDraft)))
+
+            val repository = DocumentRepositoryImpl(
+                documentDao = dao,
+                columnMappingDao = mock<ColumnMappingDao>(),
+                draftTransactionDao = draftsDao,
+                transactionDao = mock<TransactionDao>(),
+                database = mock<OpenFolioDatabase>(),
+                documentTextExtractor = mock<DocumentTextExtractor>(),
+                structuredFileParser = mock<StructuredFileParser>(),
+                settingsRepository = settings,
+                aiProvider = aiProvider,
+                applicationScope = mock<CoroutineScope>(),
+            )
+
+            repository.processDocumentWithAi("doc-1")
+
+            verify(draftsDao).insertAll(listOf(mockDraft))
+            verify(dao).updateStatus("doc-1", DocumentStatus.AI_COMPLETE.name)
+        }
+    }
+
     private fun createTestRepository() = DocumentRepositoryImpl(
         documentDao = mock<DocumentDao>(),
         columnMappingDao = mock<ColumnMappingDao>(),
@@ -244,6 +343,8 @@ class DocumentRepositoryImplTest {
         database = mock<OpenFolioDatabase>(),
         documentTextExtractor = mock<DocumentTextExtractor>(),
         structuredFileParser = mock<StructuredFileParser>(),
+        settingsRepository = mock<SettingsRepository>(),
+        aiProvider = mock<AiProvider>(),
         applicationScope = mock<CoroutineScope>(),
     )
 }

@@ -36,6 +36,7 @@ import java.util.Locale
 fun InboxScreen(
     documents: List<DocumentEntity>,
     onDocumentClick: (String) -> Unit,
+    onProcessWithAiClick: ((String) -> Unit)? = null,
 ) {
     val colors = LocalOpenFolioColors.current
     val awaitingReview = documents.count { it.status != DocumentStatus.COMPLETED.name }
@@ -84,6 +85,7 @@ fun InboxScreen(
                 DocumentCard(
                     document = document,
                     onClick = { onDocumentClick(document.id) },
+                    onProcessWithAi = { (onProcessWithAiClick ?: onDocumentClick)(document.id) },
                 )
             }
         }
@@ -94,6 +96,7 @@ fun InboxScreen(
 fun DocumentCard(
     document: DocumentEntity,
     onClick: () -> Unit,
+    onProcessWithAi: (() -> Unit)? = null,
 ) {
     val colors = LocalOpenFolioColors.current
     val shape = RoundedCornerShape(12.dp)
@@ -141,7 +144,24 @@ fun DocumentCard(
                 )
             }
             Spacer(Modifier.width(10.dp))
-            DocumentStatusBadge(document.status)
+            if (document.status == DocumentStatus.OCR_COMPLETE.name) {
+                androidx.compose.material3.Button(
+                    onClick = { onProcessWithAi?.invoke() ?: onClick() },
+                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                        containerColor = colors.brand,
+                        contentColor = androidx.compose.ui.graphics.Color.White,
+                    ),
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                ) {
+                    Text(
+                        text = "Process with AI",
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+            } else {
+                DocumentStatusBadge(document.status)
+            }
         }
     }
 }

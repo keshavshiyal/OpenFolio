@@ -13,6 +13,7 @@ import com.openfolio.feature.home.HomeViewModel
 import com.openfolio.feature.inbox.InboxViewModel
 import com.openfolio.feature.navigation.OpenFolioApp
 import com.openfolio.feature.review.ReviewViewModel
+import com.openfolio.feature.settings.SettingsViewModel
 import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint
@@ -20,6 +21,7 @@ class MainActivity : ComponentActivity() {
     private val homeViewModel: HomeViewModel by viewModels()
     private val inboxViewModel: InboxViewModel by viewModels()
     private val reviewViewModel: ReviewViewModel by viewModels()
+    private val settingsViewModel: SettingsViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -27,7 +29,12 @@ class MainActivity : ComponentActivity() {
         setContent {
             OpenFolioTheme(dynamicColor = false) {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    OpenFolioApp(homeViewModel, inboxViewModel, reviewViewModel)
+                    OpenFolioApp(
+                        homeViewModel = homeViewModel,
+                        inboxViewModel = inboxViewModel,
+                        reviewViewModel = reviewViewModel,
+                        settingsViewModel = settingsViewModel,
+                    )
                 }
             }
         }

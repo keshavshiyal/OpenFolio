@@ -64,11 +64,14 @@ dependencies {
     implementation(libs.pdfbox.android)
     implementation(libs.mlkit.text.recognition)
     implementation(libs.opencsv)
+    implementation(libs.androidx.security.crypto)
+    implementation(libs.google.generativeai)
 
     ksp(libs.androidx.room.compiler)
     kapt(libs.hilt.android.compiler)
 
     testImplementation(libs.junit)
+    testImplementation(libs.json)
     testImplementation(libs.mockito.kotlin)
     testImplementation(libs.kotlinx.coroutines.test)
     androidTestImplementation(libs.androidx.junit)

@@ -33,6 +33,8 @@ interface DocumentRepository {
 
     suspend fun ingestFile(uri: Uri, context: Context): DocumentEntity
 
+    suspend fun processDocumentWithAi(documentId: String)
+
     suspend fun processDocumentWithMockAi(documentId: String)
 
     suspend fun getStructuredFileHeaders(

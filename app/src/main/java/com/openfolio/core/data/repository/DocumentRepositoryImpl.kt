@@ -42,6 +42,8 @@ import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import com.openfolio.core.data.remote.ai.AiProvider
+import com.openfolio.core.domain.repository.MissingApiKeyException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
@@ -55,6 +57,8 @@ class DocumentRepositoryImpl @Inject constructor(
     private val database: OpenFolioDatabase,
     private val documentTextExtractor: DocumentTextExtractor,
     private val structuredFileParser: StructuredFileParser,
+    private val settingsRepository: SettingsRepository,
+    private val aiProvider: AiProvider,
     @ApplicationScope private val applicationScope: CoroutineScope,
 ) : DocumentRepository {
     override fun getAllDocuments(): Flow<List<DocumentEntity>> =
@@ -197,6 +201,47 @@ class DocumentRepositoryImpl @Inject constructor(
             SaveDraftTransactionsResult(savedCount, duplicateCount)
         }
     }
+
+    override suspend fun processDocumentWithAi(documentId: String) =
+        withContext(Dispatchers.IO) {
+            val document = requireNotNull(documentDao.getDocumentById(documentId)) {
+                "Document not found: $documentId"
+            }
+            require(
+                document.status == DocumentStatus.OCR_COMPLETE.name ||
+                    document.status == DocumentStatus.AI_COMPLETE.name,
+            ) {
+                "Document text is not ready for AI processing."
+            }
+            val rawText = document.extractedText.orEmpty().trim()
+            require(rawText.isNotBlank()) {
+                "No extracted text is available to process."
+            }
+
+            val apiKey = settingsRepository.getGeminiApiKey().trim()
+            if (apiKey.isEmpty()) {
+                throw MissingApiKeyException()
+            }
+
+            val textChunks = rawText.chunked(AI_CHUNK_SIZE)
+            require(textChunks.isNotEmpty()) { "No extracted text is available to process." }
+
+            val aggregatedDrafts = mutableListOf<DraftTransactionEntity>()
+            for (chunk in textChunks) {
+                val result = aiProvider.extractTransactions(
+                    rawText = chunk,
+                    apiKey = apiKey,
+                    documentId = documentId,
+                )
+                val drafts = result.getOrThrow()
+                aggregatedDrafts.addAll(drafts)
+            }
+
+            if (aggregatedDrafts.isNotEmpty()) {
+                draftTransactionDao.insertAll(aggregatedDrafts)
+            }
+            documentDao.updateStatus(documentId, DocumentStatus.AI_COMPLETE.name)
+        }
 
     override suspend fun processDocumentWithMockAi(documentId: String) =
         withContext(Dispatchers.IO) {

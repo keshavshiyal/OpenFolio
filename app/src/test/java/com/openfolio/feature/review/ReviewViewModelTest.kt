@@ -240,6 +240,10 @@ class ReviewViewModelTest {
         ): SaveDraftTransactionsResult =
             SaveDraftTransactionsResult(savedCount = 4, duplicateCount = 1)
 
+        override suspend fun processDocumentWithAi(documentId: String) {
+            processDocumentWithMockAi(documentId)
+        }
+
         override suspend fun processDocumentWithMockAi(documentId: String) {
             aiProcessCallCount++
             insertDraftTransactionsIfEmpty(

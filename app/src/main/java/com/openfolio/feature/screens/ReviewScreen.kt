@@ -1,5 +1,6 @@
 package com.openfolio.feature.screens
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -46,6 +47,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.openfolio.core.data.local.entity.DocumentStatus
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
 import com.openfolio.core.ui.theme.LocalOpenFolioColors
@@ -68,6 +71,8 @@ fun ReviewScreen(
     onSaveDraft: (String?, String, String, String, String, String) -> Unit,
     onSaveConfirmed: () -> Unit,
     onSaveComplete: () -> Unit,
+    onNavigateToSettings: () -> Unit = {},
+    onDismissMissingApiKey: () -> Unit = {},
 ) {
     val colors = LocalOpenFolioColors.current
     val document = (uiState as? ReviewUiState.Loaded)?.document
@@ -86,9 +91,86 @@ fun ReviewScreen(
                 )
                 onSaveComplete()
             }
-            is ReviewActionState.Error -> snackbarHostState.showSnackbar(actionState.message)
+            is ReviewActionState.Error -> {
+                val message = if (
+                    actionState.message.contains("AI", ignoreCase = true) ||
+                    actionState.message.contains("JSON", ignoreCase = true) ||
+                    actionState.message.contains("extract", ignoreCase = true) ||
+                    actionState.message.contains("failed", ignoreCase = true)
+                ) {
+                    "AI extraction failed. Please try again or add manually."
+                } else {
+                    actionState.message
+                }
+                snackbarHostState.showSnackbar(message)
+            }
             else -> Unit
         }
+    }
+
+    if (actionState == ReviewActionState.ProcessingAi) {
+        Dialog(
+            onDismissRequest = {},
+            properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
+        ) {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = colors.surface,
+                border = BorderStroke(1.dp, colors.border),
+            ) {
+                Row(
+                    modifier = Modifier.padding(24.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    CircularProgressIndicator(
+                        color = colors.brand,
+                        strokeWidth = 3.dp,
+                    )
+                    Text(
+                        text = "Extracting via Gemini...",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = colors.content,
+                    )
+                }
+            }
+        }
+    }
+
+    if (actionState == ReviewActionState.MissingApiKey) {
+        AlertDialog(
+            onDismissRequest = onDismissMissingApiKey,
+            title = {
+                Text(
+                    text = "Gemini API Key Required",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = colors.content,
+                )
+            },
+            text = {
+                Text(
+                    text = "Please configure your API key in Settings.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.muted,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onDismissMissingApiKey()
+                        onNavigateToSettings()
+                    },
+                ) {
+                    Text("Go to Settings", color = colors.brand)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = onDismissMissingApiKey) {
+                    Text("Cancel", color = colors.muted)
+                }
+            },
+            containerColor = colors.surface,
+        )
     }
 
     Scaffold(

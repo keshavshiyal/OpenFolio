@@ -31,6 +31,8 @@ import com.openfolio.feature.screens.EmptyScreen
 import com.openfolio.feature.screens.HomeScreen
 import com.openfolio.feature.screens.InboxScreen
 import com.openfolio.feature.screens.ReviewScreen
+import com.openfolio.feature.screens.SettingsScreen
+import com.openfolio.feature.settings.SettingsViewModel
 import com.openfolio.feature.review.ReviewViewModel
 
 private const val REVIEW_ROUTE = "review/{documentId}"
@@ -40,6 +42,7 @@ fun OpenFolioApp(
     homeViewModel: HomeViewModel,
     inboxViewModel: InboxViewModel,
     reviewViewModel: ReviewViewModel,
+    settingsViewModel: SettingsViewModel,
 ) {
     val navController = rememberNavController()
     val colors = LocalOpenFolioColors.current
@@ -146,6 +149,9 @@ fun OpenFolioApp(
                     onDocumentClick = { documentId ->
                         navController.navigate("review/$documentId")
                     },
+                    onProcessWithAiClick = { documentId ->
+                        navController.navigate("review/$documentId")
+                    },
                 )
             }
             composable(
@@ -169,13 +175,12 @@ fun OpenFolioApp(
                     onSaveDraft = reviewViewModel::saveDraft,
                     onSaveConfirmed = reviewViewModel::saveConfirmed,
                     onSaveComplete = { navController.popBackStack() },
+                    onNavigateToSettings = { navController.navigate(AppDestination.Settings.route) },
+                    onDismissMissingApiKey = reviewViewModel::dismissMissingApiKeyDialog,
                 )
             }
             composable(AppDestination.Settings.route) {
-                EmptyScreen(
-                    destination = AppDestination.Settings,
-                    message = "Settings coming soon in Phase 6",
-                )
+                SettingsScreen(viewModel = settingsViewModel)
             }
         }
     }
