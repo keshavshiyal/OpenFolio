@@ -36,6 +36,17 @@ class StructuredFileParser @Inject constructor(
             )
         }
     }
+
+    fun readPreviewRows(file: File, limit: Int = 100): List<List<String>> {
+        require(limit > 0) { "Limit must be at least 1." }
+        return when (file.extension.lowercase()) {
+            "csv" -> csvExtractor.readPreviewRows(file, limit)
+            "xlsx" -> xlsxExtractor.readPreviewRows(file, limit)
+            else -> throw IllegalArgumentException(
+                "Structured preview supports CSV and XLSX files only.",
+            )
+        }
+    }
 }
 
 internal fun uniqueHeaders(rawHeaders: List<String>): List<String> {

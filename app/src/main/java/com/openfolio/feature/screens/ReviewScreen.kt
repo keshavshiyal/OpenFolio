@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import com.openfolio.core.data.local.entity.DocumentStatus
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
 import com.openfolio.core.ui.theme.LocalOpenFolioColors
+import com.openfolio.feature.review.DocumentPreview
 import com.openfolio.feature.review.ReviewActionState
 import com.openfolio.feature.review.ReviewUiState
 
@@ -73,6 +74,8 @@ fun ReviewScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     var showManualForm by remember { mutableStateOf(false) }
     var editingDraft by remember { mutableStateOf<DraftTransactionEntity?>(null) }
+    var headerRowText by remember { mutableStateOf("1") }
+    val headerRowNumber = headerRowText.toIntOrNull() ?: 1
 
     LaunchedEffect(actionState) {
         when (actionState) {
@@ -125,30 +128,41 @@ fun ReviewScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(0.4f),
-                color = colors.border,
+                color = colors.background,
             ) {
-                Column(
-                    modifier = Modifier.fillMaxSize(),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
-                ) {
-                    Text(
-                        text = when (uiState) {
-                            is ReviewUiState.Error -> uiState.message
-                            ReviewUiState.NotFound -> "This document is no longer available."
-                            else -> "PDF Preview (Coming Soon)"
-                        },
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = colors.muted,
+                if (document != null && document.localPath.isNotBlank()) {
+                    val fileExtension = document.fileName.substringAfterLast('.', "")
+                        .ifBlank { document.localPath.substringAfterLast('.', "") }
+                    DocumentPreview(
+                        filePath = document.localPath,
+                        fileExtension = fileExtension,
+                        headerRowIndex = headerRowNumber,
+                        modifier = Modifier.fillMaxSize(),
                     )
-                    document?.let {
+                } else {
+                    Column(
+                        modifier = Modifier.fillMaxSize(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                    ) {
                         Text(
-                            text = it.fileName,
-                            style = MaterialTheme.typography.bodySmall,
+                            text = when (uiState) {
+                                is ReviewUiState.Error -> uiState.message
+                                ReviewUiState.NotFound -> "This document is no longer available."
+                                else -> "Loading document…"
+                            },
+                            style = MaterialTheme.typography.bodyLarge,
                             color = colors.muted,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
                         )
+                        document?.let {
+                            Text(
+                                text = it.fileName,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colors.muted,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
                     }
                 }
             }
@@ -185,6 +199,8 @@ fun ReviewScreen(
                     ) {
                         ColumnMappingForm(
                             headers = structuredHeaders,
+                            headerRowText = headerRowText,
+                            onHeaderRowChange = { headerRowText = it },
                             isProcessing = actionState == ReviewActionState.ProcessingMapping ||
                                 actionState == ReviewActionState.LoadingMapping,
                             onReloadHeaders = onReloadHeaders,
@@ -323,13 +339,14 @@ fun ReviewScreen(
 @Composable
 private fun ColumnMappingForm(
     headers: List<String>,
+    headerRowText: String,
+    onHeaderRowChange: (String) -> Unit,
     isProcessing: Boolean,
     onReloadHeaders: (Int) -> Unit,
     onProcess: (String, String, String, String, String, String, String, Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalOpenFolioColors.current
-    var headerRowText by remember { mutableStateOf("1") }
     var brokerName by remember { mutableStateOf("") }
     var assetColumn by remember(headers) { mutableStateOf(suggestHeader(headers, "asset", "symbol", "security", "name")) }
     var typeColumn by remember(headers) { mutableStateOf(suggestHeader(headers, "type", "side", "action")) }
@@ -366,7 +383,7 @@ private fun ColumnMappingForm(
                 value = headerRowText,
                 onValueChange = { newText ->
                     val digitsOnly = newText.filter { it.isDigit() }
-                    headerRowText = digitsOnly
+                    onHeaderRowChange(digitsOnly)
                     val parsed = digitsOnly.toIntOrNull()
                     if (parsed != null && parsed >= 1) {
                         onReloadHeaders(parsed)

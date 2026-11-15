@@ -141,6 +141,39 @@ class XlsxExtractorTest {
         }
     }
 
+    @Test
+    fun readsPreviewRowsUpToLimitFromXlsx() {
+        val rowsBuilder = StringBuilder()
+        for (i in 1..120) {
+            rowsBuilder.append(
+                """
+                <row r="$i">
+                    <c r="A$i"><v>$i</v></c>
+                    <c r="B$i"><v>${i * 10}</v></c>
+                </row>
+                """.trimIndent(),
+            )
+        }
+        val sheetXml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                <sheetData>
+                    $rowsBuilder
+                </sheetData>
+            </worksheet>
+        """.trimIndent()
+
+        val file = createTestXlsx(sheetXml = sheetXml)
+        try {
+            val previewRows = XlsxExtractor().readPreviewRows(file, limit = 100)
+
+            assertEquals(100, previewRows.size)
+            assertEquals(listOf("1", "10"), previewRows[0])
+            assertEquals(listOf("100", "1000"), previewRows[99])
+        } finally {
+            file.delete()
+        }
+    }
+
     private fun createTestXlsx(
         sheetXml: String,
         sharedStringsXml: String? = null,

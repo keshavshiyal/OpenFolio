@@ -59,6 +59,45 @@ class XlsxExtractor @Inject constructor() {
 
     fun read(file: File, headerRowIndex: Int = 0): StructuredTable = extract(file, headerRowIndex)
 
+    fun readPreviewRows(file: File, limit: Int = 100): List<List<String>> {
+        require(limit > 0) { "Limit must be at least 1." }
+        val zip = try {
+            ZipFile(file)
+        } catch (exception: Exception) {
+            throw IllegalArgumentException(
+                "Unable to open Excel file. Ensure it is a valid, unencrypted XLSX file.",
+                exception,
+            )
+        }
+
+        zip.use { zipFile ->
+            val parser = createSaxParser()
+
+            val sharedStrings = mutableListOf<String>()
+            val sharedStringsEntry = zipFile.getEntry("xl/sharedStrings.xml")
+                ?: zipFile.getEntry("xl/SharedStrings.xml")
+            if (sharedStringsEntry != null) {
+                val sharedStringsHandler = SharedStringsHandler()
+                zipFile.getInputStream(sharedStringsEntry).use { input ->
+                    parser.parse(input, sharedStringsHandler)
+                }
+                sharedStrings.addAll(sharedStringsHandler.strings)
+            }
+
+            val worksheetEntry = findWorksheetEntry(zipFile, parser)
+            val sheetHandler = SheetHandler(sharedStrings, rowLimit = limit)
+            try {
+                zipFile.getInputStream(worksheetEntry).use { input ->
+                    parser.parse(input, sheetHandler)
+                }
+            } catch (_: MaxRowsReachedException) {
+                // Expected when rowLimit is reached
+            }
+
+            return sheetHandler.allRows.take(limit)
+        }
+    }
+
     private fun findWorksheetEntry(zipFile: ZipFile, parser: SAXParser): ZipEntry {
         val workbookRelsEntry = zipFile.getEntry("xl/_rels/workbook.xml.rels")
         if (workbookRelsEntry != null) {
@@ -182,8 +221,11 @@ private class SharedStringsHandler : DefaultHandler() {
     }
 }
 
+private class MaxRowsReachedException : org.xml.sax.SAXException("Max rows reached")
+
 private class SheetHandler(
     private val sharedStrings: List<String>,
+    private val rowLimit: Int = Int.MAX_VALUE,
 ) : DefaultHandler() {
     val allRows = mutableListOf<List<String>>()
     private val currentRow = mutableListOf<String>()
@@ -278,15 +320,20 @@ private class SheetHandler(
             }
             tag.equals("row", ignoreCase = true) -> {
                 val targetRow = if (currentRowIndex >= 0) currentRowIndex else nextDefaultRowIndex
-                while (allRows.size < targetRow) {
+                while (allRows.size < targetRow && allRows.size < rowLimit) {
                     allRows.add(emptyList())
                 }
-                if (allRows.size == targetRow) {
-                    allRows.add(ArrayList(currentRow))
-                } else {
-                    allRows[targetRow] = ArrayList(currentRow)
+                if (allRows.size < rowLimit) {
+                    if (allRows.size == targetRow) {
+                        allRows.add(ArrayList(currentRow))
+                    } else if (targetRow < allRows.size) {
+                        allRows[targetRow] = ArrayList(currentRow)
+                    }
                 }
                 nextDefaultRowIndex = targetRow + 1
+                if (allRows.size >= rowLimit) {
+                    throw MaxRowsReachedException()
+                }
             }
         }
     }

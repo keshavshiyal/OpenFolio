@@ -106,4 +106,24 @@ class CsvExtractorTest {
             file.delete()
         }
     }
+
+    @Test
+    fun readsPreviewRowsUpToLimitAndPreservesRaggedRows() {
+        val file = File.createTempFile("openfolio-csv-preview", ".csv")
+        try {
+            val lines = (1..150).map { i ->
+                if (i % 2 == 0) "Row$i,ColB,ColC" else "Row$i,ColB"
+            }
+            file.writeText(lines.joinToString("\n"))
+
+            val previewRows = CsvExtractor().readPreviewRows(file, limit = 100)
+
+            assertEquals(100, previewRows.size)
+            assertEquals(listOf("Row1", "ColB"), previewRows[0])
+            assertEquals(listOf("Row2", "ColB", "ColC"), previewRows[1])
+            assertEquals(listOf("Row100", "ColB", "ColC"), previewRows[99])
+        } finally {
+            file.delete()
+        }
+    }
 }

@@ -1,6 +1,7 @@
 package com.openfolio.core.utils
 
 import com.opencsv.CSVReader
+import com.opencsv.CSVReaderBuilder
 import java.io.File
 import java.io.FileInputStream
 import java.io.InputStreamReader
@@ -37,4 +38,18 @@ class CsvExtractor @Inject constructor() {
     }
 
     fun read(file: File, headerRowIndex: Int = 0): StructuredTable = extract(file, headerRowIndex)
+
+    fun readPreviewRows(file: File, limit: Int = 100): List<List<String>> {
+        require(limit > 0) { "Limit must be at least 1." }
+        return InputStreamReader(FileInputStream(file), StandardCharsets.UTF_8).use { input ->
+            CSVReaderBuilder(input).build().use { reader ->
+                val rows = mutableListOf<List<String>>()
+                while (rows.size < limit) {
+                    val row = reader.readNext()?.toList() ?: break
+                    rows += row
+                }
+                rows
+            }
+        }
+    }
 }
