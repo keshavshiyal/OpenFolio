@@ -5,10 +5,15 @@ import androidx.room.Room
 import com.openfolio.core.data.local.AppMetadataDao
 import com.openfolio.core.data.local.DatabasePassphraseProvider
 import com.openfolio.core.data.local.OpenFolioDatabase
-import com.openfolio.core.data.local.dao.DocumentDao
+import com.openfolio.core.data.local.dao.AccountDao
+import com.openfolio.core.data.local.dao.AssetDao
 import com.openfolio.core.data.local.dao.ColumnMappingDao
+import com.openfolio.core.data.local.dao.CorporateActionDao
+import com.openfolio.core.data.local.dao.DocumentDao
 import com.openfolio.core.data.local.dao.DraftTransactionDao
+import com.openfolio.core.data.local.dao.LotDao
 import com.openfolio.core.data.local.dao.TransactionDao
+import com.openfolio.core.data.local.dao.ValuationDao
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -33,15 +38,7 @@ object DatabaseModule {
             OpenFolioDatabase::class.java,
             "openfolio.db",
         )
-            .addMigrations(
-                OpenFolioDatabase.MIGRATION_1_2,
-                OpenFolioDatabase.MIGRATION_2_3,
-                OpenFolioDatabase.MIGRATION_3_4,
-                OpenFolioDatabase.MIGRATION_4_5,
-                OpenFolioDatabase.MIGRATION_5_6,
-                OpenFolioDatabase.MIGRATION_6_7,
-                OpenFolioDatabase.MIGRATION_7_8,
-            )
+            .fallbackToDestructiveMigration()
             .openHelperFactory(SupportFactory(passphraseProvider.getPassphrase()))
             .build()
     }
@@ -65,4 +62,24 @@ object DatabaseModule {
     @Provides
     fun provideTransactionDao(database: OpenFolioDatabase): TransactionDao =
         database.transactionDao()
+
+    @Provides
+    fun provideAccountDao(database: OpenFolioDatabase): AccountDao =
+        database.accountDao()
+
+    @Provides
+    fun provideAssetDao(database: OpenFolioDatabase): AssetDao =
+        database.assetDao()
+
+    @Provides
+    fun provideLotDao(database: OpenFolioDatabase): LotDao =
+        database.lotDao()
+
+    @Provides
+    fun provideValuationDao(database: OpenFolioDatabase): ValuationDao =
+        database.valuationDao()
+
+    @Provides
+    fun provideCorporateActionDao(database: OpenFolioDatabase): CorporateActionDao =
+        database.corporateActionDao()
 }

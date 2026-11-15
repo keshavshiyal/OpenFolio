@@ -3,6 +3,7 @@ plugins {
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.kapt)
+    alias(libs.plugins.ksp)
     alias(libs.plugins.hilt)
 }
 
@@ -64,7 +65,7 @@ dependencies {
     implementation(libs.mlkit.text.recognition)
     implementation(libs.opencsv)
 
-    kapt(libs.androidx.room.compiler)
+    ksp(libs.androidx.room.compiler)
     kapt(libs.hilt.android.compiler)
 
     testImplementation(libs.junit)

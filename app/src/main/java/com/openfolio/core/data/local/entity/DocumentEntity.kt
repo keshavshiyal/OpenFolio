@@ -25,6 +25,7 @@ data class DocumentEntity(
     val fileHash: String,
     val fileSize: Long,
     val importDate: Long,
-    val status: String = DocumentStatus.PENDING_OCR.name,
+    val extractionStatus: ExtractionStatus = ExtractionStatus.PENDING_OCR,
     val extractedText: String? = null,
+    val status: String = extractionStatus.name,
 )

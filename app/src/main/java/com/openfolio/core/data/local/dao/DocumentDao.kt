@@ -1,9 +1,11 @@
 package com.openfolio.core.data.local.dao
 
 import androidx.room.Dao
+import androidx.room.Delete
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Update
 import com.openfolio.core.data.local.entity.DocumentEntity
 import kotlinx.coroutines.flow.Flow
 
@@ -11,6 +13,12 @@ import kotlinx.coroutines.flow.Flow
 interface DocumentDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insert(document: DocumentEntity)
+
+    @Update
+    suspend fun update(document: DocumentEntity)
+
+    @Delete
+    suspend fun delete(document: DocumentEntity)
 
     @Query("DELETE FROM documents WHERE id = :id")
     suspend fun deleteById(id: String)
@@ -27,11 +35,11 @@ interface DocumentDao {
     @Query("SELECT * FROM documents WHERE id = :id LIMIT 1")
     fun observeDocumentById(id: String): Flow<DocumentEntity?>
 
-    @Query("UPDATE documents SET status = :status WHERE id = :id")
+    @Query("UPDATE documents SET status = :status, extractionStatus = :status WHERE id = :id")
     suspend fun updateStatus(id: String, status: String)
 
     @Query(
-        "UPDATE documents SET extractedText = :text, status = :status WHERE id = :id",
+        "UPDATE documents SET extractedText = :text, status = :status, extractionStatus = :status WHERE id = :id",
     )
     suspend fun updateExtractionResult(id: String, text: String?, status: String)
 }

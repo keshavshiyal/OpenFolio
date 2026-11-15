@@ -5,17 +5,21 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.room.withTransaction
 import com.openfolio.core.data.local.OpenFolioDatabase
-import com.openfolio.core.data.local.Transaction
-import com.openfolio.core.data.local.TransactionStatus
-import com.openfolio.core.data.local.TransactionType
 import com.openfolio.core.data.local.dao.DocumentDao
 import com.openfolio.core.data.local.dao.ColumnMappingDao
 import com.openfolio.core.data.local.dao.DraftTransactionDao
 import com.openfolio.core.data.local.dao.TransactionDao
-import com.openfolio.core.data.local.entity.DocumentEntity
+import com.openfolio.core.data.local.entity.AccountEntity
+import com.openfolio.core.data.local.entity.AccountType
+import com.openfolio.core.data.local.entity.AssetClass
+import com.openfolio.core.data.local.entity.AssetEntity
 import com.openfolio.core.data.local.entity.ColumnMappingEntity
+import com.openfolio.core.data.local.entity.DocumentEntity
 import com.openfolio.core.data.local.entity.DocumentStatus
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
+import com.openfolio.core.data.local.entity.TransactionEntity
+import com.openfolio.core.data.local.entity.TransactionStatus
+import com.openfolio.core.data.local.entity.TransactionType
 import com.openfolio.core.di.ApplicationScope
 import com.openfolio.core.domain.repository.DocumentRepository
 import com.openfolio.core.domain.repository.DuplicateDocumentException
@@ -139,27 +143,50 @@ class DocumentRepositoryImpl @Inject constructor(
                 } else {
                     val quantity = BigDecimal(draft.quantity)
                     val price = BigDecimal(draft.price)
+                    val accountId = "default_account"
+                    val assetId = draft.assetName.trim().lowercase().replace("\\s+".toRegex(), "_")
+                    database.accountDao().insert(
+                        AccountEntity(
+                            id = accountId,
+                            name = "Default Account",
+                            type = AccountType.BROKER,
+                            currency = "INR",
+                        ),
+                    )
+                    database.assetDao().insert(
+                        AssetEntity(
+                            id = assetId,
+                            displayName = draft.assetName,
+                            assetClass = AssetClass.STOCK,
+                            currency = "INR",
+                        ),
+                    )
+                    val dateDays = Math.floorDiv(draft.tradeDate ?: document.importDate, MILLIS_PER_DAY)
                     transactionDao.insert(
-                        Transaction(
+                        TransactionEntity(
                             id = draft.id,
-                            assetId = null,
+                            accountId = accountId,
+                            assetId = assetId,
                             type = TransactionType.valueOf(draft.transactionType),
-                            tradeDate = draft.tradeDate ?: document.importDate,
+                            tradeDate = LocalDate.ofEpochDay(dateDays),
                             settlementDate = null,
                             quantity = quantity,
+                            unitPrice = price,
                             grossAmount = quantity.multiply(price),
                             fees = BigDecimal.ZERO,
                             taxes = BigDecimal.ZERO,
                             netAmount = BigDecimal(draft.netAmount),
                             currency = "INR",
-                            fingerprint = fingerprint,
-                            documentId = document.id,
-                            sourcePage = null,
-                            confidenceScore = draft.confidence / 100f,
-                            status = TransactionStatus.CONFIRMED,
-                            isManual = draft.isManual,
                             fxRate = null,
                             baseCurrencyAmount = null,
+                            description = null,
+                            notes = null,
+                            fingerprint = fingerprint,
+                            externalRef = null,
+                            status = TransactionStatus.CONFIRMED,
+                            documentId = document.id,
+                            sourcePage = null,
+                            confidence = draft.confidence / 100.0,
                         ),
                     )
                     savedCount++

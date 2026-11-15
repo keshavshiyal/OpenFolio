@@ -5,38 +5,62 @@ import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
-import com.openfolio.core.data.local.dao.DocumentDao
+import com.openfolio.core.data.local.dao.AccountDao
+import com.openfolio.core.data.local.dao.AssetDao
 import com.openfolio.core.data.local.dao.ColumnMappingDao
+import com.openfolio.core.data.local.dao.CorporateActionDao
+import com.openfolio.core.data.local.dao.DocumentDao
 import com.openfolio.core.data.local.dao.DraftTransactionDao
+import com.openfolio.core.data.local.dao.LotDao
 import com.openfolio.core.data.local.dao.TransactionDao
-import com.openfolio.core.data.local.entity.DocumentEntity
+import com.openfolio.core.data.local.dao.ValuationDao
+import com.openfolio.core.data.local.entity.AccountEntity
+import com.openfolio.core.data.local.entity.AssetEntity
 import com.openfolio.core.data.local.entity.ColumnMappingEntity
+import com.openfolio.core.data.local.entity.CorporateActionEntity
+import com.openfolio.core.data.local.entity.DocumentEntity
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
+import com.openfolio.core.data.local.entity.LotEntity
+import com.openfolio.core.data.local.entity.TransactionEntity
+import com.openfolio.core.data.local.entity.ValuationEntity
 
 @Database(
     entities = [
-        Account::class,
+        AccountEntity::class,
         AppMetadataEntity::class,
-        Asset::class,
+        AssetEntity::class,
         ColumnMappingEntity::class,
+        CorporateActionEntity::class,
         DocumentEntity::class,
         DraftTransactionEntity::class,
-        Transaction::class,
+        LotEntity::class,
+        TransactionEntity::class,
+        ValuationEntity::class,
     ],
-    version = 8,
+    version = 9,
     exportSchema = false,
 )
-@TypeConverters(LedgerConverters::class)
+@TypeConverters(Converters::class)
 abstract class OpenFolioDatabase : RoomDatabase() {
-    abstract fun appMetadataDao(): AppMetadataDao
+    abstract fun accountDao(): AccountDao
 
-    abstract fun documentDao(): DocumentDao
+    abstract fun assetDao(): AssetDao
+
+    abstract fun appMetadataDao(): AppMetadataDao
 
     abstract fun columnMappingDao(): ColumnMappingDao
 
+    abstract fun corporateActionDao(): CorporateActionDao
+
+    abstract fun documentDao(): DocumentDao
+
     abstract fun draftTransactionDao(): DraftTransactionDao
 
+    abstract fun lotDao(): LotDao
+
     abstract fun transactionDao(): TransactionDao
+
+    abstract fun valuationDao(): ValuationDao
 
     companion object {
         val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -97,7 +121,6 @@ abstract class OpenFolioDatabase : RoomDatabase() {
                     """.trimIndent(),
                 )
             }
-
         }
 
         val MIGRATION_2_3 = object : Migration(2, 3) {
