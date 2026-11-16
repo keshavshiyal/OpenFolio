@@ -13,35 +13,30 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 
 class GetDashboardDataUseCase @Inject constructor(
     private val transactionDao: TransactionDao,
     private val assetDao: AssetDao? = null,
 ) {
     operator fun invoke(): Flow<DashboardData> {
-        val assetsFlow = transactionDao.getTotalAssetsFlow()
-        val liabilitiesFlow = transactionDao.getTotalLiabilitiesFlow()
-        val recentTxnsFlow = transactionDao.getRecentTransactions(RECENT_TRANSACTIONS_LIMIT)
+        val assets = transactionDao.getTotalAssetsFlow().map {
+            if (it == null || it == 0.0) BigDecimal.ZERO else BigDecimal(it)
+        }
+        val liabilities = transactionDao.getTotalLiabilitiesFlow().map {
+            if (it == null || it == 0.0) BigDecimal.ZERO else BigDecimal(it)
+        }
+        val recentTxnsFlow = transactionDao.getRecentTransactions(5)
         val allTxnsFlow = transactionDao.getAll()
         val assetEntitiesFlow = assetDao?.getAll() ?: flowOf(emptyList())
 
         return combine(
-            assetsFlow,
-            liabilitiesFlow,
+            assets,
+            liabilities,
             recentTxnsFlow,
             allTxnsFlow,
             assetEntitiesFlow,
-        ) { totalAssetsDouble, liabilitiesDouble, recentTransactions, allTransactions, assetEntities ->
-            val totalAssets = if (totalAssetsDouble == null || totalAssetsDouble == 0.0) {
-                BigDecimal.ZERO
-            } else {
-                BigDecimal.valueOf(totalAssetsDouble)
-            }
-            val totalLiabilities = if (liabilitiesDouble == 0.0) {
-                BigDecimal.ZERO
-            } else {
-                BigDecimal.valueOf(liabilitiesDouble)
-            }
+        ) { totalAssets, totalLiabilities, recentTransactions, allTransactions, assetEntities ->
             val netWorth = totalAssets - totalLiabilities
 
             val assetsById = assetEntities.associateBy { it.id }
@@ -120,9 +115,5 @@ class GetDashboardDataUseCase @Inject constructor(
         AssetClass.GOLD -> "Gold"
         AssetClass.CASH -> "Cash"
         AssetClass.OTHER -> "Other"
-    }
-
-    private companion object {
-        const val RECENT_TRANSACTIONS_LIMIT = 5
     }
 }

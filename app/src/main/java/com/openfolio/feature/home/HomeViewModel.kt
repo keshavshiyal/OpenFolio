@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.openfolio.core.data.local.entity.DocumentEntity
+import com.openfolio.core.domain.model.DashboardData
 import com.openfolio.core.domain.repository.DocumentRepository
 import com.openfolio.core.domain.repository.DuplicateDocumentException
 import com.openfolio.core.domain.usecase.GetDashboardDataUseCase
@@ -38,6 +39,8 @@ class HomeViewModel @Inject constructor(
     private val _documents = MutableStateFlow<List<DocumentEntity>>(emptyList())
     val documents: StateFlow<List<DocumentEntity>> = _documents.asStateFlow()
 
+    private var currentDashboardData: DashboardData? = null
+
     init {
         viewModelScope.launch {
             documentRepository.getAllDocuments().collect { documents ->
@@ -46,45 +49,54 @@ class HomeViewModel @Inject constructor(
         }
 
         viewModelScope.launch {
-            combine(
-                getDashboardDataUseCase(),
-                _showValues,
-                _selectedPeriod,
-            ) { data, showValues, period ->
-                if ((data.totalAssets == BigDecimal.ZERO || data.totalAssets.compareTo(BigDecimal.ZERO) == 0) &&
-                    (data.totalLiabilities == BigDecimal.ZERO || data.totalLiabilities.compareTo(BigDecimal.ZERO) == 0) &&
-                    data.recentTransactions.isEmpty()
-                ) {
-                    HomeUiState.Empty
-                } else {
-                    val allocations = data.allocations.mapIndexed { index, alloc ->
-                        val color = AllocationColor.entries.getOrElse(index) { AllocationColor.Slot5 }
-                        AssetAllocation(
-                            label = alloc.label,
-                            percentage = alloc.percentage,
-                            color = color,
-                        )
-                    }
-                    HomeUiState.Success(
-                        data = data,
-                        showValues = showValues,
-                        selectedPeriod = period,
-                        allocations = allocations,
-                    )
-                }
-            }.collect { state ->
-                _uiState.value = state
+            getDashboardDataUseCase().collect { data ->
+                currentDashboardData = data
+                _uiState.value = mapToUiState(data, _showValues.value, _selectedPeriod.value)
             }
         }
     }
 
     fun toggleValuesVisibility() {
         _showValues.update { !it }
+        currentDashboardData?.let { data ->
+            _uiState.value = mapToUiState(data, _showValues.value, _selectedPeriod.value)
+        }
     }
 
     fun selectPeriod(period: String) {
         require(period in PERIODS) { "Unsupported chart period: $period" }
         _selectedPeriod.value = period
+        currentDashboardData?.let { data ->
+            _uiState.value = mapToUiState(data, _showValues.value, _selectedPeriod.value)
+        }
+    }
+
+    private fun mapToUiState(
+        data: DashboardData,
+        showValues: Boolean,
+        period: String,
+    ): HomeUiState {
+        return if ((data.totalAssets == BigDecimal.ZERO || data.totalAssets.compareTo(BigDecimal.ZERO) == 0) &&
+            (data.totalLiabilities == BigDecimal.ZERO || data.totalLiabilities.compareTo(BigDecimal.ZERO) == 0) &&
+            data.recentTransactions.isEmpty()
+        ) {
+            HomeUiState.Empty
+        } else {
+            val allocations = data.allocations.mapIndexed { index, alloc ->
+                val color = AllocationColor.entries.getOrElse(index) { AllocationColor.Slot5 }
+                AssetAllocation(
+                    label = alloc.label,
+                    percentage = alloc.percentage,
+                    color = color,
+                )
+            }
+            HomeUiState.Success(
+                data = data,
+                showValues = showValues,
+                selectedPeriod = period,
+                allocations = allocations,
+            )
+        }
     }
 
     fun ingestFile(uri: Uri) {

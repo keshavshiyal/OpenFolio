@@ -173,7 +173,7 @@ class DocumentRepositoryImpl @Inject constructor(
                         AssetEntity(
                             id = assetId,
                             displayName = draft.assetName,
-                            assetClass = AssetClass.STOCK,
+                            assetClass = AssetClass.STOCK, // TODO: Map actual asset class from AI
                             currency = "INR",
                         ),
                     )

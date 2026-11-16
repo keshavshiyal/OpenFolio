@@ -276,17 +276,19 @@ fun HomeScreen(
                     }
                     if (uiState.data.recentTransactions.isNotEmpty()) {
                         item {
-                            Text(
-                                text = "Recent Activity",
-                                style = MaterialTheme.typography.titleLarge,
-                                color = colors.content,
-                            )
-                        }
-                        items(uiState.data.recentTransactions, key = { it.id }) { transaction ->
-                            RecentActivityRow(
-                                transaction = transaction,
-                                showValues = uiState.showValues,
-                            )
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(
+                                    text = "Recent Activity",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    color = colors.content,
+                                )
+                                uiState.data.recentTransactions.take(5).forEach { transaction ->
+                                    RecentActivityRow(
+                                        transaction = transaction,
+                                        showValues = uiState.showValues,
+                                    )
+                                }
+                            }
                         }
                     }
                 }

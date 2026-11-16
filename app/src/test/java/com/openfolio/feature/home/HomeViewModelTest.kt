@@ -202,7 +202,7 @@ class HomeViewModelTest {
 
     private class FakeTransactionDao(
         private val assets: Double?,
-        private val liabilities: Double,
+        private val liabilities: Double?,
         private val recentTransactions: List<TransactionEntity>,
         private val allTransactions: List<TransactionEntity> = emptyList(),
     ) : TransactionDao {
@@ -217,7 +217,7 @@ class HomeViewModelTest {
         override fun getByAssetId(assetId: String): Flow<List<TransactionEntity>> = flowOf(emptyList())
         override fun getByAccountId(accountId: String): Flow<List<TransactionEntity>> = flowOf(emptyList())
         override fun getTotalAssetsFlow(): Flow<Double?> = flowOf(assets)
-        override fun getTotalLiabilitiesFlow(): Flow<Double> = flowOf(liabilities)
+        override fun getTotalLiabilitiesFlow(): Flow<Double?> = flowOf(liabilities)
         override fun getRecentTransactions(limit: Int): Flow<List<TransactionEntity>> = flowOf(recentTransactions)
     }
 
