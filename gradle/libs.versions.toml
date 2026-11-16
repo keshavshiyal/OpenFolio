@@ -21,6 +21,7 @@ ksp = "2.0.21-1.0.28"
 securityCrypto = "1.1.0-alpha06"
 generativeai = "0.9.0"
 json = "20240303"
+kotlinxSerialization = "1.6.3"
 
 [libraries]
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
@@ -53,6 +54,7 @@ mlkit-text-recognition = { group = "com.google.mlkit", name = "text-recognition"
 opencsv = { group = "com.opencsv", name = "opencsv", version.ref = "opencsv" }
 androidx-security-crypto = { group = "androidx.security", name = "security-crypto", version.ref = "securityCrypto" }
 google-generativeai = { group = "com.google.ai.client.generativeai", name = "generativeai", version.ref = "generativeai" }
+kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
 json = { group = "org.json", name = "json", version.ref = "json" }
 
 [plugins]

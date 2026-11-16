@@ -50,6 +50,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.MissingFieldException
 
 class DocumentRepositoryImpl @Inject constructor(
     private val documentDao: DocumentDao,
@@ -204,6 +205,7 @@ class DocumentRepositoryImpl @Inject constructor(
         }
     }
 
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
     override suspend fun processDocumentWithAi(documentId: String) =
         withContext(Dispatchers.IO) {
             val document = requireNotNull(documentDao.getDocumentById(documentId)) {
@@ -237,8 +239,19 @@ class DocumentRepositoryImpl @Inject constructor(
                         documentId = documentId,
                     )
                     result.getOrThrow()
+                } catch (e: kotlinx.serialization.MissingFieldException) {
+                    throw AiExtractionException(
+                        "AI model is unavailable. Please update the app or check your API key.",
+                        e,
+                    )
                 } catch (e: Exception) {
                     if (e is CancellationException) throw e
+                    if (e.cause is kotlinx.serialization.MissingFieldException) {
+                        throw AiExtractionException(
+                            "AI model is unavailable. Please update the app or check your API key.",
+                            e,
+                        )
+                    }
                     throw AiExtractionException(e.localizedMessage ?: "Unknown AI error", e)
                 }
                 aggregatedDrafts.addAll(drafts)

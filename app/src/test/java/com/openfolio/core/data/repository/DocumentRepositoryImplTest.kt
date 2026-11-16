@@ -364,6 +364,49 @@ class DocumentRepositoryImplTest {
         }
     }
 
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+    @Test
+    fun processDocumentWithAiThrowsClearMessageOnMissingFieldException() {
+        runBlocking {
+            val dao = mock<DocumentDao>()
+            val settings = mock<SettingsRepository>()
+            val aiProvider = mock<AiProvider>()
+            whenever(settings.getGeminiApiKey()).thenReturn("key-123")
+            whenever(dao.getDocumentById("doc-missing-field")).thenReturn(
+                DocumentEntity(
+                    id = "doc-missing-field",
+                    fileName = "statement.pdf",
+                    localPath = "/tmp/statement.pdf",
+                    fileHash = "hash1",
+                    fileSize = 100L,
+                    importDate = 1000L,
+                    status = DocumentStatus.OCR_COMPLETE.name,
+                    extractedText = "Some statement content",
+                ),
+            )
+            whenever(aiProvider.extractTransactions("Some statement content", "key-123", "doc-missing-field"))
+                .thenReturn(Result.failure(kotlinx.serialization.MissingFieldException(listOf("candidates"), "GenerateContentResponse")))
+
+            val repository = DocumentRepositoryImpl(
+                documentDao = dao,
+                columnMappingDao = mock<ColumnMappingDao>(),
+                draftTransactionDao = mock<DraftTransactionDao>(),
+                transactionDao = mock<TransactionDao>(),
+                database = mock<OpenFolioDatabase>(),
+                documentTextExtractor = mock<DocumentTextExtractor>(),
+                structuredFileParser = mock<StructuredFileParser>(),
+                settingsRepository = settings,
+                aiProvider = aiProvider,
+                applicationScope = mock<CoroutineScope>(),
+            )
+
+            val exception = assertThrows(AiExtractionException::class.java) {
+                runBlocking { repository.processDocumentWithAi("doc-missing-field") }
+            }
+            assertEquals("AI model is unavailable. Please update the app or check your API key.", exception.message)
+        }
+    }
+
     @Test
     fun processDocumentWithAiChunksAndPersistsDrafts() {
         runBlocking {

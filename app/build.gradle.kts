@@ -66,6 +66,7 @@ dependencies {
     implementation(libs.opencsv)
     implementation(libs.androidx.security.crypto)
     implementation(libs.google.generativeai)
+    implementation(libs.kotlinx.serialization.json)
 
     ksp(libs.androidx.room.compiler)
     kapt(libs.hilt.android.compiler)

@@ -29,7 +29,7 @@ class GeminiAiProvider @Inject constructor() : AiProvider {
                 require(rawText.isNotBlank()) { "Raw text must not be blank." }
 
                 val model = GenerativeModel(
-                    modelName = "gemini-1.5-flash",
+                    modelName = "gemini-2.5-flash",
                     apiKey = apiKey,
                     generationConfig = generationConfig {
                         responseMimeType = "application/json"
