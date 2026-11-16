@@ -14,6 +14,8 @@ import com.openfolio.core.data.local.dao.DraftTransactionDao
 import com.openfolio.core.data.local.dao.LotDao
 import com.openfolio.core.data.local.dao.TransactionDao
 import com.openfolio.core.data.local.dao.ValuationDao
+import com.openfolio.core.data.local.export.DatabaseExporter
+import com.openfolio.core.data.local.export.DatabaseExporterImpl
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -82,4 +84,9 @@ object DatabaseModule {
     @Provides
     fun provideCorporateActionDao(database: OpenFolioDatabase): CorporateActionDao =
         database.corporateActionDao()
+
+    @Provides
+    @Singleton
+    fun provideDatabaseExporter(database: OpenFolioDatabase): DatabaseExporter =
+        DatabaseExporterImpl(database)
 }
