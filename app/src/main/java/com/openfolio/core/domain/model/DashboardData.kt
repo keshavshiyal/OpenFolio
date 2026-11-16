@@ -8,4 +8,10 @@ data class DashboardData(
     val totalAssets: BigDecimal,
     val totalLiabilities: BigDecimal,
     val recentTransactions: List<TransactionEntity>,
+    val allocations: List<DashboardAllocation> = emptyList(),
+)
+
+data class DashboardAllocation(
+    val label: String,
+    val percentage: Int,
 )

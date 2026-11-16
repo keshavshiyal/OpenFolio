@@ -36,13 +36,7 @@ sealed interface HomeUiState {
                 0.69f,
                 0.84f,
             )
-            val DEFAULT_ALLOCATIONS: List<AssetAllocation> = listOf(
-                AssetAllocation("Equity", 35, AllocationColor.Slot1),
-                AssetAllocation("Mutual funds", 25, AllocationColor.Slot2),
-                AssetAllocation("Fixed deposits", 18, AllocationColor.Slot3),
-                AssetAllocation("Gold", 12, AllocationColor.Slot4),
-                AssetAllocation("Cash", 10, AllocationColor.Slot5),
-            )
+            val DEFAULT_ALLOCATIONS: List<AssetAllocation> = emptyList()
         }
     }
 }

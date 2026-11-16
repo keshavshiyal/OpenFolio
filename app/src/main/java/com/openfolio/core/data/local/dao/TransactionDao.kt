@@ -41,12 +41,12 @@ interface TransactionDao {
     @Query("SELECT * FROM txn WHERE accountId = :accountId ORDER BY tradeDate DESC, createdAt DESC")
     fun getByAccountId(accountId: String): Flow<List<TransactionEntity>>
 
-    @Query("SELECT SUM(grossAmount) FROM txn WHERE type IN ('BUY', 'DIVIDEND', 'INTEREST')")
+    @Query("SELECT SUM(CAST(grossAmount AS REAL)) FROM txn WHERE UPPER(type) IN ('BUY', 'DIVIDEND', 'INTEREST')")
     fun getTotalAssetsFlow(): Flow<Double?>
 
-    @Query("SELECT COALESCE(SUM(grossAmount), 0.0) FROM txn WHERE type IN ('FEE', 'TAX')")
+    @Query("SELECT COALESCE(SUM(CAST(grossAmount AS REAL)), 0.0) FROM txn WHERE UPPER(type) IN ('FEE', 'TAX', 'CHARGE')")
     fun getTotalLiabilitiesFlow(): Flow<Double>
 
     @Query("SELECT * FROM txn ORDER BY tradeDate DESC, createdAt DESC LIMIT :limit")
-    fun getRecentTransactions(limit: Int): Flow<List<TransactionEntity>>
+    fun getRecentTransactions(limit: Int = 5): Flow<List<TransactionEntity>>
 }

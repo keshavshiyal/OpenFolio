@@ -52,14 +52,24 @@ class HomeViewModel @Inject constructor(
                 _selectedPeriod,
             ) { data, showValues, period ->
                 if ((data.totalAssets == BigDecimal.ZERO || data.totalAssets.compareTo(BigDecimal.ZERO) == 0) &&
+                    (data.totalLiabilities == BigDecimal.ZERO || data.totalLiabilities.compareTo(BigDecimal.ZERO) == 0) &&
                     data.recentTransactions.isEmpty()
                 ) {
                     HomeUiState.Empty
                 } else {
+                    val allocations = data.allocations.mapIndexed { index, alloc ->
+                        val color = AllocationColor.entries.getOrElse(index) { AllocationColor.Slot5 }
+                        AssetAllocation(
+                            label = alloc.label,
+                            percentage = alloc.percentage,
+                            color = color,
+                        )
+                    }
                     HomeUiState.Success(
                         data = data,
                         showValues = showValues,
                         selectedPeriod = period,
+                        allocations = allocations,
                     )
                 }
             }.collect { state ->

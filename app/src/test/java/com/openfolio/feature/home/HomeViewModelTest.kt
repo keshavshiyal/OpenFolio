@@ -79,22 +79,55 @@ class HomeViewModelTest {
     }
 
     @Test
-    fun providesTrajectoryPointsAndAllAllocationSlots() {
+    fun providesTrajectoryPoints() {
         val state = viewModel.uiState.value
         assertTrue(state is HomeUiState.Success)
         val success = state as HomeUiState.Success
 
         assertTrue(success.trajectoryPoints.size >= 2)
-        assertEquals(
+    }
+
+    @Test
+    fun mapsAllocationsWhenTransactionsProvided() {
+        val stockTxn = sampleTxn.copy(grossAmount = BigDecimal("10000"))
+        val mfTxn = sampleTxn.copy(id = "txn-2", assetId = "NIFTY_50_INDEX", grossAmount = BigDecimal("10000"))
+        val fakeAssetDao = FakeAssetDao(
             listOf(
-                AllocationColor.Slot1,
-                AllocationColor.Slot2,
-                AllocationColor.Slot3,
-                AllocationColor.Slot4,
-                AllocationColor.Slot5,
+                com.openfolio.core.data.local.entity.AssetEntity(
+                    id = "RELIANCE",
+                    assetClass = com.openfolio.core.data.local.entity.AssetClass.STOCK,
+                    displayName = "Reliance",
+                    currency = "INR",
+                ),
+                com.openfolio.core.data.local.entity.AssetEntity(
+                    id = "NIFTY_50_INDEX",
+                    assetClass = com.openfolio.core.data.local.entity.AssetClass.MUTUAL_FUND,
+                    displayName = "Nifty 50 Index",
+                    currency = "INR",
+                ),
             ),
-            success.allocations.map { it.color },
         )
+        val dao = FakeTransactionDao(
+            assets = 20000.0,
+            liabilities = 0.0,
+            recentTransactions = listOf(stockTxn, mfTxn),
+            allTransactions = listOf(stockTxn, mfTxn),
+        )
+        val useCase = GetDashboardDataUseCase(dao, fakeAssetDao)
+        val vm = HomeViewModel(
+            context = mock(),
+            documentRepository = FakeDocumentRepository(),
+            getDashboardDataUseCase = useCase,
+        )
+
+        val state = vm.uiState.value
+        assertTrue(state is HomeUiState.Success)
+        val success = state as HomeUiState.Success
+        assertEquals(2, success.allocations.size)
+        assertEquals("Equity", success.allocations[0].label)
+        assertEquals(50, success.allocations[0].percentage)
+        assertEquals("Mutual funds", success.allocations[1].label)
+        assertEquals(50, success.allocations[1].percentage)
     }
 
     @Test
@@ -171,6 +204,7 @@ class HomeViewModelTest {
         private val assets: Double?,
         private val liabilities: Double,
         private val recentTransactions: List<TransactionEntity>,
+        private val allTransactions: List<TransactionEntity> = emptyList(),
     ) : TransactionDao {
         override suspend fun insert(transaction: TransactionEntity) = Unit
         override suspend fun insertAll(transactions: List<TransactionEntity>) = Unit
@@ -179,12 +213,26 @@ class HomeViewModelTest {
         override suspend fun getByFingerprint(fingerprint: String): TransactionEntity? = null
         override suspend fun containsFingerprint(fingerprint: String): Boolean = false
         override suspend fun getById(id: String): TransactionEntity? = null
-        override fun getAll(): Flow<List<TransactionEntity>> = flowOf(emptyList())
+        override fun getAll(): Flow<List<TransactionEntity>> = flowOf(allTransactions)
         override fun getByAssetId(assetId: String): Flow<List<TransactionEntity>> = flowOf(emptyList())
         override fun getByAccountId(accountId: String): Flow<List<TransactionEntity>> = flowOf(emptyList())
         override fun getTotalAssetsFlow(): Flow<Double?> = flowOf(assets)
         override fun getTotalLiabilitiesFlow(): Flow<Double> = flowOf(liabilities)
         override fun getRecentTransactions(limit: Int): Flow<List<TransactionEntity>> = flowOf(recentTransactions)
+    }
+
+    private class FakeAssetDao(
+        private val assets: List<com.openfolio.core.data.local.entity.AssetEntity> = emptyList(),
+    ) : com.openfolio.core.data.local.dao.AssetDao {
+        override suspend fun insert(asset: com.openfolio.core.data.local.entity.AssetEntity) = Unit
+        override suspend fun insertAll(assets: List<com.openfolio.core.data.local.entity.AssetEntity>) = Unit
+        override suspend fun update(asset: com.openfolio.core.data.local.entity.AssetEntity) = Unit
+        override suspend fun delete(asset: com.openfolio.core.data.local.entity.AssetEntity) = Unit
+        override suspend fun getById(id: String): com.openfolio.core.data.local.entity.AssetEntity? =
+            assets.firstOrNull { it.id == id }
+        override fun getAll(): Flow<List<com.openfolio.core.data.local.entity.AssetEntity>> = flowOf(assets)
+        override fun getByAssetClass(assetClass: com.openfolio.core.data.local.entity.AssetClass): Flow<List<com.openfolio.core.data.local.entity.AssetEntity>> =
+            flowOf(assets.filter { it.assetClass == assetClass })
     }
 
     private class FakeDocumentRepository(

@@ -28,7 +28,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
-import androidx.compose.material.icons.outlined.ShowChart
+import androidx.compose.material.icons.automirrored.outlined.ShowChart
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -282,7 +282,7 @@ fun HomeScreen(
                                 color = colors.content,
                             )
                         }
-                        items(uiState.data.recentTransactions) { transaction ->
+                        items(uiState.data.recentTransactions, key = { it.id }) { transaction ->
                             RecentActivityRow(
                                 transaction = transaction,
                                 showValues = uiState.showValues,
@@ -533,34 +533,44 @@ private fun AllocationSection(allocations: List<AssetAllocation>) {
             style = MaterialTheme.typography.titleLarge,
             color = colors.content,
         )
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(12.dp),
-            horizontalArrangement = Arrangement.spacedBy(segmentGap),
-        ) {
-            allocations.forEach { allocation ->
-                Box(
-                    modifier = Modifier
-                        .weight(allocation.percentage.toFloat())
-                        .fillMaxSize()
-                        .background(allocationColor(allocation.color), segmentShape),
-                )
-            }
-        }
-        allocations.chunked(2).forEach { rowAllocations ->
+        if (allocations.isEmpty() || allocations.all { it.percentage <= 0 }) {
+            Text(
+                text = "Allocation data loading...",
+                style = MaterialTheme.typography.bodyMedium,
+                color = colors.muted,
+                modifier = Modifier.padding(vertical = 4.dp),
+            )
+        } else {
+            val visibleAllocations = allocations.filter { it.percentage > 0 }
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(segmentGap),
             ) {
-                rowAllocations.forEach { allocation ->
-                    AllocationLegendItem(
-                        modifier = Modifier.weight(1f),
-                        allocation = allocation,
+                visibleAllocations.forEach { allocation ->
+                    Box(
+                        modifier = Modifier
+                            .weight(allocation.percentage.toFloat())
+                            .fillMaxSize()
+                            .background(allocationColor(allocation.color), segmentShape),
                     )
                 }
-                if (rowAllocations.size == 1) {
-                    Spacer(modifier = Modifier.weight(1f))
+            }
+            visibleAllocations.chunked(2).forEach { rowAllocations ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    rowAllocations.forEach { allocation ->
+                        AllocationLegendItem(
+                            modifier = Modifier.weight(1f),
+                            allocation = allocation,
+                        )
+                    }
+                    if (rowAllocations.size == 1) {
+                        Spacer(modifier = Modifier.weight(1f))
+                    }
                 }
             }
         }
@@ -611,7 +621,7 @@ private fun RecentActivityRow(
 ) {
     val colors = LocalOpenFolioColors.current
     val icon = when (transaction.type) {
-        TransactionType.BUY, TransactionType.SELL -> Icons.Outlined.ShowChart
+        TransactionType.BUY, TransactionType.SELL -> Icons.AutoMirrored.Outlined.ShowChart
         else -> Icons.Filled.AccountBalanceWallet
     }
 
