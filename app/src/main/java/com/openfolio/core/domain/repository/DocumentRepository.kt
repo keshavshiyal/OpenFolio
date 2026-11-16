@@ -31,6 +31,8 @@ interface DocumentRepository {
 
     suspend fun saveDraftTransactions(documentId: String): SaveDraftTransactionsResult
 
+    suspend fun updateDocumentStatus(documentId: String, status: String)
+
     suspend fun ingestFile(uri: Uri, context: Context): DocumentEntity
 
     suspend fun processDocumentWithAi(documentId: String)

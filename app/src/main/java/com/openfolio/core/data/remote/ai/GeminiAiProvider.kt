@@ -8,6 +8,8 @@ import com.openfolio.core.data.local.entity.DraftTransactionEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
+import org.json.JSONObject
+import java.math.BigDecimal
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -62,16 +64,20 @@ class GeminiAiProvider @Inject constructor() : AiProvider {
 
         val jsonArray = JSONArray(cleaned)
         val transactions = mutableListOf<DraftTransactionEntity>()
+        val allowedAssetClasses = setOf("STOCK", "MUTUAL_FUND", "BOND", "FD", "HOUSE", "LAND", "GOLD", "CRYPTO")
 
         for (i in 0 until jsonArray.length()) {
             val obj = jsonArray.getJSONObject(i)
             val assetName = obj.optString("assetName", "").trim()
             if (assetName.isBlank()) continue
 
+            val rawAssetClass = obj.optString("assetClass", "STOCK").trim().uppercase()
+            val assetClass = if (rawAssetClass in allowedAssetClasses) rawAssetClass else "STOCK"
+
             val transactionType = obj.optString("transactionType", "BUY").trim().uppercase()
-            val quantity = obj.optString("quantity", "1").trim()
-            val price = obj.optString("price", "0").trim()
-            val netAmount = obj.optString("netAmount", "0").trim()
+            val quantity = extractJsonString(obj, "quantity", "1")
+            val price = extractJsonString(obj, "price", "0")
+            val netAmount = extractJsonString(obj, "netAmount", "0")
             val tradeDateStr = obj.optString("tradeDate", "").trim()
             val confidence = obj.optInt("confidence", 85).coerceIn(0, 100)
 
@@ -83,18 +89,29 @@ class GeminiAiProvider @Inject constructor() : AiProvider {
                     documentId = documentId,
                     assetName = assetName,
                     transactionType = transactionType,
-                    quantity = quantity.ifBlank { "1" },
-                    price = price.ifBlank { "0" },
-                    netAmount = netAmount.ifBlank { "0" },
+                    quantity = quantity,
+                    price = price,
+                    netAmount = netAmount,
                     confidence = confidence,
                     isAccepted = false,
                     isManual = false,
                     tradeDate = tradeDateMillis,
+                    assetClass = assetClass,
                 ),
             )
         }
 
         return transactions
+    }
+
+    private fun extractJsonString(obj: JSONObject, key: String, default: String): String {
+        if (obj.isNull(key)) return default
+        return when (val raw = obj.opt(key)) {
+            null -> default
+            is String -> raw.trim().ifBlank { default }
+            is Number -> BigDecimal(raw.toString()).toPlainString()
+            else -> raw.toString().trim().ifBlank { default }
+        }
     }
 
     internal fun parseTradeDate(tradeDateStr: String): Long? {
@@ -121,12 +138,15 @@ class GeminiAiProvider @Inject constructor() : AiProvider {
             """
             You are an expert financial parser. Extract all transactions and holdings from the provided text. Return ONLY a valid JSON array of objects without markdown formatting like ```json.
 
+            CRITICAL: If the provided text does not contain financial transactions, stock holdings, or bank statements (e.g., it is a random letter, invoice, or unrelated document), you MUST return an empty JSON array: [].
+
             Each JSON object MUST include the following fields in the schema:
             - assetName (string): Full name or trading symbol of the asset/security.
+            - assetClass (string): Category of asset. Allowed values: STOCK, MUTUAL_FUND, BOND, FD, HOUSE, LAND, GOLD, CRYPTO. Default to STOCK if uncertain.
             - transactionType (string): BUY, SELL, DIVIDEND, INTEREST, FEE, TAX, or CHARGE. For holdings statements, use BUY.
-            - quantity (string): Numeric quantity of shares/units.
-            - price (string): Price per share/unit or average cost basis.
-            - netAmount (string): Total transaction amount or current/invested value.
+            - quantity (string): Numeric quantity of shares/units as a string (e.g., "10", "144.8"). Never output floating point approximations or scientific notation.
+            - price (string): Price per share/unit or average cost basis as a string.
+            - netAmount (string): Total transaction amount or current/invested value as a string.
             - tradeDate (string): Transaction date in YYYY-MM-DD format. The tradeDate field is mandatory in the JSON schema. If you are processing a Holdings Statement (which lacks transaction dates), you must use the current date ($today) in YYYY-MM-DD format.
             - confidence (integer 0-100): Assign a confidence score of 95-100 if you clearly find the asset name, quantity, and price. Assign 80-94 if one field is missing. Assign below 80 only if the data is ambiguous.
             """.trimIndent()

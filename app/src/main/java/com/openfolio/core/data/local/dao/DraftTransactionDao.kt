@@ -37,6 +37,9 @@ interface DraftTransactionDao {
     @Query("UPDATE draft_transactions SET isAccepted = :accepted WHERE id = :draftId")
     suspend fun setAccepted(draftId: String, accepted: Boolean)
 
+    @Query("UPDATE draft_transactions SET assetClass = :assetClass WHERE id = :draftId")
+    suspend fun updateAssetClass(draftId: String, assetClass: String)
+
     @Query("DELETE FROM draft_transactions WHERE documentId = :documentId")
     suspend fun deleteByDocumentId(documentId: String)
 }

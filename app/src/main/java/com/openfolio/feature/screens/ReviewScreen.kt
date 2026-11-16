@@ -77,6 +77,7 @@ fun ReviewScreen(
     onSaveDraft: (String?, String, String, String, String, String) -> Unit,
     onSaveConfirmed: () -> Unit,
     onSaveComplete: () -> Unit,
+    onNavigateToInbox: () -> Unit = onBack,
     onNavigateToSettings: () -> Unit = {},
     onDismissMissingApiKey: () -> Unit = {},
     onDismissError: () -> Unit = {},
@@ -90,7 +91,7 @@ fun ReviewScreen(
     val headerRowNumber = headerRowText.toIntOrNull() ?: 1
 
     LaunchedEffect(errorMessage) {
-        if (!errorMessage.isNullOrBlank()) {
+        if (!errorMessage.isNullOrBlank() && actionState !is ReviewActionState.NoFinancialData) {
             snackbarHostState.showSnackbar(errorMessage)
             onDismissError()
         }
@@ -104,6 +105,10 @@ fun ReviewScreen(
                         "Skipped ${actionState.result.duplicateCount} duplicates.",
                 )
                 onSaveComplete()
+            }
+            is ReviewActionState.NoFinancialData -> {
+                snackbarHostState.showSnackbar(actionState.message)
+                onNavigateToInbox()
             }
             is ReviewActionState.Error -> {
                 if (errorMessage.isNullOrBlank()) {

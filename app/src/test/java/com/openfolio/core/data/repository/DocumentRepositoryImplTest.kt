@@ -23,6 +23,7 @@ import com.openfolio.core.domain.repository.AiExtractionException
 import com.openfolio.core.domain.repository.DuplicateDocumentException
 import com.openfolio.core.domain.repository.EmptyExtractedTextException
 import com.openfolio.core.domain.repository.MissingApiKeyException
+import com.openfolio.core.domain.repository.NoFinancialDataException
 import java.io.ByteArrayInputStream
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.CoroutineScope
@@ -458,6 +459,51 @@ class DocumentRepositoryImplTest {
 
             verify(draftsDao).insertAll(listOf(mockDraft))
             verify(dao).updateStatus("doc-1", DocumentStatus.AI_COMPLETE.name)
+        }
+    }
+
+    @Test
+    fun processDocumentWithAiThrowsNoFinancialDataExceptionWhenAiReturnsEmptyList() {
+        runBlocking {
+            val dao = mock<DocumentDao>()
+            val settings = mock<SettingsRepository>()
+            val aiProvider = mock<AiProvider>()
+            val draftsDao = mock<DraftTransactionDao>()
+
+            whenever(dao.getDocumentById("doc-empty")).thenReturn(
+                DocumentEntity(
+                    id = "doc-empty",
+                    fileName = "invoice.pdf",
+                    localPath = "/fake/invoice.pdf",
+                    fileHash = "hash-empty",
+                    fileSize = 100L,
+                    importDate = 1700000000000L,
+                    status = DocumentStatus.OCR_COMPLETE.name,
+                    extractedText = "This is a random letter with no finances.",
+                ),
+            )
+            whenever(settings.getGeminiApiKey()).thenReturn("test-api-key")
+            whenever(aiProvider.extractTransactions("This is a random letter with no finances.", "test-api-key", "doc-empty"))
+                .thenReturn(Result.success(emptyList()))
+
+            val repository = DocumentRepositoryImpl(
+                documentDao = dao,
+                columnMappingDao = mock<ColumnMappingDao>(),
+                draftTransactionDao = draftsDao,
+                transactionDao = mock<TransactionDao>(),
+                database = mock<OpenFolioDatabase>(),
+                documentTextExtractor = mock<DocumentTextExtractor>(),
+                structuredFileParser = mock<StructuredFileParser>(),
+                settingsRepository = settings,
+                aiProvider = aiProvider,
+                applicationScope = mock<CoroutineScope>(),
+            )
+
+            assertThrows(NoFinancialDataException::class.java) {
+                runBlocking {
+                    repository.processDocumentWithAi("doc-empty")
+                }
+            }
         }
     }
 

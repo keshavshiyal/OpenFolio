@@ -32,6 +32,7 @@ data class DraftTransactionEntity(
     @ColumnInfo(defaultValue = "0") val isManual: Boolean = false,
     @ColumnInfo(defaultValue = "''") val fingerprint: String = "",
     val tradeDate: Long? = null,
+    @ColumnInfo(defaultValue = "'STOCK'") val assetClass: String = "STOCK",
 ) {
     init {
         require(confidence in 0..100) { "Confidence must be between 0 and 100." }

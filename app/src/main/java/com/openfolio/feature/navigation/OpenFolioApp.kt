@@ -177,6 +177,7 @@ fun OpenFolioApp(
                     onSaveDraft = reviewViewModel::saveDraft,
                     onSaveConfirmed = reviewViewModel::saveConfirmed,
                     onSaveComplete = { navController.popBackStack() },
+                    onNavigateToInbox = { navController.popBackStack() },
                     onNavigateToSettings = { navController.navigate(AppDestination.Settings.route) },
                     onDismissMissingApiKey = reviewViewModel::dismissMissingApiKeyDialog,
                     onDismissError = reviewViewModel::clearErrorMessage,

@@ -10,6 +10,7 @@ import com.openfolio.core.domain.repository.AiExtractionException
 import com.openfolio.core.domain.repository.DocumentRepository
 import com.openfolio.core.domain.repository.EmptyExtractedTextException
 import com.openfolio.core.domain.repository.MissingApiKeyException
+import com.openfolio.core.domain.repository.NoFinancialDataException
 import com.openfolio.core.domain.repository.SaveDraftTransactionsResult
 import com.openfolio.feature.screens.autoMapHeaders
 import com.openfolio.feature.screens.formatEpochMillisToDate
@@ -266,6 +267,21 @@ class ReviewViewModelTest {
     }
 
     @Test
+    fun processWithAiHandlesNoFinancialDataException() {
+        val exception = NoFinancialDataException()
+        repository.throwExceptionOnAi = exception
+        viewModel.onProcessWithAi()
+
+        val expected = "No financial transactions found in this document."
+        assertEquals(
+            ReviewActionState.NoFinancialData(expected),
+            viewModel.actionState.value,
+        )
+        assertEquals(expected, viewModel.errorMessage.value)
+        assertEquals(Pair("document-1", DocumentStatus.FAILED.name), repository.lastUpdatedStatus)
+    }
+
+    @Test
     fun processWithAiHandlesGenericException() {
         val exception = RuntimeException("Connection timeout")
         repository.throwExceptionOnAi = exception
@@ -309,6 +325,11 @@ class ReviewViewModelTest {
         var document: DocumentEntity?,
     ) : DocumentRepository {
         var throwExceptionOnAi: Exception? = null
+        var lastUpdatedStatus: Pair<String, String>? = null
+
+        override suspend fun updateDocumentStatus(documentId: String, status: String) {
+            lastUpdatedStatus = Pair(documentId, status)
+        }
         private val drafts = MutableStateFlow<List<DraftTransactionEntity>>(emptyList())
         var aiProcessCallCount = 0
             private set

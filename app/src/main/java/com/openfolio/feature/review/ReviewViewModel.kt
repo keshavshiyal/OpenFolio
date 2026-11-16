@@ -10,6 +10,7 @@ import com.openfolio.core.domain.repository.AiExtractionException
 import com.openfolio.core.domain.repository.DocumentRepository
 import com.openfolio.core.domain.repository.EmptyExtractedTextException
 import com.openfolio.core.domain.repository.MissingApiKeyException
+import com.openfolio.core.domain.repository.NoFinancialDataException
 import com.openfolio.core.domain.repository.SaveDraftTransactionsResult
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -104,6 +105,11 @@ class ReviewViewModel @Inject constructor(
             } catch (e: CancellationException) {
                 _actionState.value = ReviewActionState.Idle
                 throw e
+            } catch (e: NoFinancialDataException) {
+                documentRepository.updateDocumentStatus(document.id, DocumentStatus.FAILED.name)
+                val message = e.message ?: "No financial transactions found in this document."
+                _errorMessage.value = message
+                _actionState.value = ReviewActionState.NoFinancialData(message)
             } catch (e: EmptyExtractedTextException) {
                 val message = e.message ?: "No text found in document."
                 _errorMessage.value = message
@@ -226,6 +232,7 @@ class ReviewViewModel @Inject constructor(
                     isAccepted = previous?.isAccepted ?: false,
                     isManual = true,
                     tradeDate = previous?.tradeDate,
+                    assetClass = previous?.assetClass ?: "STOCK",
                 )
                 if (previous == null) {
                     documentRepository.insertDraftTransaction(draft)
@@ -260,6 +267,14 @@ class ReviewViewModel @Inject constructor(
             throw exception
         } catch (missingKey: MissingApiKeyException) {
             _actionState.value = ReviewActionState.MissingApiKey
+        } catch (noData: NoFinancialDataException) {
+            val docId = (uiState.value as? ReviewUiState.Loaded)?.document?.id
+            if (docId != null) {
+                documentRepository.updateDocumentStatus(docId, DocumentStatus.FAILED.name)
+            }
+            val message = noData.message ?: "No financial transactions found in this document."
+            _errorMessage.value = message
+            _actionState.value = ReviewActionState.NoFinancialData(message)
         } catch (emptyText: EmptyExtractedTextException) {
             val message = emptyText.message ?: "No text found in document."
             _errorMessage.value = message
@@ -299,5 +314,6 @@ sealed interface ReviewActionState {
     data object ProcessingMapping : ReviewActionState
     data object Saving : ReviewActionState
     data class Saved(val result: SaveDraftTransactionsResult) : ReviewActionState
+    data class NoFinancialData(val message: String = "No financial transactions found in this document.") : ReviewActionState
     data class Error(val message: String) : ReviewActionState
 }

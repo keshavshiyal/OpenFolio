@@ -45,6 +45,7 @@ class GeminiAiProviderTest {
         assertEquals("1500.50", first.price)
         assertEquals("15005.00", first.netAmount)
         assertEquals(95, first.confidence)
+        assertEquals("STOCK", first.assetClass)
         assertNotNull(first.tradeDate)
 
         val second = results[1]
@@ -133,5 +134,48 @@ class GeminiAiProviderTest {
         assertTrue("Prompt contains 95-100 confidence rule", prompt.contains("Assign a confidence score of 95-100 if you clearly find the asset name, quantity, and price."))
         assertTrue("Prompt contains 80-94 confidence rule", prompt.contains("Assign 80-94 if one field is missing."))
         assertTrue("Prompt contains below 80 rule", prompt.contains("Assign below 80 only if the data is ambiguous."))
+        assertTrue("Prompt contains non-financial document instruction", prompt.contains("CRITICAL: If the provided text does not contain financial transactions"))
+        assertTrue("Prompt includes assetClass schema", prompt.contains("assetClass (string)"))
+    }
+
+    @Test
+    fun parseJsonResponseExtractsAssetClassAndHandlesPrecision() {
+        val json = """
+            [
+              {
+                "assetName": "Parag Parikh Flexi Cap",
+                "assetClass": "MUTUAL_FUND",
+                "transactionType": "BUY",
+                "quantity": 144.8,
+                "price": 10.0,
+                "netAmount": 1448.0,
+                "tradeDate": "2024-05-10"
+              },
+              {
+                "assetName": "Bitcoin",
+                "assetClass": "CRYPTO",
+                "transactionType": "BUY",
+                "quantity": "0.005",
+                "price": "6000000",
+                "netAmount": "30000"
+              }
+            ]
+        """.trimIndent()
+
+        val results = provider.parseJsonResponse(json, "doc-1")
+        assertEquals(2, results.size)
+        assertEquals("MUTUAL_FUND", results[0].assetClass)
+        assertEquals("144.8", results[0].quantity)
+        assertEquals("10.0", results[0].price)
+        assertEquals("1448.0", results[0].netAmount)
+
+        assertEquals("CRYPTO", results[1].assetClass)
+        assertEquals("0.005", results[1].quantity)
+    }
+
+    @Test
+    fun parseJsonResponseReturnsEmptyListForNonFinancialEmptyArray() {
+        val results = provider.parseJsonResponse("[]", "doc-empty")
+        assertTrue(results.isEmpty())
     }
 }

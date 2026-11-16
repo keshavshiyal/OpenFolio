@@ -55,6 +55,7 @@ class GetDashboardDataUseCase @Inject constructor(
                 totalLiabilities = totalLiabilities,
                 recentTransactions = mappedRecent,
                 allocations = allocations,
+                totalTransactions = allTransactions.size,
             )
         }
     }

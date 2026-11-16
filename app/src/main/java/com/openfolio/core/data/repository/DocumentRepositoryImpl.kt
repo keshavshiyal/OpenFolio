@@ -47,6 +47,7 @@ import com.openfolio.core.data.remote.ai.AiProvider
 import com.openfolio.core.domain.repository.AiExtractionException
 import com.openfolio.core.domain.repository.EmptyExtractedTextException
 import com.openfolio.core.domain.repository.MissingApiKeyException
+import com.openfolio.core.domain.repository.NoFinancialDataException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
@@ -163,10 +164,18 @@ class DocumentRepositoryImpl @Inject constructor(
                 if (transactionDao.containsFingerprint(fingerprint)) {
                     duplicateCount++
                 } else {
-                    val quantity = BigDecimal(draft.quantity)
-                    val price = BigDecimal(draft.price)
+                    val cleanQty = draft.quantity.trim().replace(",", "").ifBlank { "0" }
+                    val cleanPrice = draft.price.trim().replace(",", "").ifBlank { "0" }
+                    val cleanNetAmount = draft.netAmount.trim().replace(",", "").ifBlank { "0" }
+                    val quantity = BigDecimal(cleanQty)
+                    val price = BigDecimal(cleanPrice)
                     val accountId = "default_account"
                     val assetId = draft.assetName.trim().lowercase().replace("\\s+".toRegex(), "_")
+                    val assetClass = try {
+                        AssetClass.valueOf(draft.assetClass.trim().uppercase())
+                    } catch (_: Exception) {
+                        AssetClass.STOCK
+                    }
                     database.accountDao().insert(
                         AccountEntity(
                             id = accountId,
@@ -179,7 +188,7 @@ class DocumentRepositoryImpl @Inject constructor(
                         AssetEntity(
                             id = assetId,
                             displayName = draft.assetName,
-                            assetClass = AssetClass.STOCK, // TODO: Map actual asset class from AI
+                            assetClass = assetClass,
                             currency = "INR",
                         ),
                     )
@@ -201,7 +210,7 @@ class DocumentRepositoryImpl @Inject constructor(
                             grossAmount = quantity.multiply(price),
                             fees = BigDecimal.ZERO,
                             taxes = BigDecimal.ZERO,
-                            netAmount = BigDecimal(draft.netAmount),
+                            netAmount = BigDecimal(cleanNetAmount),
                             currency = "INR",
                             fxRate = null,
                             baseCurrencyAmount = null,
@@ -226,6 +235,11 @@ class DocumentRepositoryImpl @Inject constructor(
             SaveDraftTransactionsResult(transactionsToInsert.size, duplicateCount)
         }
     }
+
+    override suspend fun updateDocumentStatus(documentId: String, status: String) =
+        withContext(Dispatchers.IO) {
+            documentDao.updateStatus(documentId, status)
+        }
 
     @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
     override suspend fun processDocumentWithAi(documentId: String) =
@@ -279,9 +293,11 @@ class DocumentRepositoryImpl @Inject constructor(
                 aggregatedDrafts.addAll(drafts)
             }
 
-            if (aggregatedDrafts.isNotEmpty()) {
-                draftTransactionDao.insertAll(aggregatedDrafts)
+            if (aggregatedDrafts.isEmpty()) {
+                throw NoFinancialDataException()
             }
+
+            draftTransactionDao.insertAll(aggregatedDrafts)
             documentDao.updateStatus(documentId, DocumentStatus.AI_COMPLETE.name)
         }
 
@@ -543,9 +559,13 @@ class DocumentRepositoryImpl @Inject constructor(
         price: String?,
         amount: String?,
     ): Triple<String, String, String> {
-        val qtyBd = qty?.toBigDecimalOrNull()
-        val priceBd = price?.toBigDecimalOrNull()
-        val amountBd = amount?.toBigDecimalOrNull()
+        val cleanQty = qty?.trim()?.replace(",", "")?.takeIf(String::isNotBlank)
+        val cleanPrice = price?.trim()?.replace(",", "")?.takeIf(String::isNotBlank)
+        val cleanAmount = amount?.trim()?.replace(",", "")?.takeIf(String::isNotBlank)
+
+        val qtyBd = cleanQty?.let { runCatching { BigDecimal(it) }.getOrNull() }
+        val priceBd = cleanPrice?.let { runCatching { BigDecimal(it) }.getOrNull() }
+        val amountBd = cleanAmount?.let { runCatching { BigDecimal(it) }.getOrNull() }
 
         return when {
             qtyBd != null && priceBd != null && amountBd != null -> {

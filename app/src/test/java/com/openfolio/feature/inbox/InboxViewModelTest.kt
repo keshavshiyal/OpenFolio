@@ -81,6 +81,8 @@ class InboxViewModelTest {
             documentId: String,
         ): SaveDraftTransactionsResult = SaveDraftTransactionsResult(0, 0)
 
+        override suspend fun updateDocumentStatus(documentId: String, status: String) = Unit
+
         override suspend fun processDocumentWithAi(documentId: String) = Unit
 
         override suspend fun processDocumentWithMockAi(documentId: String) = Unit
