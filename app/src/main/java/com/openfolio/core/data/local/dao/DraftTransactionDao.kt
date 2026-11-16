@@ -25,10 +25,7 @@ interface DraftTransactionDao {
     )
     fun getByDocumentId(documentId: String): Flow<List<DraftTransactionEntity>>
 
-    @Query(
-        "SELECT * FROM draft_transactions WHERE documentId = :documentId " +
-            "ORDER BY confidence DESC, assetName",
-    )
+    @Query("SELECT * FROM draft_transactions WHERE documentId = :documentId")
     suspend fun getByDocumentIdOnce(documentId: String): List<DraftTransactionEntity>
 
     @Query(

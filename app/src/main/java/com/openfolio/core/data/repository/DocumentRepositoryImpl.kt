@@ -3,6 +3,7 @@ package com.openfolio.core.data.repository
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.util.Log
 import androidx.room.withTransaction
 import com.openfolio.core.data.local.OpenFolioDatabase
 import com.openfolio.core.data.local.dao.DocumentDao
@@ -135,9 +136,14 @@ class DocumentRepositoryImpl @Inject constructor(
                 return@withTransaction SaveDraftTransactionsResult(0, 0)
             }
 
-            var savedCount = 0
+            val drafts = draftTransactionDao.getByDocumentIdOnce(documentId)
+            val allDraftIdsSame = drafts.size > 1 && drafts.all { it.id == drafts.first().id }
+            val seenTxnIds = mutableSetOf<String>()
+            val transactionsToInsert = mutableListOf<TransactionEntity>()
             var duplicateCount = 0
-            draftTransactionDao.getByDocumentIdOnce(documentId).forEach { draft ->
+
+            drafts.forEach { draft ->
+                Log.d("SaveTxn", "Saving draft ID: ${draft.id}")
                 val fallbackDate = if (document.importDate > 0) {
                     LocalDate.ofEpochDay(Math.floorDiv(document.importDate, MILLIS_PER_DAY))
                 } else {
@@ -177,9 +183,14 @@ class DocumentRepositoryImpl @Inject constructor(
                             currency = "INR",
                         ),
                     )
-                    transactionDao.insert(
+                    val transactionId = if (!allDraftIdsSame && draft.id.isNotBlank() && seenTxnIds.add(draft.id)) {
+                        draft.id
+                    } else {
+                        UUID.randomUUID().toString()
+                    }
+                    transactionsToInsert.add(
                         TransactionEntity(
-                            id = draft.id,
+                            id = transactionId,
                             accountId = accountId,
                             assetId = assetId,
                             type = TransactionType.valueOf(draft.transactionType),
@@ -204,12 +215,15 @@ class DocumentRepositoryImpl @Inject constructor(
                             confidence = draft.confidence / 100.0,
                         ),
                     )
-                    savedCount++
                 }
+            }
+            Log.d("SaveTxn", "Total transactions to insert: ${transactionsToInsert.size}")
+            if (transactionsToInsert.isNotEmpty()) {
+                transactionDao.insertAll(transactionsToInsert)
             }
             draftTransactionDao.deleteByDocumentId(documentId)
             documentDao.updateStatus(documentId, DocumentStatus.COMPLETED.name)
-            SaveDraftTransactionsResult(savedCount, duplicateCount)
+            SaveDraftTransactionsResult(transactionsToInsert.size, duplicateCount)
         }
     }
 

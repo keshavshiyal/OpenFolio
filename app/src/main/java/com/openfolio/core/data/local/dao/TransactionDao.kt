@@ -41,7 +41,7 @@ interface TransactionDao {
     @Query("SELECT * FROM txn WHERE accountId = :accountId ORDER BY tradeDate DESC, createdAt DESC")
     fun getByAccountId(accountId: String): Flow<List<TransactionEntity>>
 
-    @Query("SELECT SUM(CAST(grossAmount AS REAL)) FROM txn WHERE type IN ('BUY', 'DIVIDEND', 'INTEREST')")
+    @Query("SELECT SUM(CAST(grossAmount AS REAL)) FROM txn WHERE type IN ('BUY', 'TRANSFER_IN', 'INTEREST', 'DIVIDEND')")
     fun getTotalAssetsFlow(): Flow<Double?>
 
     @Query("SELECT SUM(CAST(grossAmount AS REAL)) FROM txn WHERE type IN ('FEE', 'TAX')")
