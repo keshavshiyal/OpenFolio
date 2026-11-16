@@ -1,10 +1,10 @@
 package com.openfolio.feature.screens
 
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import android.net.Uri
-import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,14 +23,15 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AccountBalanceWallet
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.outlined.ShowChart
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
@@ -43,34 +44,60 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.Fill
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.openfolio.core.data.local.entity.TransactionEntity
+import com.openfolio.core.data.local.entity.TransactionType
 import com.openfolio.core.ui.components.MoneyText
 import com.openfolio.core.ui.components.MoneyTextStyle
 import com.openfolio.core.ui.theme.LocalOpenFolioColors
-import com.openfolio.feature.home.ActivityIcon
 import com.openfolio.feature.home.AllocationColor
 import com.openfolio.feature.home.AssetAllocation
 import com.openfolio.feature.home.HomeUiState
+import com.openfolio.feature.home.HomeViewModel
 import com.openfolio.feature.home.IngestionState
-import com.openfolio.feature.home.RecentActivity
+import com.openfolio.feature.navigation.AppDestination
 import java.math.BigDecimal
+
+@Composable
+fun HomeScreen(
+    viewModel: HomeViewModel,
+    onImportSuccess: () -> Unit,
+    onSettings: () -> Unit,
+    onAddManually: () -> Unit = {},
+) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val ingestionState by viewModel.ingestionState.collectAsStateWithLifecycle()
+
+    HomeScreen(
+        uiState = uiState,
+        ingestionState = ingestionState,
+        onToggleValues = viewModel::toggleValuesVisibility,
+        onSelectPeriod = viewModel::selectPeriod,
+        onImport = viewModel::ingestFile,
+        onImportSuccess = onImportSuccess,
+        onIngestionHandled = viewModel::clearIngestionState,
+        onSettings = onSettings,
+        onAddManually = onAddManually,
+    )
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -83,6 +110,7 @@ fun HomeScreen(
     onImportSuccess: () -> Unit,
     onIngestionHandled: () -> Unit,
     onSettings: () -> Unit,
+    onAddManually: () -> Unit = {},
 ) {
     val colors = LocalOpenFolioColors.current
     val snackbarHostState = remember { SnackbarHostState() }
@@ -137,75 +165,133 @@ fun HomeScreen(
             )
         },
         floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = {
-                    if (ingestionState != IngestionState.Loading) {
-                        documentPicker.launch(DOCUMENT_MIME_TYPES)
-                    }
-                },
-                icon = {
-                    if (ingestionState == IngestionState.Loading) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(20.dp),
-                            color = colors.onAccent,
-                            strokeWidth = 2.dp,
-                        )
-                    } else {
-                        Icon(Icons.Filled.Add, contentDescription = null)
-                    }
-                },
-                text = {
-                    Text(if (ingestionState == IngestionState.Loading) "Importing" else "Import")
-                },
-                containerColor = colors.brand,
-                contentColor = colors.onAccent,
-                expanded = true,
-            )
+            if (uiState is HomeUiState.Success) {
+                ExtendedFloatingActionButton(
+                    onClick = {
+                        if (ingestionState != IngestionState.Loading) {
+                            documentPicker.launch(DOCUMENT_MIME_TYPES)
+                        }
+                    },
+                    icon = {
+                        if (ingestionState == IngestionState.Loading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                color = colors.onAccent,
+                                strokeWidth = 2.dp,
+                            )
+                        } else {
+                            Icon(Icons.Filled.Add, contentDescription = null)
+                        }
+                    },
+                    text = {
+                        Text(if (ingestionState == IngestionState.Loading) "Importing" else "Import")
+                    },
+                    containerColor = colors.brand,
+                    contentColor = colors.onAccent,
+                    expanded = true,
+                )
+            }
         },
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
     ) { innerPadding ->
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding),
-            contentPadding = PaddingValues(
-                start = 20.dp,
-                top = 8.dp,
-                end = 20.dp,
-                bottom = 160.dp,
-            ),
-            verticalArrangement = Arrangement.spacedBy(20.dp),
-        ) {
-            item {
-                NetWorthSection(uiState)
+        when (uiState) {
+            is HomeUiState.Loading -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator(color = colors.brand)
+                }
             }
-            item {
-                PeriodSelector(
-                    selectedPeriod = uiState.selectedPeriod,
-                    onSelectPeriod = onSelectPeriod,
-                )
+            is HomeUiState.Empty -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding),
+                ) {
+                    EmptyScreen(
+                        destination = AppDestination.Home,
+                        message = "No assets yet. Import a statement or add one manually.",
+                        actionLabel = "Import",
+                        onAction = {
+                            if (ingestionState != IngestionState.Loading) {
+                                documentPicker.launch(DOCUMENT_MIME_TYPES)
+                            }
+                        },
+                        secondaryActionLabel = "Add Manually",
+                        onSecondaryAction = onAddManually,
+                        showTitle = false,
+                    )
+                }
             }
-            item {
-                TrajectoryChart(points = uiState.trajectoryPoints)
-            }
-            item {
-                AssetLiabilityPair(uiState)
-            }
-            item {
-                AllocationSection(uiState.allocations)
-            }
-            item {
-                Text(
-                    text = "Recent Activity",
-                    style = MaterialTheme.typography.titleLarge,
-                    color = colors.content,
-                )
-            }
-            items(uiState.recentActivity) { activity ->
-                RecentActivityRow(activity = activity, showValues = uiState.showValues)
+            is HomeUiState.Success -> {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding),
+                    contentPadding = PaddingValues(
+                        start = 20.dp,
+                        top = 8.dp,
+                        end = 20.dp,
+                        bottom = 160.dp,
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(20.dp),
+                ) {
+                    item {
+                        NetWorthSection(
+                            netWorth = uiState.data.netWorth,
+                            changePercent = uiState.changePercent,
+                            asOf = uiState.asOf,
+                            showValues = uiState.showValues,
+                        )
+                    }
+                    if (uiState.data.totalAssets > BigDecimal.ZERO) {
+                        item {
+                            PeriodSelector(
+                                selectedPeriod = uiState.selectedPeriod,
+                                onSelectPeriod = onSelectPeriod,
+                            )
+                        }
+                        item {
+                            Box(modifier = Modifier.fillMaxWidth()) {
+                                TrajectoryChart(points = uiState.trajectoryPoints)
+                            }
+                        }
+                    }
+                    item {
+                        AssetLiabilityPair(
+                            totalAssets = uiState.data.totalAssets,
+                            totalLiabilities = uiState.data.totalLiabilities,
+                            showValues = uiState.showValues,
+                        )
+                    }
+                    if (uiState.data.totalAssets > BigDecimal.ZERO) {
+                        item {
+                            Box(modifier = Modifier.fillMaxWidth()) {
+                                AllocationSection(uiState.allocations)
+                            }
+                        }
+                    }
+                    if (uiState.data.recentTransactions.isNotEmpty()) {
+                        item {
+                            Text(
+                                text = "Recent Activity",
+                                style = MaterialTheme.typography.titleLarge,
+                                color = colors.content,
+                            )
+                        }
+                        items(uiState.data.recentTransactions) { transaction ->
+                            RecentActivityRow(
+                                transaction = transaction,
+                                showValues = uiState.showValues,
+                            )
+                        }
+                    }
+                }
             }
         }
-
     }
 }
 
@@ -220,7 +306,12 @@ private val DOCUMENT_MIME_TYPES = arrayOf(
 )
 
 @Composable
-private fun NetWorthSection(uiState: HomeUiState) {
+private fun NetWorthSection(
+    netWorth: BigDecimal,
+    changePercent: String,
+    asOf: String,
+    showValues: Boolean,
+) {
     val colors = LocalOpenFolioColors.current
 
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -237,9 +328,9 @@ private fun NetWorthSection(uiState: HomeUiState) {
                 fontFeatureSettings = "tnum",
             )
             MoneyText(
-                amount = uiState.netWorth,
+                amount = netWorth,
                 style = MoneyTextStyle.Display,
-                showValues = uiState.showValues,
+                showValues = showValues,
             )
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -251,14 +342,14 @@ private fun NetWorthSection(uiState: HomeUiState) {
                     color = colors.gainGlyph,
                 )
                 Text(
-                    text = uiState.changePercent,
+                    text = changePercent,
                     style = trendStyle,
                     color = colors.content,
                 )
             }
         }
         Text(
-            text = uiState.asOf,
+            text = asOf,
             style = MaterialTheme.typography.bodySmall,
             color = colors.muted,
         )
@@ -378,7 +469,11 @@ private fun TrajectoryChart(points: List<Float>) {
 }
 
 @Composable
-private fun AssetLiabilityPair(uiState: HomeUiState) {
+private fun AssetLiabilityPair(
+    totalAssets: BigDecimal,
+    totalLiabilities: BigDecimal,
+    showValues: Boolean,
+) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -386,14 +481,14 @@ private fun AssetLiabilityPair(uiState: HomeUiState) {
         StatCard(
             modifier = Modifier.weight(1f),
             label = "Assets",
-            amount = uiState.assets,
-            showValues = uiState.showValues,
+            amount = totalAssets,
+            showValues = showValues,
         )
         StatCard(
             modifier = Modifier.weight(1f),
             label = "Liabilities",
-            amount = uiState.liabilities,
-            showValues = uiState.showValues,
+            amount = totalLiabilities,
+            showValues = showValues,
         )
     }
 }
@@ -511,13 +606,13 @@ private fun allocationColor(color: AllocationColor): Color {
 
 @Composable
 private fun RecentActivityRow(
-    activity: RecentActivity,
+    transaction: TransactionEntity,
     showValues: Boolean,
 ) {
     val colors = LocalOpenFolioColors.current
-    val icon = when (activity.icon) {
-        ActivityIcon.Buy -> Icons.Outlined.ShowChart
-        ActivityIcon.Investment -> Icons.Filled.AccountBalanceWallet
+    val icon = when (transaction.type) {
+        TransactionType.BUY, TransactionType.SELL -> Icons.Outlined.ShowChart
+        else -> Icons.Filled.AccountBalanceWallet
     }
 
     Row(
@@ -534,18 +629,18 @@ private fun RecentActivityRow(
         )
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = activity.title,
+                text = "${transaction.type.name} ${transaction.assetId}",
                 style = MaterialTheme.typography.bodyLarge,
                 color = colors.content,
             )
             Text(
-                text = activity.subtitle,
+                text = transaction.tradeDate.toString(),
                 style = MaterialTheme.typography.bodySmall,
                 color = colors.muted,
             )
         }
         MoneyText(
-            amount = activity.amount,
+            amount = transaction.netAmount,
             style = MoneyTextStyle.Body,
             showValues = showValues,
         )

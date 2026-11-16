@@ -138,12 +138,21 @@ class DocumentRepositoryImpl @Inject constructor(
             var savedCount = 0
             var duplicateCount = 0
             draftTransactionDao.getByDocumentIdOnce(documentId).forEach { draft ->
+                val fallbackDate = if (document.importDate > 0) {
+                    LocalDate.ofEpochDay(Math.floorDiv(document.importDate, MILLIS_PER_DAY))
+                } else {
+                    LocalDate.now()
+                }
+                val resolvedTradeDate = draft.tradeDate?.let {
+                    LocalDate.ofEpochDay(Math.floorDiv(it, MILLIS_PER_DAY))
+                } ?: fallbackDate
+
                 val fingerprint = createTransactionFingerprint(
                     assetName = draft.assetName,
                     transactionType = draft.transactionType,
                     quantity = draft.quantity,
                     netAmount = draft.netAmount,
-                    date = Math.floorDiv(draft.tradeDate ?: document.importDate, MILLIS_PER_DAY),
+                    date = resolvedTradeDate.toEpochDay(),
                 )
                 if (transactionDao.containsFingerprint(fingerprint)) {
                     duplicateCount++
@@ -168,14 +177,13 @@ class DocumentRepositoryImpl @Inject constructor(
                             currency = "INR",
                         ),
                     )
-                    val dateDays = Math.floorDiv(draft.tradeDate ?: document.importDate, MILLIS_PER_DAY)
                     transactionDao.insert(
                         TransactionEntity(
                             id = draft.id,
                             accountId = accountId,
                             assetId = assetId,
                             type = TransactionType.valueOf(draft.transactionType),
-                            tradeDate = LocalDate.ofEpochDay(dateDays),
+                            tradeDate = resolvedTradeDate,
                             settlementDate = null,
                             quantity = quantity,
                             unitPrice = price,

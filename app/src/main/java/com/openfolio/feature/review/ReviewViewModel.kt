@@ -225,6 +225,7 @@ class ReviewViewModel @Inject constructor(
                     confidence = previous?.confidence ?: 100,
                     isAccepted = previous?.isAccepted ?: false,
                     isManual = true,
+                    tradeDate = previous?.tradeDate,
                 )
                 if (previous == null) {
                     documentRepository.insertDraftTransaction(draft)

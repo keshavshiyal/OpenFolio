@@ -123,4 +123,15 @@ class GeminiAiProviderTest {
         assertNull("Blank date", provider.parseTradeDate("   "))
         assertNull("Invalid date", provider.parseTradeDate("not-a-date"))
     }
+
+    @Test
+    fun systemPromptIncludesHoldingsDateAndConfidenceRules() {
+        val prompt = GeminiAiProvider.buildSystemPrompt("2026-11-16")
+        assertTrue("Prompt demands tradeDate field", prompt.contains("tradeDate"))
+        assertTrue("Prompt contains Holdings Statement instruction", prompt.contains("Holdings Statement (which lacks transaction dates)"))
+        assertTrue("Prompt contains fallback date", prompt.contains("2026-11-16"))
+        assertTrue("Prompt contains 95-100 confidence rule", prompt.contains("Assign a confidence score of 95-100 if you clearly find the asset name, quantity, and price."))
+        assertTrue("Prompt contains 80-94 confidence rule", prompt.contains("Assign 80-94 if one field is missing."))
+        assertTrue("Prompt contains below 80 rule", prompt.contains("Assign below 80 only if the data is ambiguous."))
+    }
 }

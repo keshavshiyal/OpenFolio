@@ -7,14 +7,16 @@ import androidx.lifecycle.viewModelScope
 import com.openfolio.core.data.local.entity.DocumentEntity
 import com.openfolio.core.domain.repository.DocumentRepository
 import com.openfolio.core.domain.repository.DuplicateDocumentException
+import com.openfolio.core.domain.usecase.GetDashboardDataUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.math.BigDecimal
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -22,9 +24,13 @@ import kotlinx.coroutines.launch
 class HomeViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val documentRepository: DocumentRepository,
+    private val getDashboardDataUseCase: GetDashboardDataUseCase,
 ) : ViewModel() {
-    private val _uiState = MutableStateFlow(HomeUiState())
+    private val _uiState = MutableStateFlow<HomeUiState>(HomeUiState.Loading)
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
+
+    private val _showValues = MutableStateFlow(true)
+    private val _selectedPeriod = MutableStateFlow("1M")
 
     private val _ingestionState = MutableStateFlow<IngestionState>(IngestionState.Idle)
     val ingestionState: StateFlow<IngestionState> = _ingestionState.asStateFlow()
@@ -38,15 +44,37 @@ class HomeViewModel @Inject constructor(
                 _documents.value = documents
             }
         }
+
+        viewModelScope.launch {
+            combine(
+                getDashboardDataUseCase(),
+                _showValues,
+                _selectedPeriod,
+            ) { data, showValues, period ->
+                if ((data.totalAssets == BigDecimal.ZERO || data.totalAssets.compareTo(BigDecimal.ZERO) == 0) &&
+                    data.recentTransactions.isEmpty()
+                ) {
+                    HomeUiState.Empty
+                } else {
+                    HomeUiState.Success(
+                        data = data,
+                        showValues = showValues,
+                        selectedPeriod = period,
+                    )
+                }
+            }.collect { state ->
+                _uiState.value = state
+            }
+        }
     }
 
     fun toggleValuesVisibility() {
-        _uiState.update { it.copy(showValues = !it.showValues) }
+        _showValues.update { !it }
     }
 
     fun selectPeriod(period: String) {
         require(period in PERIODS) { "Unsupported chart period: $period" }
-        _uiState.update { it.copy(selectedPeriod = period) }
+        _selectedPeriod.value = period
     }
 
     fun ingestFile(uri: Uri) {

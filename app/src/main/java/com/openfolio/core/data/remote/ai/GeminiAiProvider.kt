@@ -117,7 +117,21 @@ class GeminiAiProvider @Inject constructor() : AiProvider {
     }
 
     companion object {
-        const val SYSTEM_PROMPT =
-            "You are an expert financial parser. Extract all transactions from the provided text. Return ONLY a valid JSON array of objects. Do not include markdown formatting like ```json. Each object must have: assetName (string), transactionType (string: BUY, SELL, DIVIDEND, INTEREST, FEE, TAX, CHARGE), quantity (string), price (string), netAmount (string), tradeDate (string: YYYY-MM-DD), and confidence (integer 0-100)."
+        fun buildSystemPrompt(today: String = LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE)): String =
+            """
+            You are an expert financial parser. Extract all transactions and holdings from the provided text. Return ONLY a valid JSON array of objects without markdown formatting like ```json.
+
+            Each JSON object MUST include the following fields in the schema:
+            - assetName (string): Full name or trading symbol of the asset/security.
+            - transactionType (string): BUY, SELL, DIVIDEND, INTEREST, FEE, TAX, or CHARGE. For holdings statements, use BUY.
+            - quantity (string): Numeric quantity of shares/units.
+            - price (string): Price per share/unit or average cost basis.
+            - netAmount (string): Total transaction amount or current/invested value.
+            - tradeDate (string): Transaction date in YYYY-MM-DD format. The tradeDate field is mandatory in the JSON schema. If you are processing a Holdings Statement (which lacks transaction dates), you must use the current date ($today) in YYYY-MM-DD format.
+            - confidence (integer 0-100): Assign a confidence score of 95-100 if you clearly find the asset name, quantity, and price. Assign 80-94 if one field is missing. Assign below 80 only if the data is ambiguous.
+            """.trimIndent()
+
+        val SYSTEM_PROMPT: String
+            get() = buildSystemPrompt()
     }
 }

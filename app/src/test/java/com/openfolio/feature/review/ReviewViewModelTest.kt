@@ -12,6 +12,7 @@ import com.openfolio.core.domain.repository.EmptyExtractedTextException
 import com.openfolio.core.domain.repository.MissingApiKeyException
 import com.openfolio.core.domain.repository.SaveDraftTransactionsResult
 import com.openfolio.feature.screens.autoMapHeaders
+import com.openfolio.feature.screens.formatEpochMillisToDate
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -19,6 +20,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -110,6 +112,43 @@ class ReviewViewModelTest {
         assertEquals(1, viewModel.drafts.value.size)
         assertEquals("Updated Holding", viewModel.drafts.value.single().assetName)
         assertEquals(original.id, viewModel.drafts.value.single().id)
+    }
+
+    @Test
+    fun editingDraftPreservesExistingTradeDate() = runTest {
+        val existingDraft = DraftTransactionEntity(
+            id = "draft-date-1",
+            documentId = document.id,
+            assetName = "TCS",
+            transactionType = "BUY",
+            quantity = "10",
+            price = "3500.00",
+            netAmount = "35000.00",
+            confidence = 95,
+            tradeDate = 1715385600000L, // 2024-05-11 UTC
+        )
+        repository.insertDraftTransactionsIfEmpty(document.id, listOf(existingDraft))
+
+        viewModel.saveDraft(
+            draftId = "draft-date-1",
+            assetName = "TCS Updated",
+            transactionType = "BUY",
+            quantity = "15",
+            price = "3500.00",
+            netAmount = "52500.00",
+        )
+
+        val updated = viewModel.drafts.value.first { it.id == "draft-date-1" }
+        assertEquals("TCS Updated", updated.assetName)
+        assertEquals(1715385600000L, updated.tradeDate)
+    }
+
+    @Test
+    fun formatEpochMillisToDateFormatsCorrectly() {
+        // Test known epoch millis
+        val epochMillis = 1715385600000L
+        val formatted = formatEpochMillisToDate(epochMillis)
+        assertTrue(formatted.matches(Regex("\\d{4}-\\d{2}-\\d{2}")))
     }
 
     @Test

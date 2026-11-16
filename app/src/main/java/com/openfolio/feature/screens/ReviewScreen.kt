@@ -57,6 +57,9 @@ import com.openfolio.core.ui.theme.LocalOpenFolioColors
 import com.openfolio.feature.review.DocumentPreview
 import com.openfolio.feature.review.ReviewActionState
 import com.openfolio.feature.review.ReviewUiState
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -349,6 +352,7 @@ fun ReviewScreen(
                             items(drafts, key = DraftTransactionEntity::id) { draft ->
                                 DraftTransactionRow(
                                     draft = draft,
+                                    documentImportDate = document?.importDate,
                                     onEdit = {
                                         editingDraft = draft
                                         showManualForm = true
@@ -395,6 +399,7 @@ fun ReviewScreen(
         ) {
             ManualDraftForm(
                 draft = editingDraft,
+                documentImportDate = document?.importDate,
                 onSave = { draftId, asset, type, quantity, price, amount ->
                     onSaveDraft(draftId, asset, type, quantity, price, amount)
                     showManualForm = false
@@ -728,9 +733,17 @@ private fun matchesKeyword(header: String, keywords: List<String>): Boolean {
 @Composable
 private fun DraftTransactionRow(
     draft: DraftTransactionEntity,
+    documentImportDate: Long? = null,
     onEdit: () -> Unit,
 ) {
     val colors = LocalOpenFolioColors.current
+    val (dateText, isDateMissing) = when {
+        draft.tradeDate != null -> formatEpochMillisToDate(draft.tradeDate) to false
+        documentImportDate != null && documentImportDate > 0L ->
+            "${formatEpochMillisToDate(documentImportDate)} (Import Date)" to true
+        else -> "Unknown Date" to true
+    }
+
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
@@ -757,6 +770,15 @@ private fun DraftTransactionRow(
                         fontFeatureSettings = "tnum",
                     ),
                     color = colors.muted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = "Date: $dateText",
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontFeatureSettings = "tnum",
+                    ),
+                    color = if (isDateMissing) colors.loss else colors.muted,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -799,6 +821,7 @@ private fun ConfidenceBadge(confidence: Int) {
 @Composable
 private fun ManualDraftForm(
     draft: DraftTransactionEntity?,
+    documentImportDate: Long? = null,
     onSave: (String?, String, String, String, String, String) -> Unit,
 ) {
     val colors = LocalOpenFolioColors.current
@@ -807,6 +830,13 @@ private fun ManualDraftForm(
     var quantity by remember(draft?.id) { mutableStateOf(draft?.quantity.orEmpty()) }
     var price by remember(draft?.id) { mutableStateOf(draft?.price.orEmpty()) }
     var amount by remember(draft?.id) { mutableStateOf(draft?.netAmount.orEmpty()) }
+
+    val (dateDisplay, isMissingDate) = when {
+        draft?.tradeDate != null -> formatEpochMillisToDate(draft.tradeDate) to false
+        documentImportDate != null && documentImportDate > 0L ->
+            "${formatEpochMillisToDate(documentImportDate)} (Import Date)" to true
+        else -> "Unknown Date" to true
+    }
 
     Column(
         modifier = Modifier
@@ -819,6 +849,13 @@ private fun ManualDraftForm(
             text = if (draft == null) "Add Missing Record" else "Edit Transaction",
             style = MaterialTheme.typography.titleLarge,
             color = colors.content,
+        )
+        Text(
+            text = "Date: $dateDisplay",
+            style = MaterialTheme.typography.bodySmall.copy(
+                fontFeatureSettings = "tnum",
+            ),
+            color = if (isMissingDate) colors.loss else colors.muted,
         )
         OutlinedTextField(
             value = asset,
@@ -866,5 +903,16 @@ private fun ManualDraftForm(
         ) {
             Text("Save Record")
         }
+    }
+}
+
+internal fun formatEpochMillisToDate(millis: Long): String {
+    return try {
+        Instant.ofEpochMilli(millis)
+            .atZone(ZoneId.systemDefault())
+            .toLocalDate()
+            .format(DateTimeFormatter.ISO_LOCAL_DATE)
+    } catch (_: Exception) {
+        "Unknown Date"
     }
 }
