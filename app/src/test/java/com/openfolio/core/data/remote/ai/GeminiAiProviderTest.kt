@@ -113,4 +113,14 @@ class GeminiAiProviderTest {
         val results = provider.parseJsonResponse(json, "doc-xyz")
         assertTrue(results.isEmpty())
     }
+
+    @Test
+    fun parseTradeDateSupportsMultipleFormats() {
+        assertNotNull("ISO format", provider.parseTradeDate("2024-05-10"))
+        assertNotNull("DD/MM/YYYY format", provider.parseTradeDate("10/5/2024"))
+        assertNotNull("DD-MM-YYYY format", provider.parseTradeDate("10-5-2024"))
+        assertNotNull("MM/DD/YYYY format", provider.parseTradeDate("5/10/2024"))
+        assertNull("Blank date", provider.parseTradeDate("   "))
+        assertNull("Invalid date", provider.parseTradeDate("not-a-date"))
+    }
 }

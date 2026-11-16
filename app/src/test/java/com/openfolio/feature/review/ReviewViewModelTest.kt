@@ -6,8 +6,12 @@ import com.openfolio.core.data.local.entity.DocumentEntity
 import com.openfolio.core.data.local.entity.DocumentStatus
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
 import com.openfolio.core.data.local.entity.ColumnMappingEntity
+import com.openfolio.core.domain.repository.AiExtractionException
 import com.openfolio.core.domain.repository.DocumentRepository
+import com.openfolio.core.domain.repository.EmptyExtractedTextException
+import com.openfolio.core.domain.repository.MissingApiKeyException
 import com.openfolio.core.domain.repository.SaveDraftTransactionsResult
+import com.openfolio.feature.screens.autoMapHeaders
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -188,9 +192,84 @@ class ReviewViewModelTest {
         assertEquals(ReviewUiState.NotFound, viewModel.uiState.value)
     }
 
+    @Test
+    fun processWithAiHandlesEmptyExtractedTextException() {
+        val exception = EmptyExtractedTextException()
+        repository.throwExceptionOnAi = exception
+        viewModel.onProcessWithAi()
+
+        assertEquals(
+            ReviewActionState.Error(exception.message!!),
+            viewModel.actionState.value,
+        )
+        assertEquals(exception.message, viewModel.errorMessage.value)
+    }
+
+    @Test
+    fun processWithAiHandlesMissingApiKeyException() {
+        repository.throwExceptionOnAi = MissingApiKeyException()
+        viewModel.onProcessWithAi()
+
+        assertEquals(ReviewActionState.MissingApiKey, viewModel.actionState.value)
+    }
+
+    @Test
+    fun processWithAiHandlesAiExtractionException() {
+        val exception = AiExtractionException("Invalid JSON")
+        repository.throwExceptionOnAi = exception
+        viewModel.onProcessWithAi()
+
+        assertEquals(
+            ReviewActionState.Error(exception.message!!),
+            viewModel.actionState.value,
+        )
+        assertEquals(exception.message, viewModel.errorMessage.value)
+    }
+
+    @Test
+    fun processWithAiHandlesGenericException() {
+        val exception = RuntimeException("Connection timeout")
+        repository.throwExceptionOnAi = exception
+        viewModel.onProcessWithAi()
+
+        val expected = "Network error: Connection timeout"
+        assertEquals(
+            ReviewActionState.Error(expected),
+            viewModel.actionState.value,
+        )
+        assertEquals(expected, viewModel.errorMessage.value)
+    }
+
+    @Test
+    fun autoMapHeadersCorrectlyMapsAllFields() {
+        val headers = listOf("Stock Symbol", "Trade Qty", "Unit Price", "Total Amount", "Trade Date", "Action Type")
+        val mapping = autoMapHeaders(headers)
+
+        assertEquals("Stock Symbol", mapping["Asset"])
+        assertEquals("Trade Qty", mapping["Quantity"])
+        assertEquals("Unit Price", mapping["Price"])
+        assertEquals("Total Amount", mapping["Amount"])
+        assertEquals("Trade Date", mapping["Date"])
+        assertEquals("Action Type", mapping["Type"])
+    }
+
+    @Test
+    fun autoMapHeadersRecognizesAlternativeKeywords() {
+        val headers = listOf("Company Name", "Units", "NAV", "Value", "Time", "Buy/Sell")
+        val mapping = autoMapHeaders(headers)
+
+        assertEquals("Company Name", mapping["Asset"])
+        assertEquals("Units", mapping["Quantity"])
+        assertEquals("NAV", mapping["Price"])
+        assertEquals("Value", mapping["Amount"])
+        assertEquals("Time", mapping["Date"])
+        assertEquals("Buy/Sell", mapping["Type"])
+    }
+
     private class FakeDocumentRepository(
         var document: DocumentEntity?,
     ) : DocumentRepository {
+        var throwExceptionOnAi: Exception? = null
         private val drafts = MutableStateFlow<List<DraftTransactionEntity>>(emptyList())
         var aiProcessCallCount = 0
             private set
@@ -241,6 +320,7 @@ class ReviewViewModelTest {
             SaveDraftTransactionsResult(savedCount = 4, duplicateCount = 1)
 
         override suspend fun processDocumentWithAi(documentId: String) {
+            throwExceptionOnAi?.let { throw it }
             processDocumentWithMockAi(documentId)
         }
 

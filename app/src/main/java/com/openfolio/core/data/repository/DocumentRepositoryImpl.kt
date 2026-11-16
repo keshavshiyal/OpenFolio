@@ -43,6 +43,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import com.openfolio.core.data.remote.ai.AiProvider
+import com.openfolio.core.domain.repository.AiExtractionException
+import com.openfolio.core.domain.repository.EmptyExtractedTextException
 import com.openfolio.core.domain.repository.MissingApiKeyException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOn
@@ -214,12 +216,12 @@ class DocumentRepositoryImpl @Inject constructor(
                 "Document text is not ready for AI processing."
             }
             val rawText = document.extractedText.orEmpty().trim()
-            require(rawText.isNotBlank()) {
-                "No extracted text is available to process."
+            if (rawText.isBlank()) {
+                throw EmptyExtractedTextException()
             }
 
             val apiKey = settingsRepository.getGeminiApiKey().trim()
-            if (apiKey.isEmpty()) {
+            if (apiKey.isBlank()) {
                 throw MissingApiKeyException()
             }
 
@@ -228,12 +230,17 @@ class DocumentRepositoryImpl @Inject constructor(
 
             val aggregatedDrafts = mutableListOf<DraftTransactionEntity>()
             for (chunk in textChunks) {
-                val result = aiProvider.extractTransactions(
-                    rawText = chunk,
-                    apiKey = apiKey,
-                    documentId = documentId,
-                )
-                val drafts = result.getOrThrow()
+                val drafts = try {
+                    val result = aiProvider.extractTransactions(
+                        rawText = chunk,
+                        apiKey = apiKey,
+                        documentId = documentId,
+                    )
+                    result.getOrThrow()
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    throw AiExtractionException(e.localizedMessage ?: "Unknown AI error", e)
+                }
                 aggregatedDrafts.addAll(drafts)
             }
 

@@ -53,6 +53,7 @@ fun OpenFolioApp(
     val reviewDrafts by reviewViewModel.drafts.collectAsStateWithLifecycle()
     val structuredHeaders by reviewViewModel.structuredHeaders.collectAsStateWithLifecycle()
     val reviewActionState by reviewViewModel.actionState.collectAsStateWithLifecycle()
+    val reviewErrorMessage by reviewViewModel.errorMessage.collectAsStateWithLifecycle()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
 
@@ -167,6 +168,7 @@ fun OpenFolioApp(
                     drafts = reviewDrafts,
                     structuredHeaders = structuredHeaders,
                     actionState = reviewActionState,
+                    errorMessage = reviewErrorMessage,
                     onBack = { navController.popBackStack() },
                     onSkip = { navController.popBackStack() },
                     onProcessWithAi = reviewViewModel::onProcessWithAi,
@@ -177,6 +179,7 @@ fun OpenFolioApp(
                     onSaveComplete = { navController.popBackStack() },
                     onNavigateToSettings = { navController.navigate(AppDestination.Settings.route) },
                     onDismissMissingApiKey = reviewViewModel::dismissMissingApiKeyDialog,
+                    onDismissError = reviewViewModel::clearErrorMessage,
                 )
             }
             composable(AppDestination.Settings.route) {

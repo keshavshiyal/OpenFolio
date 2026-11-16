@@ -19,8 +19,10 @@ import com.openfolio.core.data.repository.SettingsRepository
 import com.openfolio.core.utils.StructuredTable
 import com.openfolio.core.data.local.entity.DocumentStatus
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
-import com.openfolio.core.domain.repository.MissingApiKeyException
+import com.openfolio.core.domain.repository.AiExtractionException
 import com.openfolio.core.domain.repository.DuplicateDocumentException
+import com.openfolio.core.domain.repository.EmptyExtractedTextException
+import com.openfolio.core.domain.repository.MissingApiKeyException
 import java.io.ByteArrayInputStream
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.CoroutineScope
@@ -279,6 +281,86 @@ class DocumentRepositoryImplTest {
             assertThrows(MissingApiKeyException::class.java) {
                 runBlocking { repository.processDocumentWithAi("doc-1") }
             }
+        }
+    }
+
+    @Test
+    fun processDocumentWithAiThrowsWhenExtractedTextIsBlank() {
+        runBlocking {
+            val dao = mock<DocumentDao>()
+            val settings = mock<SettingsRepository>()
+            whenever(settings.getGeminiApiKey()).thenReturn("key-123")
+            whenever(dao.getDocumentById("doc-blank")).thenReturn(
+                DocumentEntity(
+                    id = "doc-blank",
+                    fileName = "statement.pdf",
+                    localPath = "/tmp/statement.pdf",
+                    fileHash = "hash1",
+                    fileSize = 100L,
+                    importDate = 1000L,
+                    status = DocumentStatus.OCR_COMPLETE.name,
+                    extractedText = "   ",
+                ),
+            )
+
+            val repository = DocumentRepositoryImpl(
+                documentDao = dao,
+                columnMappingDao = mock<ColumnMappingDao>(),
+                draftTransactionDao = mock<DraftTransactionDao>(),
+                transactionDao = mock<TransactionDao>(),
+                database = mock<OpenFolioDatabase>(),
+                documentTextExtractor = mock<DocumentTextExtractor>(),
+                structuredFileParser = mock<StructuredFileParser>(),
+                settingsRepository = settings,
+                aiProvider = mock<AiProvider>(),
+                applicationScope = mock<CoroutineScope>(),
+            )
+
+            assertThrows(EmptyExtractedTextException::class.java) {
+                runBlocking { repository.processDocumentWithAi("doc-blank") }
+            }
+        }
+    }
+
+    @Test
+    fun processDocumentWithAiThrowsAiExtractionExceptionWhenProviderFails() {
+        runBlocking {
+            val dao = mock<DocumentDao>()
+            val settings = mock<SettingsRepository>()
+            val aiProvider = mock<AiProvider>()
+            whenever(settings.getGeminiApiKey()).thenReturn("key-123")
+            whenever(dao.getDocumentById("doc-fail")).thenReturn(
+                DocumentEntity(
+                    id = "doc-fail",
+                    fileName = "statement.pdf",
+                    localPath = "/tmp/statement.pdf",
+                    fileHash = "hash1",
+                    fileSize = 100L,
+                    importDate = 1000L,
+                    status = DocumentStatus.OCR_COMPLETE.name,
+                    extractedText = "Some statement content",
+                ),
+            )
+            whenever(aiProvider.extractTransactions("Some statement content", "key-123", "doc-fail"))
+                .thenReturn(Result.failure(RuntimeException("Network error")))
+
+            val repository = DocumentRepositoryImpl(
+                documentDao = dao,
+                columnMappingDao = mock<ColumnMappingDao>(),
+                draftTransactionDao = mock<DraftTransactionDao>(),
+                transactionDao = mock<TransactionDao>(),
+                database = mock<OpenFolioDatabase>(),
+                documentTextExtractor = mock<DocumentTextExtractor>(),
+                structuredFileParser = mock<StructuredFileParser>(),
+                settingsRepository = settings,
+                aiProvider = aiProvider,
+                applicationScope = mock<CoroutineScope>(),
+            )
+
+            val exception = assertThrows(AiExtractionException::class.java) {
+                runBlocking { repository.processDocumentWithAi("doc-fail") }
+            }
+            assertTrue(exception.message!!.contains("Network error"))
         }
     }
 

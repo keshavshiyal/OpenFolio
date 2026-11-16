@@ -17,7 +17,9 @@ data class OpenFolioColors(
     val chartPalette: List<Color>,
     val gainGlyph: Color,
     val lossGlyph: Color,
-)
+) {
+    val loss: Color get() = lossGlyph
+}
 
 val LightOpenFolioColors = OpenFolioColors(
     background = Color(0xFFFAFAF7),

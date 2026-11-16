@@ -2,12 +2,14 @@ package com.openfolio.feature.screens
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -63,6 +65,7 @@ fun ReviewScreen(
     drafts: List<DraftTransactionEntity>,
     structuredHeaders: List<String>,
     actionState: ReviewActionState,
+    errorMessage: String? = null,
     onBack: () -> Unit,
     onSkip: () -> Unit,
     onProcessWithAi: () -> Unit,
@@ -73,6 +76,7 @@ fun ReviewScreen(
     onSaveComplete: () -> Unit,
     onNavigateToSettings: () -> Unit = {},
     onDismissMissingApiKey: () -> Unit = {},
+    onDismissError: () -> Unit = {},
 ) {
     val colors = LocalOpenFolioColors.current
     val document = (uiState as? ReviewUiState.Loaded)?.document
@@ -81,6 +85,13 @@ fun ReviewScreen(
     var editingDraft by remember { mutableStateOf<DraftTransactionEntity?>(null) }
     var headerRowText by remember { mutableStateOf("1") }
     val headerRowNumber = headerRowText.toIntOrNull() ?: 1
+
+    LaunchedEffect(errorMessage) {
+        if (!errorMessage.isNullOrBlank()) {
+            snackbarHostState.showSnackbar(errorMessage)
+            onDismissError()
+        }
+    }
 
     LaunchedEffect(actionState) {
         when (actionState) {
@@ -92,17 +103,9 @@ fun ReviewScreen(
                 onSaveComplete()
             }
             is ReviewActionState.Error -> {
-                val message = if (
-                    actionState.message.contains("AI", ignoreCase = true) ||
-                    actionState.message.contains("JSON", ignoreCase = true) ||
-                    actionState.message.contains("extract", ignoreCase = true) ||
-                    actionState.message.contains("failed", ignoreCase = true)
-                ) {
-                    "AI extraction failed. Please try again or add manually."
-                } else {
-                    actionState.message
+                if (errorMessage.isNullOrBlank()) {
+                    snackbarHostState.showSnackbar(actionState.message)
                 }
-                snackbarHostState.showSnackbar(message)
             }
             else -> Unit
         }
@@ -383,23 +386,7 @@ fun ReviewScreen(
         }
     }
 
-    if (actionState == ReviewActionState.ProcessingAi) {
-        AlertDialog(
-            onDismissRequest = {},
-            title = { Text("Extracting transactions...") },
-            text = {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    CircularProgressIndicator(color = colors.brand)
-                    Text("Analyzing statement chunks locally with mock extraction.")
-                }
-            },
-            confirmButton = {},
-            dismissButton = {},
-        )
-    }
+
 
     if (showManualForm) {
         ModalBottomSheet(
@@ -430,132 +417,218 @@ private fun ColumnMappingForm(
 ) {
     val colors = LocalOpenFolioColors.current
     var brokerName by remember { mutableStateOf("") }
-    var assetColumn by remember(headers) { mutableStateOf(suggestHeader(headers, "asset", "symbol", "security", "name")) }
-    var typeColumn by remember(headers) { mutableStateOf(suggestHeader(headers, "type", "side", "action")) }
-    var quantityColumn by remember(headers) { mutableStateOf(suggestHeader(headers, "quantity", "qty", "units")) }
-    var priceColumn by remember(headers) { mutableStateOf(suggestHeader(headers, "price", "rate", "unit price")) }
-    var amountColumn by remember(headers) { mutableStateOf(suggestHeader(headers, "amount", "value", "total")) }
-    var dateColumn by remember(headers) { mutableStateOf(suggestHeader(headers, "date", "trade date")) }
+
+    var assetManuallyModified by remember { mutableStateOf(false) }
+    var typeManuallyModified by remember { mutableStateOf(false) }
+    var quantityManuallyModified by remember { mutableStateOf(false) }
+    var priceManuallyModified by remember { mutableStateOf(false) }
+    var amountManuallyModified by remember { mutableStateOf(false) }
+    var dateManuallyModified by remember { mutableStateOf(false) }
+
+    var assetColumn by remember { mutableStateOf("") }
+    var typeColumn by remember { mutableStateOf("") }
+    var quantityColumn by remember { mutableStateOf("") }
+    var priceColumn by remember { mutableStateOf("") }
+    var amountColumn by remember { mutableStateOf("") }
+    var dateColumn by remember { mutableStateOf("") }
+
+    // When header row changes, reset manual flags so new headers auto-map
+    LaunchedEffect(headerRowText) {
+        assetManuallyModified = false
+        typeManuallyModified = false
+        quantityManuallyModified = false
+        priceManuallyModified = false
+        amountManuallyModified = false
+        dateManuallyModified = false
+    }
+
+    LaunchedEffect(headers, headerRowText) {
+        if (headers.isNotEmpty()) {
+            val autoMapping = autoMapHeaders(headers)
+            if (!assetManuallyModified || assetColumn !in headers) {
+                assetColumn = autoMapping["Asset"].orEmpty()
+            }
+            if (!typeManuallyModified || typeColumn !in headers) {
+                typeColumn = autoMapping["Type"].orEmpty()
+            }
+            if (!quantityManuallyModified || quantityColumn !in headers) {
+                quantityColumn = autoMapping["Quantity"].orEmpty()
+            }
+            if (!priceManuallyModified || priceColumn !in headers) {
+                priceColumn = autoMapping["Price"].orEmpty()
+            }
+            if (!amountManuallyModified || amountColumn !in headers) {
+                amountColumn = autoMapping["Amount"].orEmpty()
+            }
+            if (!dateManuallyModified || dateColumn !in headers) {
+                dateColumn = autoMapping["Date"].orEmpty()
+            }
+        }
+    }
 
     val headerRowNum = headerRowText.toIntOrNull()
     val isValidHeaderRow = headerRowNum != null && headerRowNum >= 1
     val mappedColumns = listOf(assetColumn, typeColumn, quantityColumn, priceColumn, amountColumn, dateColumn)
         .filter(String::isNotBlank)
+    val isAssetMapped = assetColumn.isNotBlank()
     val canProcess = !isProcessing &&
         isValidHeaderRow &&
         headers.isNotEmpty() &&
-        brokerName.isNotBlank() &&
-        assetColumn.isNotBlank() &&
-        (quantityColumn.isNotBlank() || amountColumn.isNotBlank()) &&
+        isAssetMapped &&
         mappedColumns.toSet().size == mappedColumns.size
 
-    LazyColumn(
-        modifier = modifier,
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .imePadding(),
     ) {
-        item {
-            Text(
-                text = "Choose which file column matches each transaction field.",
-                style = MaterialTheme.typography.bodySmall,
-                color = colors.muted,
-            )
-        }
-        item {
-            OutlinedTextField(
-                value = headerRowText,
-                onValueChange = { newText ->
-                    val digitsOnly = newText.filter { it.isDigit() }
-                    onHeaderRowChange(digitsOnly)
-                    val parsed = digitsOnly.toIntOrNull()
-                    if (parsed != null && parsed >= 1) {
-                        onReloadHeaders(parsed)
-                    }
-                },
-                label = { Text("Header Row Number") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-            )
-        }
-        item {
-            if (headers.isNotEmpty()) {
-                val previewHeaders = headers.take(4).joinToString(", ")
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            item {
                 Text(
-                    text = "Detected headers: $previewHeaders",
+                    text = "Choose which file column matches each transaction field.",
                     style = MaterialTheme.typography.bodySmall,
                     color = colors.muted,
                 )
-            } else if (!isProcessing) {
-                Text(
-                    text = "No headers detected on row ${headerRowText.ifBlank { "0" }}.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = colors.lossGlyph,
+            }
+            item {
+                OutlinedTextField(
+                    value = headerRowText,
+                    onValueChange = { newText ->
+                        val digitsOnly = newText.filter { it.isDigit() }
+                        onHeaderRowChange(digitsOnly)
+                        val parsed = digitsOnly.toIntOrNull()
+                        if (parsed != null && parsed >= 1) {
+                            onReloadHeaders(parsed)
+                        }
+                    },
+                    label = { Text("Header Row Number") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
                 )
             }
-        }
-        item {
-            MappingColumnDropdown("Asset", headers, assetColumn) { assetColumn = it }
-        }
-        item {
-            MappingColumnDropdown("Type", headers, typeColumn) { typeColumn = it }
-        }
-        item {
-            MappingColumnDropdown("Quantity", headers, quantityColumn) { quantityColumn = it }
-        }
-        item {
-            MappingColumnDropdown("Price", headers, priceColumn) { priceColumn = it }
-        }
-        item {
-            MappingColumnDropdown("Amount", headers, amountColumn) { amountColumn = it }
-        }
-        item {
-            MappingColumnDropdown("Date", headers, dateColumn) { dateColumn = it }
-        }
-        item {
-            OutlinedTextField(
-                value = brokerName,
-                onValueChange = { brokerName = it },
-                label = { Text("Save this mapping as (e.g., Zerodha)") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-            )
-        }
-        item {
-            Button(
-                onClick = {
-                    onProcess(
-                        brokerName,
-                        assetColumn,
-                        typeColumn,
-                        quantityColumn,
-                        priceColumn,
-                        amountColumn,
-                        dateColumn,
-                        headerRowNum ?: 1,
+            item {
+                if (headers.isNotEmpty()) {
+                    val previewHeaders = headers.take(4).joinToString(", ")
+                    Text(
+                        text = "Detected headers: $previewHeaders",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.muted,
                     )
-                },
-                enabled = canProcess,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                if (isProcessing) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(18.dp),
-                        color = colors.onAccent,
-                        strokeWidth = 2.dp,
+                } else if (!isProcessing) {
+                    Text(
+                        text = "No headers detected on row ${headerRowText.ifBlank { "0" }}.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.lossGlyph,
                     )
-                    Text("  Processing mapped data…")
-                } else {
-                    Text("Process Mapped Data")
+                }
+            }
+            item {
+                MappingColumnDropdown("Asset", headers, assetColumn) {
+                    assetColumn = it
+                    assetManuallyModified = true
+                }
+            }
+            item {
+                MappingColumnDropdown("Type", headers, typeColumn) {
+                    typeColumn = it
+                    typeManuallyModified = true
+                }
+            }
+            item {
+                MappingColumnDropdown("Quantity", headers, quantityColumn) {
+                    quantityColumn = it
+                    quantityManuallyModified = true
+                }
+            }
+            item {
+                MappingColumnDropdown("Price", headers, priceColumn) {
+                    priceColumn = it
+                    priceManuallyModified = true
+                }
+            }
+            item {
+                MappingColumnDropdown("Amount", headers, amountColumn) {
+                    amountColumn = it
+                    amountManuallyModified = true
+                }
+            }
+            item {
+                MappingColumnDropdown("Date", headers, dateColumn) {
+                    dateColumn = it
+                    dateManuallyModified = true
+                }
+            }
+            item {
+                OutlinedTextField(
+                    value = brokerName,
+                    onValueChange = { brokerName = it },
+                    label = { Text("Save this mapping as (e.g., Zerodha)") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+            }
+            if (headers.isEmpty() && !isProcessing) {
+                item {
+                    Text(
+                        text = "Could not read the file headers.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.lossGlyph,
+                    )
                 }
             }
         }
-        if (headers.isEmpty() && !isProcessing) {
-            item {
-                Text(
-                    text = "Could not read the file headers.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = colors.lossGlyph,
-                )
+
+        // Sticky Bottom Bar
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = colors.surface,
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                if (!isAssetMapped) {
+                    Text(
+                        text = "Please map the Asset column to continue.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.loss,
+                    )
+                }
+                Button(
+                    onClick = {
+                        onProcess(
+                            brokerName.ifBlank { "Custom" },
+                            assetColumn,
+                            typeColumn,
+                            quantityColumn,
+                            priceColumn,
+                            amountColumn,
+                            dateColumn,
+                            headerRowNum ?: 1,
+                        )
+                    },
+                    enabled = canProcess,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    if (isProcessing) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            color = colors.onAccent,
+                            strokeWidth = 2.dp,
+                        )
+                        Text("  Processing mapped data…")
+                    } else {
+                        Text("Process Mapped Data")
+                    }
+                }
             }
         }
     }
@@ -614,13 +687,43 @@ private fun MappingColumnDropdown(
     }
 }
 
-private fun suggestHeader(headers: List<String>, vararg suggestions: String): String =
-    headers.firstOrNull { header ->
-        val normalized = header.lowercase().replace(Regex("[^a-z0-9]"), "")
-        suggestions.any { suggestion ->
-            normalized.contains(suggestion.lowercase().replace(Regex("[^a-z0-9]"), ""))
+internal fun autoMapHeaders(headers: List<String>): Map<String, String> {
+    val result = mutableMapOf<String, String>()
+    val rules = listOf(
+        "Asset" to listOf("symbol", "name", "asset", "stock", "company", "instrument", "security", "scrip"),
+        "Quantity" to listOf("qty", "quantity", "units", "shares", "nos", "volume"),
+        "Price" to listOf("price", "rate", "nav", "cost"),
+        "Amount" to listOf("amount", "amt", "total", "value", "consideration"),
+        "Date" to listOf("date", "time"),
+        "Type" to listOf("type", "action", "buy/sell", "side"),
+    )
+
+    val used = mutableSetOf<String>()
+    for ((field, keywords) in rules) {
+        val matched = headers.firstOrNull { header ->
+            header !in used && keywords.any { it.equals(header.trim(), ignoreCase = true) }
+        } ?: headers.firstOrNull { header ->
+            header !in used && matchesKeyword(header, keywords)
+        } ?: headers.firstOrNull { header ->
+            matchesKeyword(header, keywords)
         }
-    }.orEmpty()
+
+        if (matched != null) {
+            result[field] = matched
+            used.add(matched)
+        }
+    }
+    return result
+}
+
+private fun matchesKeyword(header: String, keywords: List<String>): Boolean {
+    val lower = header.lowercase().trim()
+    val compact = lower.replace(" ", "").replace("_", "").replace("-", "")
+    return keywords.any { keyword ->
+        val kw = keyword.lowercase().trim()
+        lower.contains(kw) || compact.contains(kw.replace(" ", ""))
+    }
+}
 
 @Composable
 private fun DraftTransactionRow(

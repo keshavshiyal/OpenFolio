@@ -1,5 +1,6 @@
 package com.openfolio.core.data.remote.ai
 
+import android.util.Log
 import com.google.ai.client.generativeai.GenerativeModel
 import com.google.ai.client.generativeai.type.content
 import com.google.ai.client.generativeai.type.generationConfig
@@ -23,23 +24,28 @@ class GeminiAiProvider @Inject constructor() : AiProvider {
         documentId: String,
     ): Result<List<DraftTransactionEntity>> = withContext(Dispatchers.IO) {
         runCatching {
-            require(apiKey.isNotBlank()) { "API key must not be blank." }
-            require(rawText.isNotBlank()) { "Raw text must not be blank." }
+            try {
+                require(apiKey.isNotBlank()) { "API key must not be blank." }
+                require(rawText.isNotBlank()) { "Raw text must not be blank." }
 
-            val model = GenerativeModel(
-                modelName = "gemini-1.5-flash",
-                apiKey = apiKey,
-                generationConfig = generationConfig {
-                    responseMimeType = "application/json"
-                },
-                systemInstruction = content {
-                    text(SYSTEM_PROMPT)
-                },
-            )
+                val model = GenerativeModel(
+                    modelName = "gemini-1.5-flash",
+                    apiKey = apiKey,
+                    generationConfig = generationConfig {
+                        responseMimeType = "application/json"
+                    },
+                    systemInstruction = content {
+                        text(SYSTEM_PROMPT)
+                    },
+                )
 
-            val response = model.generateContent(rawText)
-            val responseText = response.text.orEmpty().trim()
-            parseJsonResponse(responseText, documentId)
+                val response = model.generateContent(rawText)
+                val responseText = response.text.orEmpty().trim()
+                parseJsonResponse(responseText, documentId)
+            } catch (exception: Throwable) {
+                Log.e("GeminiAiProvider", "Gemini API call failed: ${exception.message}", exception)
+                throw exception
+            }
         }
     }
 
@@ -91,14 +97,23 @@ class GeminiAiProvider @Inject constructor() : AiProvider {
         return transactions
     }
 
-    private fun parseTradeDate(tradeDateStr: String): Long? {
-        if (tradeDateStr.isBlank()) return null
-        return try {
-            val localDate = LocalDate.parse(tradeDateStr, DateTimeFormatter.ISO_LOCAL_DATE)
-            localDate.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
-        } catch (_: Exception) {
-            null
+    internal fun parseTradeDate(tradeDateStr: String): Long? {
+        val date = tradeDateStr.trim().takeIf(String::isNotEmpty) ?: return null
+        val formatters = listOf(
+            DateTimeFormatter.ISO_LOCAL_DATE,
+            DateTimeFormatter.ofPattern("d/M/uuuu"),
+            DateTimeFormatter.ofPattern("d-M-uuuu"),
+            DateTimeFormatter.ofPattern("M/d/uuuu"),
+        )
+        for (formatter in formatters) {
+            try {
+                val localDate = LocalDate.parse(date, formatter)
+                return localDate.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+            } catch (_: Exception) {
+                // try next format
+            }
         }
+        return null
     }
 
     companion object {

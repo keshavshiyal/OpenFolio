@@ -6,7 +6,9 @@ import com.openfolio.core.data.local.entity.ColumnMappingEntity
 import com.openfolio.core.data.local.entity.DocumentEntity
 import com.openfolio.core.data.local.entity.DocumentStatus
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
+import com.openfolio.core.domain.repository.AiExtractionException
 import com.openfolio.core.domain.repository.DocumentRepository
+import com.openfolio.core.domain.repository.EmptyExtractedTextException
 import com.openfolio.core.domain.repository.MissingApiKeyException
 import com.openfolio.core.domain.repository.SaveDraftTransactionsResult
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -35,6 +37,9 @@ class ReviewViewModel @Inject constructor(
     private val _actionState = MutableStateFlow<ReviewActionState>(ReviewActionState.Idle)
     val actionState: StateFlow<ReviewActionState> = _actionState.asStateFlow()
 
+    private val _errorMessage = MutableStateFlow<String?>(null)
+    val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
+
     private var draftsJob: Job? = null
     private var documentJob: Job? = null
 
@@ -45,6 +50,7 @@ class ReviewViewModel @Inject constructor(
         _drafts.value = emptyList()
         _structuredHeaders.value = emptyList()
         _actionState.value = ReviewActionState.Idle
+        _errorMessage.value = null
         viewModelScope.launch {
             try {
                 val document = documentRepository.getDocumentById(documentId)
@@ -85,14 +91,33 @@ class ReviewViewModel @Inject constructor(
         val document = (uiState.value as? ReviewUiState.Loaded)?.document ?: return
         if (_drafts.value.isNotEmpty() || _actionState.value == ReviewActionState.ProcessingAi) return
         if (document.status != DocumentStatus.OCR_COMPLETE.name && document.status != DocumentStatus.AI_COMPLETE.name) {
-            _actionState.value = ReviewActionState.Error(
-                "Wait for local text extraction to finish before processing.",
-            )
+            val message = "Wait for local text extraction to finish before processing."
+            _errorMessage.value = message
+            _actionState.value = ReviewActionState.Error(message)
             return
         }
         viewModelScope.launch {
-            runAction(ReviewActionState.ProcessingAi) {
+            _actionState.value = ReviewActionState.ProcessingAi
+            try {
                 documentRepository.processDocumentWithAi(document.id)
+                _actionState.value = ReviewActionState.Idle
+            } catch (e: CancellationException) {
+                _actionState.value = ReviewActionState.Idle
+                throw e
+            } catch (e: EmptyExtractedTextException) {
+                val message = e.message ?: "No text found in document."
+                _errorMessage.value = message
+                _actionState.value = ReviewActionState.Error(message)
+            } catch (e: MissingApiKeyException) {
+                _actionState.value = ReviewActionState.MissingApiKey
+            } catch (e: AiExtractionException) {
+                val message = e.message ?: "AI extraction failed."
+                _errorMessage.value = message
+                _actionState.value = ReviewActionState.Error(message)
+            } catch (e: Exception) {
+                val message = "Network error: ${e.localizedMessage ?: e.message}"
+                _errorMessage.value = message
+                _actionState.value = ReviewActionState.Error(message)
             }
         }
     }
@@ -104,9 +129,14 @@ class ReviewViewModel @Inject constructor(
     }
 
     fun dismissError() {
+        _errorMessage.value = null
         if (_actionState.value is ReviewActionState.Error) {
             _actionState.value = ReviewActionState.Idle
         }
+    }
+
+    fun clearErrorMessage() {
+        _errorMessage.value = null
     }
 
     fun loadHeadersForHeaderRow(headerRowNumber: Int) {
@@ -229,10 +259,22 @@ class ReviewViewModel @Inject constructor(
             throw exception
         } catch (missingKey: MissingApiKeyException) {
             _actionState.value = ReviewActionState.MissingApiKey
+        } catch (emptyText: EmptyExtractedTextException) {
+            val message = emptyText.message ?: "No text found in document."
+            _errorMessage.value = message
+            _actionState.value = ReviewActionState.Error(message)
+        } catch (aiException: AiExtractionException) {
+            val message = aiException.message ?: "AI extraction failed."
+            _errorMessage.value = message
+            _actionState.value = ReviewActionState.Error(message)
         } catch (throwable: Throwable) {
-            _actionState.value = ReviewActionState.Error(
-                throwable.message ?: "AI extraction failed. Please try again or add manually.",
-            )
+            val message = throwable.localizedMessage ?: throwable.message ?: "Unable to complete this action."
+            _errorMessage.value = message
+            _actionState.value = ReviewActionState.Error(message)
+        } finally {
+            if (_actionState.value == runningState) {
+                _actionState.value = ReviewActionState.Idle
+            }
         }
     }
 
