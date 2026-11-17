@@ -32,6 +32,14 @@ class ReviewViewModel @Inject constructor(
     private val _drafts = MutableStateFlow<List<DraftTransactionEntity>>(emptyList())
     val drafts: StateFlow<List<DraftTransactionEntity>> = _drafts.asStateFlow()
 
+    private val _draftReviewItems = MutableStateFlow<List<DraftReviewItem>>(emptyList())
+    val draftReviewItems: StateFlow<List<DraftReviewItem>> = _draftReviewItems.asStateFlow()
+
+    private val _selectedDraftIds = MutableStateFlow<Set<String>>(emptySet())
+    val selectedDraftIds: StateFlow<Set<String>> = _selectedDraftIds.asStateFlow()
+
+    private val _hasExplicitUserSelection = MutableStateFlow(false)
+
     private val _structuredHeaders = MutableStateFlow<List<String>>(emptyList())
     val structuredHeaders: StateFlow<List<String>> = _structuredHeaders.asStateFlow()
 
@@ -49,6 +57,9 @@ class ReviewViewModel @Inject constructor(
         documentJob?.cancel()
         _uiState.value = ReviewUiState.Loading
         _drafts.value = emptyList()
+        _draftReviewItems.value = emptyList()
+        _selectedDraftIds.value = emptySet()
+        _hasExplicitUserSelection.value = false
         _structuredHeaders.value = emptyList()
         _actionState.value = ReviewActionState.Idle
         _errorMessage.value = null
@@ -68,6 +79,33 @@ class ReviewViewModel @Inject constructor(
                 draftsJob = viewModelScope.launch {
                     documentRepository.getDraftTransactions(documentId).collect { items ->
                         _drafts.value = items
+                        val duplicateMap = runCatching {
+                            documentRepository.findDuplicateDrafts(documentId)
+                        }.getOrDefault(emptyMap())
+
+                        val currentSelections = _selectedDraftIds.value
+                        val hasSelectionHistory = _hasExplicitUserSelection.value
+
+                        val reviewItems = items.map { item ->
+                            val dupInfo = duplicateMap[item.id]
+                            val isDup = dupInfo?.isDuplicate == true
+                            val isSelected = if (hasSelectionHistory) {
+                                item.id in currentSelections
+                            } else {
+                                !isDup
+                            }
+                            DraftReviewItem(
+                                draft = item,
+                                isDuplicate = isDup,
+                                duplicateReason = dupInfo?.reason,
+                                isSelected = isSelected,
+                            )
+                        }
+
+                        if (!hasSelectionHistory) {
+                            _selectedDraftIds.value = reviewItems.filter { it.isSelected }.map { it.draft.id }.toSet()
+                        }
+                        _draftReviewItems.value = reviewItems
                     }
                 }
                 if (document.status == DocumentStatus.READY_FOR_MAPPING.name) {
@@ -243,14 +281,79 @@ class ReviewViewModel @Inject constructor(
         }
     }
 
-    fun saveConfirmed() {
+    fun toggleDraftSelection(draftId: String) {
+        _hasExplicitUserSelection.value = true
+        val current = _selectedDraftIds.value.toMutableSet()
+        if (current.contains(draftId)) {
+            current.remove(draftId)
+        } else {
+            current.add(draftId)
+        }
+        _selectedDraftIds.value = current
+        _draftReviewItems.value = _draftReviewItems.value.map {
+            if (it.draft.id == draftId) it.copy(isSelected = draftId in current) else it
+        }
+    }
+
+    fun selectAllDrafts() {
+        _hasExplicitUserSelection.value = true
+        val allIds = _draftReviewItems.value.map { it.draft.id }.toSet()
+        _selectedDraftIds.value = allIds
+        _draftReviewItems.value = _draftReviewItems.value.map { it.copy(isSelected = true) }
+    }
+
+    fun deselectAllDrafts() {
+        _hasExplicitUserSelection.value = true
+        _selectedDraftIds.value = emptySet()
+        _draftReviewItems.value = _draftReviewItems.value.map { it.copy(isSelected = false) }
+    }
+
+    fun skipAllDuplicates() {
+        _hasExplicitUserSelection.value = true
+        val nonDuplicates = _draftReviewItems.value.filter { !it.isDuplicate }.map { it.draft.id }.toSet()
+        _selectedDraftIds.value = nonDuplicates
+        _draftReviewItems.value = _draftReviewItems.value.map {
+            it.copy(isSelected = !it.isDuplicate)
+        }
+    }
+
+    fun saveConfirmed(overrideDuplicates: Boolean = false) {
         val documentId = (uiState.value as? ReviewUiState.Loaded)?.document?.id ?: return
         if (_drafts.value.isEmpty()) return
+
+        val currentItems = _draftReviewItems.value
+        val selectedItems = currentItems.filter { it.isSelected }
+        val selectedDuplicates = selectedItems.filter { it.isDuplicate }
+
+        if (!overrideDuplicates && selectedDuplicates.isNotEmpty()) {
+            _actionState.value = ReviewActionState.PromptDuplicateReview(
+                duplicateCount = selectedDuplicates.size,
+                totalSelectedCount = selectedItems.size,
+            )
+            return
+        }
+
         viewModelScope.launch {
             runAction(ReviewActionState.Saving) {
-                val result = documentRepository.saveDraftTransactions(documentId)
+                val selectedIds = selectedItems.map { it.draft.id }.toSet()
+                val result = documentRepository.saveDraftTransactions(documentId, selectedIds)
                 _actionState.value = ReviewActionState.Saved(result)
             }
+        }
+    }
+
+    fun confirmSkipDuplicatesAndSave() {
+        skipAllDuplicates()
+        saveConfirmed(overrideDuplicates = true)
+    }
+
+    fun confirmSaveAllAnyway() {
+        saveConfirmed(overrideDuplicates = true)
+    }
+
+    fun dismissDuplicatePrompt() {
+        if (_actionState.value is ReviewActionState.PromptDuplicateReview) {
+            _actionState.value = ReviewActionState.Idle
         }
     }
 
@@ -314,6 +417,14 @@ sealed interface ReviewActionState {
     data object ProcessingMapping : ReviewActionState
     data object Saving : ReviewActionState
     data class Saved(val result: SaveDraftTransactionsResult) : ReviewActionState
+    data class PromptDuplicateReview(val duplicateCount: Int, val totalSelectedCount: Int) : ReviewActionState
     data class NoFinancialData(val message: String = "No financial transactions found in this document.") : ReviewActionState
     data class Error(val message: String) : ReviewActionState
 }
+
+data class DraftReviewItem(
+    val draft: DraftTransactionEntity,
+    val isDuplicate: Boolean = false,
+    val duplicateReason: String? = null,
+    val isSelected: Boolean = !isDuplicate,
+)

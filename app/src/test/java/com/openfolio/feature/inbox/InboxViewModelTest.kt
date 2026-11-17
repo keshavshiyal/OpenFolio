@@ -6,6 +6,7 @@ import com.openfolio.core.data.local.entity.DocumentEntity
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
 import com.openfolio.core.data.local.entity.ColumnMappingEntity
 import com.openfolio.core.domain.repository.DocumentRepository
+import com.openfolio.core.domain.repository.DuplicateMatchInfo
 import com.openfolio.core.domain.repository.SaveDraftTransactionsResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -79,7 +80,12 @@ class InboxViewModelTest {
 
         override suspend fun saveDraftTransactions(
             documentId: String,
+            selectedDraftIds: Set<String>?,
         ): SaveDraftTransactionsResult = SaveDraftTransactionsResult(0, 0)
+
+        override suspend fun findDuplicateDrafts(
+            documentId: String,
+        ): Map<String, DuplicateMatchInfo> = emptyMap()
 
         override suspend fun updateDocumentStatus(documentId: String, status: String) = Unit
 

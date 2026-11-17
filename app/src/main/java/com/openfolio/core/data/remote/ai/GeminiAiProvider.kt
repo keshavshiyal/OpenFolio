@@ -12,6 +12,7 @@ import org.json.JSONObject
 import java.math.BigDecimal
 import java.time.LocalDate
 import java.time.ZoneId
+import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.util.UUID
 import javax.inject.Inject
@@ -129,7 +130,7 @@ class GeminiAiProvider @Inject constructor() : AiProvider {
         for (formatter in formatters) {
             try {
                 val localDate = LocalDate.parse(date, formatter)
-                return localDate.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+                return localDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
             } catch (_: Exception) {
                 // try next format
             }

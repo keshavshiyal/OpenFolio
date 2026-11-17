@@ -29,7 +29,14 @@ interface DocumentRepository {
 
     suspend fun acceptHighConfidenceDrafts(documentId: String, minimumConfidence: Int)
 
-    suspend fun saveDraftTransactions(documentId: String): SaveDraftTransactionsResult
+    suspend fun saveDraftTransactions(
+        documentId: String,
+        selectedDraftIds: Set<String>? = null,
+    ): SaveDraftTransactionsResult
+
+    suspend fun findDuplicateDrafts(
+        documentId: String,
+    ): Map<String, DuplicateMatchInfo>
 
     suspend fun updateDocumentStatus(documentId: String, status: String)
 
@@ -53,4 +60,11 @@ interface DocumentRepository {
 data class SaveDraftTransactionsResult(
     val savedCount: Int,
     val duplicateCount: Int,
+)
+
+data class DuplicateMatchInfo(
+    val isDuplicate: Boolean,
+    val matchingTransactionId: String? = null,
+    val matchingTradeDate: String? = null,
+    val reason: String? = null,
 )

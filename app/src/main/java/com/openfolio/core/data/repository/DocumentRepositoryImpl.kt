@@ -24,6 +24,7 @@ import com.openfolio.core.data.local.entity.TransactionType
 import com.openfolio.core.di.ApplicationScope
 import com.openfolio.core.domain.repository.DocumentRepository
 import com.openfolio.core.domain.repository.DuplicateDocumentException
+import com.openfolio.core.domain.repository.DuplicateMatchInfo
 import com.openfolio.core.domain.repository.SaveDraftTransactionsResult
 import com.openfolio.core.utils.DocumentTextExtractor
 import com.openfolio.core.utils.StructuredFileParser
@@ -128,6 +129,7 @@ class DocumentRepositoryImpl @Inject constructor(
 
     override suspend fun saveDraftTransactions(
         documentId: String,
+        selectedDraftIds: Set<String>?,
     ): SaveDraftTransactionsResult = withContext(Dispatchers.IO) {
         database.withTransaction {
             val document = requireNotNull(documentDao.getDocumentById(documentId)) {
@@ -143,7 +145,15 @@ class DocumentRepositoryImpl @Inject constructor(
             val transactionsToInsert = mutableListOf<TransactionEntity>()
             var duplicateCount = 0
 
-            for (draft in drafts) {
+            val eligibleDrafts = if (selectedDraftIds != null) {
+                val (selected, unselected) = drafts.partition { it.id in selectedDraftIds }
+                duplicateCount += unselected.size
+                selected
+            } else {
+                drafts
+            }
+
+            for (draft in eligibleDrafts) {
                 Log.d("SaveTxn", "Saving draft ID: ${draft.id}")
                 val fallbackDate = if (document.importDate > 0) {
                     LocalDate.ofEpochDay(Math.floorDiv(document.importDate, MILLIS_PER_DAY))
@@ -265,6 +275,94 @@ class DocumentRepositoryImpl @Inject constructor(
             documentDao.updateStatus(documentId, DocumentStatus.COMPLETED.name)
             SaveDraftTransactionsResult(transactionsToInsert.size, duplicateCount)
         }
+    }
+
+    override suspend fun findDuplicateDrafts(
+        documentId: String,
+    ): Map<String, DuplicateMatchInfo> = withContext(Dispatchers.IO) {
+        val document = documentDao.getDocumentById(documentId) ?: return@withContext emptyMap()
+        val drafts = draftTransactionDao.getByDocumentIdOnce(documentId)
+        if (drafts.isEmpty()) return@withContext emptyMap()
+
+        val existingTxns = transactionDao.getAllOnce().filter { it.documentId != documentId }
+        if (existingTxns.isEmpty()) return@withContext emptyMap()
+
+        val existingByAsset = existingTxns.groupBy { it.assetId }
+        val resultMap = mutableMapOf<String, DuplicateMatchInfo>()
+
+        val fallbackDate = if (document.importDate > 0) {
+            LocalDate.ofEpochDay(Math.floorDiv(document.importDate, MILLIS_PER_DAY))
+        } else {
+            LocalDate.now()
+        }
+
+        for (draft in drafts) {
+            val resolvedTradeDate = draft.tradeDate?.let {
+                LocalDate.ofEpochDay(Math.floorDiv(it, MILLIS_PER_DAY))
+            } ?: fallbackDate
+
+            val assetId = draft.assetName.trim().lowercase().replace("\\s+".toRegex(), "_")
+            val fingerprint = createTransactionFingerprint(
+                assetId = assetId,
+                transactionType = draft.transactionType,
+                quantity = draft.quantity,
+                netAmount = draft.netAmount,
+                date = resolvedTradeDate.toEpochDay(),
+            )
+
+            // 1. Exact fingerprint match
+            val fingerprintMatch = existingTxns.firstOrNull { it.fingerprint == fingerprint }
+            if (fingerprintMatch != null) {
+                resultMap[draft.id] = DuplicateMatchInfo(
+                    isDuplicate = true,
+                    matchingTransactionId = fingerprintMatch.id,
+                    matchingTradeDate = fingerprintMatch.tradeDate.toString(),
+                    reason = "Exact match with existing transaction on ${fingerprintMatch.tradeDate}",
+                )
+                continue
+            }
+
+            // 2. Semantic content match for identical holding/transaction
+            val candidates = existingByAsset[assetId].orEmpty()
+            val draftQty = runCatching {
+                BigDecimal(draft.quantity.replace(",", "").replace("₹", "").trim())
+            }.getOrNull()
+            val draftNet = runCatching {
+                BigDecimal(draft.netAmount.replace(",", "").replace("₹", "").trim())
+            }.getOrNull()
+            val draftPrice = runCatching {
+                BigDecimal(draft.price.replace(",", "").replace("₹", "").trim())
+            }.getOrNull()
+
+            val contentMatch = candidates.firstOrNull { ex ->
+                val typeMatches = ex.type.name.equals(draft.transactionType, ignoreCase = true)
+                if (!typeMatches) return@firstOrNull false
+
+                val qtyMatches = draftQty != null && ex.quantity != null &&
+                    ex.quantity.compareTo(draftQty) == 0
+
+                val amountMatches = if (draftNet != null) {
+                    ex.netAmount.subtract(draftNet).abs() <= BigDecimal("0.05")
+                } else false
+
+                val priceMatches = if (draftPrice != null && ex.unitPrice != null) {
+                    ex.unitPrice.subtract(draftPrice).abs() <= BigDecimal("0.05")
+                } else false
+
+                qtyMatches && (amountMatches || priceMatches)
+            }
+
+            if (contentMatch != null) {
+                resultMap[draft.id] = DuplicateMatchInfo(
+                    isDuplicate = true,
+                    matchingTransactionId = contentMatch.id,
+                    matchingTradeDate = contentMatch.tradeDate.toString(),
+                    reason = "Identical holding in portfolio: ${contentMatch.type} ${contentMatch.quantity} @ ₹${contentMatch.unitPrice} (${contentMatch.tradeDate})",
+                )
+            }
+        }
+
+        resultMap
     }
 
     override suspend fun updateDocumentStatus(documentId: String, status: String) =

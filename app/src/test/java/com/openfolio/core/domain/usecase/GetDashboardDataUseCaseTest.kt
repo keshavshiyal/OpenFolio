@@ -160,6 +160,8 @@ class GetDashboardDataUseCaseTest {
         override suspend fun containsFingerprint(fingerprint: String): Boolean = false
         override suspend fun getById(id: String): TransactionEntity? = null
         override fun getAll(): Flow<List<TransactionEntity>> = flowOf(allTransactions)
+        override suspend fun getAllOnce(): List<TransactionEntity> = allTransactions
+        override suspend fun getByAssetIdOnce(assetId: String): List<TransactionEntity> = emptyList()
         override fun getByAssetId(assetId: String): Flow<List<TransactionEntity>> = flowOf(emptyList())
         override fun getByAccountId(accountId: String): Flow<List<TransactionEntity>> = flowOf(emptyList())
         override fun getTotalAssetsFlow(): Flow<Double?> = flowOf(assets)

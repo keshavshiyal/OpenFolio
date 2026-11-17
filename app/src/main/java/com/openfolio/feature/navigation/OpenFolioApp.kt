@@ -51,6 +51,7 @@ fun OpenFolioApp(
     val inboxDocuments by inboxViewModel.documents.collectAsStateWithLifecycle()
     val reviewUiState by reviewViewModel.uiState.collectAsStateWithLifecycle()
     val reviewDrafts by reviewViewModel.drafts.collectAsStateWithLifecycle()
+    val reviewDraftReviewItems by reviewViewModel.draftReviewItems.collectAsStateWithLifecycle()
     val structuredHeaders by reviewViewModel.structuredHeaders.collectAsStateWithLifecycle()
     val reviewActionState by reviewViewModel.actionState.collectAsStateWithLifecycle()
     val reviewErrorMessage by reviewViewModel.errorMessage.collectAsStateWithLifecycle()
@@ -169,18 +170,25 @@ fun OpenFolioApp(
                     structuredHeaders = structuredHeaders,
                     actionState = reviewActionState,
                     errorMessage = reviewErrorMessage,
+                    draftReviewItems = reviewDraftReviewItems,
                     onBack = { navController.popBackStack() },
                     onSkip = { navController.popBackStack() },
                     onProcessWithAi = reviewViewModel::onProcessWithAi,
                     onProcessMappedData = reviewViewModel::processMappedData,
                     onReloadHeaders = reviewViewModel::loadHeadersForHeaderRow,
                     onSaveDraft = reviewViewModel::saveDraft,
-                    onSaveConfirmed = reviewViewModel::saveConfirmed,
+                    onSaveConfirmed = { reviewViewModel.saveConfirmed() },
                     onSaveComplete = { navController.popBackStack() },
                     onNavigateToInbox = { navController.popBackStack() },
                     onNavigateToSettings = { navController.navigate(AppDestination.Settings.route) },
                     onDismissMissingApiKey = reviewViewModel::dismissMissingApiKeyDialog,
                     onDismissError = reviewViewModel::clearErrorMessage,
+                    onToggleDraftSelection = reviewViewModel::toggleDraftSelection,
+                    onSkipAllDuplicates = reviewViewModel::skipAllDuplicates,
+                    onSelectAllDrafts = reviewViewModel::selectAllDrafts,
+                    onConfirmSkipDuplicatesAndSave = reviewViewModel::confirmSkipDuplicatesAndSave,
+                    onConfirmSaveAllAnyway = reviewViewModel::confirmSaveAllAnyway,
+                    onDismissDuplicatePrompt = reviewViewModel::dismissDuplicatePrompt,
                 )
             }
             composable(AppDestination.Settings.route) {

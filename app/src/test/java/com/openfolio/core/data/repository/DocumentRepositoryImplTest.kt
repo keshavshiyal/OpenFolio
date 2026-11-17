@@ -584,6 +584,78 @@ class DocumentRepositoryImplTest {
         assertTrue(inserted[1].id != identicalId)
     }
 
+    // @Test
+    @Ignore("Requires in-memory RoomDatabase due to RoomDatabase.withTransaction coroutine dispatch")
+    fun saveDraftTransactionsRespectsSelectedDraftIds() = runBlocking {
+        val database = mock<OpenFolioDatabase>()
+        val documentDao = mock<DocumentDao>()
+        val draftDao = mock<DraftTransactionDao>()
+        val txnDao = mock<TransactionDao>()
+        val accountDao = mock<com.openfolio.core.data.local.dao.AccountDao>()
+        val assetDao = mock<com.openfolio.core.data.local.dao.AssetDao>()
+        val docId = "doc-selection"
+
+        whenever(database.accountDao()).thenReturn(accountDao)
+        whenever(database.assetDao()).thenReturn(assetDao)
+        whenever(database.transactionExecutor).thenReturn(java.util.concurrent.Executor { it.run() })
+        whenever(documentDao.getDocumentById(docId)).thenReturn(
+            DocumentEntity(
+                id = docId,
+                fileName = "test.csv",
+                localPath = "/tmp/test.csv",
+                fileHash = "hash123",
+                fileSize = 100L,
+                importDate = 1700000000000L,
+                status = DocumentStatus.AI_COMPLETE.name,
+            ),
+        )
+
+        val draft1 = DraftTransactionEntity(
+            id = "draft-1",
+            documentId = docId,
+            assetName = "TCS",
+            transactionType = "BUY",
+            quantity = "10",
+            price = "3500",
+            netAmount = "35000",
+            confidence = 90,
+        )
+        val draft2 = DraftTransactionEntity(
+            id = "draft-2",
+            documentId = docId,
+            assetName = "INFY",
+            transactionType = "BUY",
+            quantity = "5",
+            price = "1500",
+            netAmount = "7500",
+            confidence = 90,
+        )
+        whenever(draftDao.getByDocumentIdOnce(docId)).thenReturn(listOf(draft1, draft2))
+
+        val repository = DocumentRepositoryImpl(
+            documentDao = documentDao,
+            columnMappingDao = mock<ColumnMappingDao>(),
+            draftTransactionDao = draftDao,
+            transactionDao = txnDao,
+            database = database,
+            documentTextExtractor = mock<DocumentTextExtractor>(),
+            structuredFileParser = mock<StructuredFileParser>(),
+            settingsRepository = mock<SettingsRepository>(),
+            aiProvider = mock<AiProvider>(),
+            applicationScope = mock<CoroutineScope>(),
+        )
+
+        val result = repository.saveDraftTransactions(docId, selectedDraftIds = setOf("draft-1"))
+        assertEquals(1, result.savedCount)
+        assertEquals(1, result.duplicateCount)
+
+        val captor = org.mockito.kotlin.argumentCaptor<List<com.openfolio.core.data.local.entity.TransactionEntity>>()
+        verify(txnDao).insertAll(captor.capture())
+        val inserted = captor.firstValue
+        assertEquals(1, inserted.size)
+        assertEquals("tcs", inserted[0].assetId)
+    }
+
     @Test
     fun createMappedDraftsPreservesPreciseDecimalsWithoutDoubleErrors() {
         val repository = createTestRepository()

@@ -11,6 +11,7 @@ import com.openfolio.core.domain.repository.DocumentRepository
 import com.openfolio.core.domain.repository.EmptyExtractedTextException
 import com.openfolio.core.domain.repository.MissingApiKeyException
 import com.openfolio.core.domain.repository.NoFinancialDataException
+import com.openfolio.core.domain.repository.DuplicateMatchInfo
 import com.openfolio.core.domain.repository.SaveDraftTransactionsResult
 import com.openfolio.feature.screens.autoMapHeaders
 import com.openfolio.feature.screens.formatEpochMillisToDate
@@ -25,6 +26,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -85,6 +87,72 @@ class ReviewViewModelTest {
             ReviewActionState.Saved(SaveDraftTransactionsResult(savedCount = 4, duplicateCount = 1)),
             viewModel.actionState.value,
         )
+    }
+
+    @Test
+    fun identifiesDuplicatesAndUnselectsThemByDefault() {
+        viewModel.onProcessWithAi()
+        val firstDraftId = viewModel.drafts.value.first().id
+        repository.duplicateMapToReturn = mapOf(
+            firstDraftId to DuplicateMatchInfo(
+                isDuplicate = true,
+                reason = "Existing identical transaction found",
+            ),
+        )
+        viewModel.loadDocument(document.id)
+
+        val items = viewModel.draftReviewItems.value
+        assertEquals(5, items.size)
+        val dupItem = items.first { it.draft.id == firstDraftId }
+        assertTrue(dupItem.isDuplicate)
+        assertTrue(!dupItem.isSelected)
+        assertEquals("Existing identical transaction found", dupItem.duplicateReason)
+
+        val nonDup = items.filter { it.draft.id != firstDraftId }
+        assertTrue(nonDup.all { !it.isDuplicate && it.isSelected })
+    }
+
+    @Test
+    fun promptsReviewWhenSavingWithSelectedDuplicates() {
+        viewModel.onProcessWithAi()
+        val firstDraftId = viewModel.drafts.value.first().id
+        repository.duplicateMapToReturn = mapOf(
+            firstDraftId to DuplicateMatchInfo(isDuplicate = true),
+        )
+        viewModel.loadDocument(document.id)
+
+        // Explicitly select the duplicate item
+        viewModel.toggleDraftSelection(firstDraftId)
+
+        viewModel.saveConfirmed()
+
+        assertTrue(viewModel.actionState.value is ReviewActionState.PromptDuplicateReview)
+        val prompt = viewModel.actionState.value as ReviewActionState.PromptDuplicateReview
+        assertEquals(1, prompt.duplicateCount)
+        assertEquals(5, prompt.totalSelectedCount)
+    }
+
+    @Test
+    fun skipAllDuplicatesUnselectsDuplicatesAndSavesUniqueOnly() {
+        viewModel.onProcessWithAi()
+        val firstDraftId = viewModel.drafts.value.first().id
+        repository.duplicateMapToReturn = mapOf(
+            firstDraftId to DuplicateMatchInfo(isDuplicate = true),
+        )
+        viewModel.loadDocument(document.id)
+
+        // Select it then skip all duplicates
+        viewModel.toggleDraftSelection(firstDraftId)
+        viewModel.skipAllDuplicates()
+
+        viewModel.saveConfirmed()
+
+        // Should save without prompt
+        assertTrue(viewModel.actionState.value is ReviewActionState.Saved)
+        val savedIds = repository.lastSavedSelectedIds
+        assertNotNull(savedIds)
+        assertTrue(firstDraftId !in savedIds!!)
+        assertEquals(4, savedIds.size)
     }
 
     @Test
@@ -374,10 +442,21 @@ class ReviewViewModelTest {
             minimumConfidence: Int,
         ) = Unit
 
+        var duplicateMapToReturn: Map<String, DuplicateMatchInfo> = emptyMap()
+        var lastSavedSelectedIds: Set<String>? = null
+        var customResult: SaveDraftTransactionsResult? = null
+
+        override suspend fun findDuplicateDrafts(
+            documentId: String,
+        ): Map<String, DuplicateMatchInfo> = duplicateMapToReturn
+
         override suspend fun saveDraftTransactions(
             documentId: String,
-        ): SaveDraftTransactionsResult =
-            SaveDraftTransactionsResult(savedCount = 4, duplicateCount = 1)
+            selectedDraftIds: Set<String>?,
+        ): SaveDraftTransactionsResult {
+            lastSavedSelectedIds = selectedDraftIds
+            return customResult ?: SaveDraftTransactionsResult(savedCount = 4, duplicateCount = 1)
+        }
 
         override suspend fun processDocumentWithAi(documentId: String) {
             throwExceptionOnAi?.let { throw it }

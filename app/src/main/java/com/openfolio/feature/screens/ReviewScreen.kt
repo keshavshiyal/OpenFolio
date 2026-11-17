@@ -6,12 +6,14 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -19,8 +21,11 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExposedDropdownMenuBox
@@ -29,6 +34,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -55,6 +61,7 @@ import com.openfolio.core.data.local.entity.DocumentStatus
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
 import com.openfolio.core.ui.theme.LocalOpenFolioColors
 import com.openfolio.feature.review.DocumentPreview
+import com.openfolio.feature.review.DraftReviewItem
 import com.openfolio.feature.review.ReviewActionState
 import com.openfolio.feature.review.ReviewUiState
 import java.time.Instant
@@ -69,6 +76,7 @@ fun ReviewScreen(
     structuredHeaders: List<String>,
     actionState: ReviewActionState,
     errorMessage: String? = null,
+    draftReviewItems: List<DraftReviewItem> = emptyList(),
     onBack: () -> Unit,
     onSkip: () -> Unit,
     onProcessWithAi: () -> Unit,
@@ -81,6 +89,12 @@ fun ReviewScreen(
     onNavigateToSettings: () -> Unit = {},
     onDismissMissingApiKey: () -> Unit = {},
     onDismissError: () -> Unit = {},
+    onToggleDraftSelection: (String) -> Unit = {},
+    onSkipAllDuplicates: () -> Unit = {},
+    onSelectAllDrafts: () -> Unit = {},
+    onConfirmSkipDuplicatesAndSave: () -> Unit = {},
+    onConfirmSaveAllAnyway: () -> Unit = {},
+    onDismissDuplicatePrompt: () -> Unit = {},
 ) {
     val colors = LocalOpenFolioColors.current
     val document = (uiState as? ReviewUiState.Loaded)?.document
@@ -181,6 +195,49 @@ fun ReviewScreen(
                 }
             },
             containerColor = colors.surface,
+        )
+    }
+
+    if (actionState is ReviewActionState.PromptDuplicateReview) {
+        AlertDialog(
+            onDismissRequest = onDismissDuplicatePrompt,
+            containerColor = colors.surface,
+            title = {
+                Text(
+                    text = "Duplicate Transactions Detected",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = colors.content,
+                )
+            },
+            text = {
+                Text(
+                    text = "${actionState.duplicateCount} of the ${actionState.totalSelectedCount} selected transaction(s) are identical to records already present in your portfolio.\n\n" +
+                        "Do you want to skip duplicates and save only unique transactions, or import all anyway?",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.muted,
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = onConfirmSkipDuplicatesAndSave,
+                ) {
+                    Text("Skip Duplicates & Save")
+                }
+            },
+            dismissButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(
+                        onClick = onDismissDuplicatePrompt,
+                    ) {
+                        Text("Cancel", color = colors.muted)
+                    }
+                    TextButton(
+                        onClick = onConfirmSaveAllAnyway,
+                    ) {
+                        Text("Import Anyway", color = colors.lossGlyph)
+                    }
+                }
+            },
         )
     }
 
@@ -340,6 +397,68 @@ fun ReviewScreen(
                             }
                         }
                     } else {
+                        val itemsToDisplay = remember(drafts, draftReviewItems) {
+                            if (draftReviewItems.isNotEmpty()) {
+                                draftReviewItems
+                            } else {
+                                drafts.map { DraftReviewItem(draft = it, isDuplicate = false, isSelected = true) }
+                            }
+                        }
+                        val duplicateCount = itemsToDisplay.count { it.isDuplicate }
+                        val selectedCount = itemsToDisplay.count { it.isSelected }
+
+                        if (duplicateCount > 0) {
+                            Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                color = colors.lossGlyph.copy(alpha = 0.08f),
+                                border = BorderStroke(1.dp, colors.lossGlyph.copy(alpha = 0.25f)),
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Warning,
+                                            contentDescription = null,
+                                            tint = colors.lossGlyph,
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                        Text(
+                                            text = "$duplicateCount Duplicate(s) Found",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            color = colors.lossGlyph,
+                                        )
+                                    }
+                                    Text(
+                                        text = "Identical transactions already exist in your portfolio. They are unselected by default to prevent double counting.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = colors.content,
+                                    )
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        OutlinedButton(
+                                            onClick = onSkipAllDuplicates,
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                        ) {
+                                            Text("Skip All Duplicates", style = MaterialTheme.typography.labelMedium)
+                                        }
+                                        OutlinedButton(
+                                            onClick = onSelectAllDrafts,
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                        ) {
+                                            Text("Select All", style = MaterialTheme.typography.labelMedium)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         Button(
                             onClick = {
                                 editingDraft = null
@@ -354,12 +473,13 @@ fun ReviewScreen(
                             contentPadding = PaddingValues(vertical = 2.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            items(drafts, key = DraftTransactionEntity::id) { draft ->
+                            items(itemsToDisplay, key = { it.draft.id }) { item ->
                                 DraftTransactionRow(
-                                    draft = draft,
+                                    item = item,
                                     documentImportDate = document?.importDate,
+                                    onToggleSelection = { onToggleDraftSelection(item.draft.id) },
                                     onEdit = {
-                                        editingDraft = draft
+                                        editingDraft = item.draft
                                         showManualForm = true
                                     },
                                 )
@@ -386,7 +506,12 @@ fun ReviewScreen(
                                 )
                                 Text("  Saving…")
                             } else {
-                                Text("Save Confirmed")
+                                val label = when {
+                                    selectedCount == 0 -> "Skip All & Complete"
+                                    selectedCount < itemsToDisplay.size -> "Save Selected ($selectedCount / ${itemsToDisplay.size})"
+                                    else -> "Save Confirmed ($selectedCount)"
+                                }
+                                Text(label)
                             }
                         }
                     }
@@ -737,10 +862,12 @@ private fun matchesKeyword(header: String, keywords: List<String>): Boolean {
 
 @Composable
 private fun DraftTransactionRow(
-    draft: DraftTransactionEntity,
+    item: DraftReviewItem,
     documentImportDate: Long? = null,
+    onToggleSelection: () -> Unit,
     onEdit: () -> Unit,
 ) {
+    val draft = item.draft
     val colors = LocalOpenFolioColors.current
     val (dateText, isDateMissing) = when {
         draft.tradeDate != null -> formatEpochMillisToDate(draft.tradeDate) to false
@@ -753,22 +880,51 @@ private fun DraftTransactionRow(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
         color = if (draft.isManual) colors.brandSubtle else colors.background,
+        border = if (item.isDuplicate) BorderStroke(1.dp, colors.lossGlyph.copy(alpha = 0.35f)) else null,
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            Checkbox(
+                checked = item.isSelected,
+                onCheckedChange = { onToggleSelection() },
+                colors = CheckboxDefaults.colors(
+                    checkedColor = colors.brand,
+                    checkmarkColor = colors.onAccent,
+                ),
+            )
+            Spacer(modifier = Modifier.width(4.dp))
             Column(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(3.dp),
             ) {
-                Text(
-                    text = draft.assetName,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = colors.content,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        text = draft.assetName,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.content,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (item.isDuplicate) {
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = colors.lossGlyph.copy(alpha = 0.12f),
+                        ) {
+                            Text(
+                                text = "DUPLICATE",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.lossGlyph,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+                            )
+                        }
+                    }
+                }
                 Text(
                     text = "${draft.transactionType} · Qty ${draft.quantity} · ₹ ${draft.price}",
                     style = MaterialTheme.typography.bodySmall.copy(
@@ -787,6 +943,17 @@ private fun DraftTransactionRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                if (item.isDuplicate && !item.duplicateReason.isNullOrBlank()) {
+                    Text(
+                        text = item.duplicateReason,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontFeatureSettings = "tnum",
+                        ),
+                        color = colors.lossGlyph,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
             ConfidenceBadge(draft.confidence)
             IconButton(onClick = onEdit) {
@@ -799,6 +966,20 @@ private fun DraftTransactionRow(
             }
         }
     }
+}
+
+@Composable
+private fun DraftTransactionRow(
+    draft: DraftTransactionEntity,
+    documentImportDate: Long? = null,
+    onEdit: () -> Unit,
+) {
+    DraftTransactionRow(
+        item = DraftReviewItem(draft = draft, isDuplicate = false, isSelected = true),
+        documentImportDate = documentImportDate,
+        onToggleSelection = {},
+        onEdit = onEdit,
+    )
 }
 
 @Composable

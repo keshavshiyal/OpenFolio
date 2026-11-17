@@ -11,6 +11,7 @@ import com.openfolio.core.data.local.entity.TransactionStatus
 import com.openfolio.core.data.local.entity.TransactionType
 import com.openfolio.core.domain.repository.DocumentRepository
 import com.openfolio.core.domain.repository.DuplicateDocumentException
+import com.openfolio.core.domain.repository.DuplicateMatchInfo
 import com.openfolio.core.domain.repository.SaveDraftTransactionsResult
 import com.openfolio.core.domain.usecase.GetDashboardDataUseCase
 import java.math.BigDecimal
@@ -214,6 +215,8 @@ class HomeViewModelTest {
         override suspend fun containsFingerprint(fingerprint: String): Boolean = false
         override suspend fun getById(id: String): TransactionEntity? = null
         override fun getAll(): Flow<List<TransactionEntity>> = flowOf(allTransactions)
+        override suspend fun getAllOnce(): List<TransactionEntity> = allTransactions
+        override suspend fun getByAssetIdOnce(assetId: String): List<TransactionEntity> = emptyList()
         override fun getByAssetId(assetId: String): Flow<List<TransactionEntity>> = flowOf(emptyList())
         override fun getByAccountId(accountId: String): Flow<List<TransactionEntity>> = flowOf(emptyList())
         override fun getTotalAssetsFlow(): Flow<Double?> = flowOf(assets)
@@ -281,7 +284,12 @@ class HomeViewModelTest {
 
         override suspend fun saveDraftTransactions(
             documentId: String,
+            selectedDraftIds: Set<String>?,
         ): SaveDraftTransactionsResult = SaveDraftTransactionsResult(0, 0)
+
+        override suspend fun findDuplicateDrafts(
+            documentId: String,
+        ): Map<String, DuplicateMatchInfo> = emptyMap()
 
         override suspend fun updateDocumentStatus(documentId: String, status: String) = Unit
 

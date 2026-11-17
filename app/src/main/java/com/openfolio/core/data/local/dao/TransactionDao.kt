@@ -35,6 +35,12 @@ interface TransactionDao {
     @Query("SELECT * FROM txn ORDER BY tradeDate DESC, createdAt DESC")
     fun getAll(): Flow<List<TransactionEntity>>
 
+    @Query("SELECT * FROM txn")
+    suspend fun getAllOnce(): List<TransactionEntity>
+
+    @Query("SELECT * FROM txn WHERE assetId = :assetId")
+    suspend fun getByAssetIdOnce(assetId: String): List<TransactionEntity>
+
     @Query("SELECT * FROM txn WHERE assetId = :assetId ORDER BY tradeDate DESC, createdAt DESC")
     fun getByAssetId(assetId: String): Flow<List<TransactionEntity>>
 
