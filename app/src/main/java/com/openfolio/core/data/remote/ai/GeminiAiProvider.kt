@@ -106,12 +106,16 @@ class GeminiAiProvider @Inject constructor() : AiProvider {
 
     private fun extractJsonString(obj: JSONObject, key: String, default: String): String {
         if (obj.isNull(key)) return default
-        return when (val raw = obj.opt(key)) {
+        val stringValue = when (val raw = obj.opt(key)) {
             null -> default
             is String -> raw.trim().ifBlank { default }
-            is Number -> BigDecimal(raw.toString()).toPlainString()
+            is Number -> raw.toString().trim().ifBlank { default }
             else -> raw.toString().trim().ifBlank { default }
         }
+        return runCatching {
+            val clean = stringValue.replace(",", "").trim()
+            BigDecimal(clean).toPlainString()
+        }.getOrDefault(stringValue)
     }
 
     internal fun parseTradeDate(tradeDateStr: String): Long? {

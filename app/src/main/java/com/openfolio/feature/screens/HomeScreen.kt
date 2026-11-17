@@ -240,17 +240,12 @@ fun HomeScreen(
                     verticalArrangement = Arrangement.spacedBy(20.dp),
                 ) {
                     item {
-                        val uniqueCount = if (uiState.data.totalTransactions > 0) {
-                            uiState.data.totalTransactions
-                        } else {
-                            uiState.data.recentTransactions.size
-                        }
                         NetWorthSection(
                             netWorth = uiState.data.netWorth,
                             changePercent = uiState.changePercent,
                             asOf = uiState.asOf,
                             showValues = uiState.showValues,
-                            uniqueTransactionsCount = uniqueCount,
+                            uniqueTransactionsCount = uiState.data.totalTransactions,
                         )
                     }
                     if (uiState.data.totalAssets > BigDecimal.ZERO) {
@@ -364,7 +359,9 @@ private fun NetWorthSection(
         )
         Text(
             text = "Based on $uniqueTransactionsCount unique transactions",
-            style = MaterialTheme.typography.bodySmall,
+            style = MaterialTheme.typography.bodySmall.copy(
+                fontFeatureSettings = "tnum",
+            ),
             color = colors.muted,
         )
     }

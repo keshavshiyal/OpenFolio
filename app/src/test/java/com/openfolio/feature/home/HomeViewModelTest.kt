@@ -218,6 +218,7 @@ class HomeViewModelTest {
         override fun getByAccountId(accountId: String): Flow<List<TransactionEntity>> = flowOf(emptyList())
         override fun getTotalAssetsFlow(): Flow<Double?> = flowOf(assets)
         override fun getTotalLiabilitiesFlow(): Flow<Double?> = flowOf(liabilities)
+        override fun getTotalTransactionCount(): Flow<Int> = flowOf(allTransactions.size)
         override fun getRecentTransactions(limit: Int): Flow<List<TransactionEntity>> = flowOf(recentTransactions)
     }
 

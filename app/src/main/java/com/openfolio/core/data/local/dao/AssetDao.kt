@@ -12,10 +12,10 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface AssetDao {
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(asset: AssetEntity)
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertAll(assets: List<AssetEntity>)
 
     @Update

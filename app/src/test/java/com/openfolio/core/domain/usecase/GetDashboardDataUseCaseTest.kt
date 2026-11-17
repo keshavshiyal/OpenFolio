@@ -131,11 +131,26 @@ class GetDashboardDataUseCaseTest {
         assertEquals("Tata Consultancy Services", result.recentTransactions.first().assetId)
     }
 
+    @Test
+    fun returnsTotalTransactionCountFromTransactionDaoFlow() = runTest {
+        val dao = FakeTransactionDao(
+            assets = 1000.0,
+            liabilities = 0.0,
+            recentTransactions = emptyList(),
+            totalCount = 42,
+        )
+        val useCase = GetDashboardDataUseCase(dao)
+
+        val result = useCase().first()
+        assertEquals(42, result.totalTransactions)
+    }
+
     private class FakeTransactionDao(
         private val assets: Double?,
         private val liabilities: Double?,
         private val recentTransactions: List<TransactionEntity>,
         private val allTransactions: List<TransactionEntity> = emptyList(),
+        private val totalCount: Int = allTransactions.size,
     ) : TransactionDao {
         override suspend fun insert(transaction: TransactionEntity) = Unit
         override suspend fun insertAll(transactions: List<TransactionEntity>) = Unit
@@ -149,6 +164,7 @@ class GetDashboardDataUseCaseTest {
         override fun getByAccountId(accountId: String): Flow<List<TransactionEntity>> = flowOf(emptyList())
         override fun getTotalAssetsFlow(): Flow<Double?> = flowOf(assets)
         override fun getTotalLiabilitiesFlow(): Flow<Double?> = flowOf(liabilities)
+        override fun getTotalTransactionCount(): Flow<Int> = flowOf(totalCount)
         override fun getRecentTransactions(limit: Int): Flow<List<TransactionEntity>> = flowOf(recentTransactions)
     }
 

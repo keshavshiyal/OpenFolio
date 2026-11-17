@@ -47,6 +47,9 @@ interface TransactionDao {
     @Query("SELECT SUM(CAST(grossAmount AS REAL)) FROM txn WHERE type IN ('FEE', 'TAX')")
     fun getTotalLiabilitiesFlow(): Flow<Double?>
 
+    @Query("SELECT COUNT(*) FROM txn")
+    fun getTotalTransactionCount(): Flow<Int>
+
     @Query("SELECT * FROM txn ORDER BY tradeDate DESC, createdAt DESC LIMIT :limit")
     fun getRecentTransactions(limit: Int = 5): Flow<List<TransactionEntity>>
 }

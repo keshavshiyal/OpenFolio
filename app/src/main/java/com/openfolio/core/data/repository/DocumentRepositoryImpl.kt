@@ -164,11 +164,12 @@ class DocumentRepositoryImpl @Inject constructor(
                 if (transactionDao.containsFingerprint(fingerprint)) {
                     duplicateCount++
                 } else {
-                    val cleanQty = draft.quantity.trim().replace(",", "").ifBlank { "0" }
-                    val cleanPrice = draft.price.trim().replace(",", "").ifBlank { "0" }
-                    val cleanNetAmount = draft.netAmount.trim().replace(",", "").ifBlank { "0" }
-                    val quantity = BigDecimal(cleanQty)
-                    val price = BigDecimal(cleanPrice)
+                    val cleanQty = draft.quantity.replace(",", "").replace("₹", "").trim().ifBlank { "0" }
+                    val cleanPrice = draft.price.replace(",", "").replace("₹", "").trim().ifBlank { "0" }
+                    val cleanNetAmount = draft.netAmount.replace(",", "").replace("₹", "").trim().ifBlank { "0" }
+                    val quantity = BigDecimal(cleanQty.trim())
+                    val price = BigDecimal(cleanPrice.trim())
+                    val netAmount = BigDecimal(cleanNetAmount.trim())
                     val accountId = "default_account"
                     val assetId = draft.assetName.trim().lowercase().replace("\\s+".toRegex(), "_")
                     val assetClass = try {
@@ -210,7 +211,7 @@ class DocumentRepositoryImpl @Inject constructor(
                             grossAmount = quantity.multiply(price),
                             fees = BigDecimal.ZERO,
                             taxes = BigDecimal.ZERO,
-                            netAmount = BigDecimal(cleanNetAmount),
+                            netAmount = netAmount,
                             currency = "INR",
                             fxRate = null,
                             baseCurrencyAmount = null,
@@ -559,13 +560,13 @@ class DocumentRepositoryImpl @Inject constructor(
         price: String?,
         amount: String?,
     ): Triple<String, String, String> {
-        val cleanQty = qty?.trim()?.replace(",", "")?.takeIf(String::isNotBlank)
-        val cleanPrice = price?.trim()?.replace(",", "")?.takeIf(String::isNotBlank)
-        val cleanAmount = amount?.trim()?.replace(",", "")?.takeIf(String::isNotBlank)
+        val cleanQty = qty?.trim()?.replace(",", "")?.replace("₹", "")?.trim()?.takeIf(String::isNotBlank)
+        val cleanPrice = price?.trim()?.replace(",", "")?.replace("₹", "")?.trim()?.takeIf(String::isNotBlank)
+        val cleanAmount = amount?.trim()?.replace(",", "")?.replace("₹", "")?.trim()?.takeIf(String::isNotBlank)
 
-        val qtyBd = cleanQty?.let { runCatching { BigDecimal(it) }.getOrNull() }
-        val priceBd = cleanPrice?.let { runCatching { BigDecimal(it) }.getOrNull() }
-        val amountBd = cleanAmount?.let { runCatching { BigDecimal(it) }.getOrNull() }
+        val qtyBd = cleanQty?.let { runCatching { BigDecimal(it.trim()) }.getOrNull() }
+        val priceBd = cleanPrice?.let { runCatching { BigDecimal(it.trim()) }.getOrNull() }
+        val amountBd = cleanAmount?.let { runCatching { BigDecimal(it.trim()) }.getOrNull() }
 
         return when {
             qtyBd != null && priceBd != null && amountBd != null -> {
@@ -626,10 +627,11 @@ class DocumentRepositoryImpl @Inject constructor(
 
     private fun normalizeNumber(value: String, field: String): String {
         val normalized = value.replace(",", "").replace("₹", "").trim()
-        require(normalized.toBigDecimalOrNull() != null) {
+        val parsed = runCatching { BigDecimal(normalized.trim()) }.getOrNull()
+        require(parsed != null) {
             "A transaction row has an invalid $field value."
         }
-        return normalized
+        return parsed.toPlainString()
     }
 
     private fun parseMappedDate(value: String): Long? {

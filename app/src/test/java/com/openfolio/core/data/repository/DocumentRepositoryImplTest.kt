@@ -584,6 +584,42 @@ class DocumentRepositoryImplTest {
         assertTrue(inserted[1].id != identicalId)
     }
 
+    @Test
+    fun createMappedDraftsPreservesPreciseDecimalsWithoutDoubleErrors() {
+        val repository = createTestRepository()
+        val document = DocumentEntity(
+            id = "doc-precision",
+            fileName = "trades.csv",
+            localPath = "/tmp/trades.csv",
+            fileHash = "hash123",
+            fileSize = 100L,
+            importDate = 1700000000000L,
+            status = DocumentStatus.READY_FOR_MAPPING.name,
+        )
+        val table = StructuredTable(
+            headers = listOf("Asset", "Action", "Qty", "Price", "Amount"),
+            rows = listOf(
+                listOf("Parag Parikh", "BUY", "144.80000000000001", "10.00", ""),
+                listOf("HDFC Bank", "BUY", "10", "1500.55", "15005.50"),
+            ),
+        )
+        val mapping = ColumnMappingEntity(
+            brokerName = "Custom Broker",
+            assetColumn = "Asset",
+            typeColumn = "Action",
+            quantityColumn = "Qty",
+            priceColumn = "Price",
+            amountColumn = "Amount",
+            dateColumn = "",
+        )
+
+        val drafts = repository.createMappedDrafts(document, table, mapping)
+        assertEquals(2, drafts.size)
+        assertEquals("144.80000000000001", drafts[0].quantity)
+        assertEquals("10.00", drafts[0].price)
+        assertEquals("1448.0000000000001", drafts[0].netAmount)
+    }
+
     private fun createTestRepository() = DocumentRepositoryImpl(
         documentDao = mock<DocumentDao>(),
         columnMappingDao = mock<ColumnMappingDao>(),

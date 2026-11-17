@@ -26,17 +26,17 @@ class GetDashboardDataUseCase @Inject constructor(
         val liabilities = transactionDao.getTotalLiabilitiesFlow().map {
             if (it == null || it == 0.0) BigDecimal.ZERO else BigDecimal(it)
         }
+        val totalCountFlow = transactionDao.getTotalTransactionCount()
         val recentTxnsFlow = transactionDao.getRecentTransactions(5)
         val allTxnsFlow = transactionDao.getAll()
         val assetEntitiesFlow = assetDao?.getAll() ?: flowOf(emptyList())
 
         return combine(
-            assets,
-            liabilities,
+            combine(assets, liabilities, totalCountFlow) { a, l, c -> Triple(a, l, c) },
             recentTxnsFlow,
             allTxnsFlow,
             assetEntitiesFlow,
-        ) { totalAssets, totalLiabilities, recentTransactions, allTransactions, assetEntities ->
+        ) { (totalAssets, totalLiabilities, totalCount), recentTransactions, allTransactions, assetEntities ->
             val netWorth = totalAssets - totalLiabilities
 
             val assetsById = assetEntities.associateBy { it.id }
@@ -55,7 +55,7 @@ class GetDashboardDataUseCase @Inject constructor(
                 totalLiabilities = totalLiabilities,
                 recentTransactions = mappedRecent,
                 allocations = allocations,
-                totalTransactions = allTransactions.size,
+                totalTransactions = totalCount,
             )
         }
     }

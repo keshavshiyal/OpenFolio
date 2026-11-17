@@ -11,10 +11,10 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface AccountDao {
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(account: AccountEntity)
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertAll(accounts: List<AccountEntity>)
 
     @Update

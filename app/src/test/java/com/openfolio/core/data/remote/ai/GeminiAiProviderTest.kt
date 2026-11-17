@@ -178,4 +178,64 @@ class GeminiAiProviderTest {
         val results = provider.parseJsonResponse("[]", "doc-empty")
         assertTrue(results.isEmpty())
     }
+
+    @Test
+    fun parseJsonResponseSupportsAllAllowedAssetClasses() {
+        val classes = listOf("STOCK", "MUTUAL_FUND", "BOND", "FD", "HOUSE", "LAND", "GOLD", "CRYPTO")
+        val json = classes.mapIndexed { index, cls ->
+            """
+            {
+                "assetName": "Asset $index",
+                "assetClass": "$cls",
+                "transactionType": "BUY",
+                "quantity": "10",
+                "price": "100",
+                "netAmount": "1000"
+            }
+            """.trimIndent()
+        }.joinToString(prefix = "[", separator = ",", postfix = "]")
+
+        val results = provider.parseJsonResponse(json, "doc-classes")
+        assertEquals(classes.size, results.size)
+        classes.forEachIndexed { index, expectedClass ->
+            assertEquals(expectedClass, results[index].assetClass)
+        }
+    }
+
+    @Test
+    fun parseJsonResponseFallbacksToStockForUnknownAssetClass() {
+        val json = """
+            [
+              {
+                "assetName": "Unknown Asset",
+                "assetClass": "ART",
+                "transactionType": "BUY"
+              }
+            ]
+        """.trimIndent()
+
+        val results = provider.parseJsonResponse(json, "doc-unknown")
+        assertEquals(1, results.size)
+        assertEquals("STOCK", results[0].assetClass)
+    }
+
+    @Test
+    fun parseJsonResponsePreservesStrictBigDecimalPrecisionWithoutDoubleConversion() {
+        val json = """
+            [
+              {
+                "assetName": "Precise Asset",
+                "quantity": "144.80000000000001",
+                "price": "1234.56789012345",
+                "netAmount": "178765.4321098765"
+              }
+            ]
+        """.trimIndent()
+
+        val results = provider.parseJsonResponse(json, "doc-precise")
+        assertEquals(1, results.size)
+        assertEquals("144.80000000000001", results[0].quantity)
+        assertEquals("1234.56789012345", results[0].price)
+        assertEquals("178765.4321098765", results[0].netAmount)
+    }
 }
