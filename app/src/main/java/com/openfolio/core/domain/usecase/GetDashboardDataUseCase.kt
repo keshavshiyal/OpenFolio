@@ -3,8 +3,6 @@ package com.openfolio.core.domain.usecase
 import com.openfolio.core.data.local.dao.AssetDao
 import com.openfolio.core.data.local.dao.TransactionDao
 import com.openfolio.core.data.local.entity.AssetClass
-import com.openfolio.core.data.local.entity.AssetEntity
-import com.openfolio.core.data.local.entity.TransactionEntity
 import com.openfolio.core.domain.model.DashboardAllocation
 import com.openfolio.core.domain.model.DashboardData
 import java.math.BigDecimal
@@ -28,17 +26,18 @@ class GetDashboardDataUseCase @Inject constructor(
         }
         val totalCountFlow = transactionDao.getTotalTransactionCount()
         val recentTxnsFlow = transactionDao.getRecentTransactions(5)
-        val allTxnsFlow = transactionDao.getAll()
+        val allocationsFlow = transactionDao.getAssetClassAllocations()
+        val deltasFlow = transactionDao.getDailyNetWorthDeltas()
         val assetEntitiesFlow = assetDao?.getAll() ?: flowOf(emptyList())
 
         return combine(
             combine(assets, liabilities, totalCountFlow) { a, l, c -> Triple(a, l, c) },
             recentTxnsFlow,
-            allTxnsFlow,
+            allocationsFlow,
+            deltasFlow,
             assetEntitiesFlow,
-        ) { (totalAssets, totalLiabilities, totalCount), recentTransactions, allTransactions, assetEntities ->
+        ) { (totalAssets, totalLiabilities, totalCount), recentTransactions, allocationRows, dailyDeltas, assetEntities ->
             val netWorth = totalAssets - totalLiabilities
-
             val assetsById = assetEntities.associateBy { it.id }
 
             val mappedRecent = recentTransactions.map { txn ->
@@ -47,7 +46,18 @@ class GetDashboardDataUseCase @Inject constructor(
                 txn.copy(assetId = displayName)
             }
 
-            val allocations = calculateAllocations(allTransactions, assetsById)
+            val totalAllocAmount = allocationRows.sumOf { it.totalAmount }
+            val allocations = if (totalAllocAmount > 0.0) {
+                allocationRows.map { row ->
+                    val pct = (row.totalAmount / totalAllocAmount * 100.0).roundToInt()
+                    DashboardAllocation(
+                        label = row.assetClass.toDisplayName(),
+                        percentage = pct,
+                    )
+                }.filter { it.percentage > 0 }
+            } else {
+                emptyList()
+            }
 
             DashboardData(
                 netWorth = netWorth,
@@ -56,6 +66,7 @@ class GetDashboardDataUseCase @Inject constructor(
                 recentTransactions = mappedRecent,
                 allocations = allocations,
                 totalTransactions = totalCount,
+                dailyDeltas = dailyDeltas,
             )
         }
     }
@@ -69,39 +80,6 @@ class GetDashboardDataUseCase @Inject constructor(
             .joinToString(" ") { word ->
                 word.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
             }
-    }
-
-    private fun calculateAllocations(
-        transactions: List<TransactionEntity>,
-        assetsById: Map<String, AssetEntity>,
-    ): List<DashboardAllocation> {
-        val positiveTxns = transactions.filter {
-            val typeUpper = it.type.name.uppercase()
-            typeUpper in setOf("BUY", "DIVIDEND", "INTEREST")
-        }
-        if (positiveTxns.isEmpty()) return emptyList()
-
-        val amountsByClass = mutableMapOf<AssetClass, BigDecimal>()
-        for (txn in positiveTxns) {
-            val asset = assetsById[txn.assetId]
-                ?: assetsById.values.firstOrNull { it.displayName.equals(txn.assetId, ignoreCase = true) }
-            val assetClass = asset?.assetClass ?: AssetClass.STOCK
-            val amount = txn.grossAmount
-            amountsByClass[assetClass] = (amountsByClass[assetClass] ?: BigDecimal.ZERO) + amount
-        }
-
-        val total = amountsByClass.values.fold(BigDecimal.ZERO) { acc, cur -> acc + cur }
-        if (total <= BigDecimal.ZERO) return emptyList()
-
-        val sorted = amountsByClass.entries.sortedByDescending { it.value }
-
-        return sorted.map { entry ->
-            val pct = (entry.value.toDouble() / total.toDouble() * 100.0).roundToInt()
-            DashboardAllocation(
-                label = entry.key.toDisplayName(),
-                percentage = pct,
-            )
-        }.filter { it.percentage > 0 }
     }
 
     private fun AssetClass.toDisplayName(): String = when (this) {

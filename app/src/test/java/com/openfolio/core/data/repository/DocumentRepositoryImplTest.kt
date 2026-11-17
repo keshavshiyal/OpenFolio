@@ -83,6 +83,58 @@ class DocumentRepositoryImplTest {
     }
 
     @Test
+    fun transactionFingerprintNormalizesCorporateSuffixVariations() {
+        val baseFp = createTransactionFingerprint(
+            assetName = "Reliance",
+            transactionType = "BUY",
+            quantity = "10",
+            netAmount = "28500.00",
+            date = 20_000L,
+        )
+
+        assertEquals(
+            baseFp,
+            createTransactionFingerprint(
+                assetName = "Reliance Ltd",
+                transactionType = "BUY",
+                quantity = "10.00",
+                netAmount = "28500",
+                date = 20_000L,
+            ),
+        )
+        assertEquals(
+            baseFp,
+            createTransactionFingerprint(
+                assetName = "Reliance Industries",
+                transactionType = "BUY",
+                quantity = "10",
+                netAmount = "28500.00",
+                date = 20_000L,
+            ),
+        )
+        assertEquals(
+            baseFp,
+            createTransactionFingerprint(
+                assetName = "RELIANCE INDUSTRIES LIMITED",
+                transactionType = "BUY",
+                quantity = "10",
+                netAmount = "28500.00",
+                date = 20_000L,
+            ),
+        )
+        assertEquals(
+            baseFp,
+            createTransactionFingerprint(
+                assetId = "reliance",
+                transactionType = "BUY",
+                quantity = "10",
+                netAmount = "28500.00",
+                date = 20_000L,
+            ),
+        )
+    }
+
+    @Test
     fun ingestFileThrowsWhenHashAlreadyExists() {
         val dao = mock<DocumentDao>()
         val context = mock<Context>()

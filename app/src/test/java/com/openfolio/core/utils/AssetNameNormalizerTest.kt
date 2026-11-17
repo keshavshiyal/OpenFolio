@@ -1,0 +1,103 @@
+package com.openfolio.core.utils
+
+import com.openfolio.core.data.local.entity.AssetClass
+import com.openfolio.core.data.local.entity.AssetEntity
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Test
+
+class AssetNameNormalizerTest {
+
+    @Test
+    fun stripsCorporateSuffixesAccurately() {
+        assertEquals("reliance", AssetNameNormalizer.normalize("Reliance"))
+        assertEquals("reliance", AssetNameNormalizer.normalize("Reliance Ltd"))
+        assertEquals("reliance", AssetNameNormalizer.normalize("Reliance Ltd."))
+        assertEquals("reliance", AssetNameNormalizer.normalize("Reliance Limited"))
+        assertEquals("reliance", AssetNameNormalizer.normalize("Reliance Industries"))
+        assertEquals("reliance", AssetNameNormalizer.normalize("Reliance Industries Ltd"))
+        assertEquals("reliance", AssetNameNormalizer.normalize("Reliance Industries Limited"))
+        assertEquals("reliance", AssetNameNormalizer.normalize("RELIANCE INDUSTRIES LTD."))
+        assertEquals("reliance", AssetNameNormalizer.normalize("Reliance Corp"))
+        assertEquals("reliance", AssetNameNormalizer.normalize("Reliance Corporation"))
+        assertEquals("reliance", AssetNameNormalizer.normalize("Reliance Inc."))
+        assertEquals("reliance", AssetNameNormalizer.normalize("Reliance Pvt. Ltd."))
+        assertEquals("reliance", AssetNameNormalizer.normalize("Reliance Co."))
+    }
+
+    @Test
+    fun removesPunctuationAndExtraSpaces() {
+        assertEquals("tata_motors", AssetNameNormalizer.normalize("Tata   Motors,  Ltd."))
+        assertEquals("tata_motors", AssetNameNormalizer.normalize("Tata - Motors Limited"))
+        assertEquals("hdfc_bank", AssetNameNormalizer.normalize("HDFC   Bank  (Holdings)  Ltd."))
+        assertEquals("l_and_t", AssetNameNormalizer.normalize("L&T Ltd"))
+        assertEquals("l_and_t", AssetNameNormalizer.normalize("L & T Limited"))
+    }
+
+    @Test
+    fun preservesSingleTokenWhenItIsSuffix() {
+        // Does not strip down to empty if the name itself is just the word
+        assertEquals("limited", AssetNameNormalizer.normalize("Limited"))
+        assertEquals("industries", AssetNameNormalizer.normalize("Industries"))
+        assertEquals("corp", AssetNameNormalizer.normalize("Corp"))
+    }
+
+    @Test
+    fun matchesExistingAssetWithNamingVariations() {
+        val relianceAsset = AssetEntity(
+            id = "reliance",
+            displayName = "Reliance",
+            assetClass = AssetClass.STOCK,
+        )
+        val hdfcAsset = AssetEntity(
+            id = "hdfc_bank",
+            displayName = "HDFC Bank",
+            assetClass = AssetClass.STOCK,
+        )
+        val assets = listOf(relianceAsset, hdfcAsset)
+
+        // Matching "Reliance Ltd" should resolve to the existing "reliance" entity
+        val match1 = AssetNameNormalizer.findMatchingAsset("Reliance Ltd", assets)
+        assertNotNull(match1)
+        assertEquals("reliance", match1?.id)
+
+        // Matching "Reliance Industries" should resolve to "reliance"
+        val match2 = AssetNameNormalizer.findMatchingAsset("Reliance Industries Limited", assets)
+        assertNotNull(match2)
+        assertEquals("reliance", match2?.id)
+
+        // Matching "HDFC Bank Ltd." should resolve to "hdfc_bank"
+        val match3 = AssetNameNormalizer.findMatchingAsset("HDFC Bank Ltd.", assets)
+        assertNotNull(match3)
+        assertEquals("hdfc_bank", match3?.id)
+    }
+
+    @Test
+    fun doesNotFalseMatchDifferentCompanies() {
+        val tataMotors = AssetEntity(
+            id = "tata_motors",
+            displayName = "Tata Motors",
+            assetClass = AssetClass.STOCK,
+        )
+        val assets = listOf(tataMotors)
+
+        val match = AssetNameNormalizer.findMatchingAsset("Tata Steel Ltd", assets)
+        assertNull(match)
+    }
+
+    @Test
+    fun matchesWithMinorTypos() {
+        val appleAsset = AssetEntity(
+            id = "apple",
+            displayName = "Apple Inc",
+            assetClass = AssetClass.STOCK,
+        )
+        val assets = listOf(appleAsset)
+
+        // Minor typo "Aple" or "Applee"
+        val match = AssetNameNormalizer.findMatchingAsset("Applee Inc", assets)
+        assertNotNull(match)
+        assertEquals("apple", match?.id)
+    }
+}

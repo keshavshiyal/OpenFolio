@@ -243,6 +243,7 @@ fun HomeScreen(
                         NetWorthSection(
                             netWorth = uiState.data.netWorth,
                             changePercent = uiState.changePercent,
+                            isChangePositive = uiState.isChangePositive,
                             asOf = uiState.asOf,
                             showValues = uiState.showValues,
                             uniqueTransactionsCount = uiState.data.totalTransactions,
@@ -257,7 +258,14 @@ fun HomeScreen(
                         }
                         item {
                             Box(modifier = Modifier.fillMaxWidth()) {
-                                TrajectoryChart(points = uiState.trajectoryPoints)
+                                TrajectoryChart(
+                                    points = uiState.trajectoryPoints,
+                                    showValues = uiState.showValues,
+                                    minAmount = uiState.trajectoryMinAmount,
+                                    maxAmount = uiState.trajectoryMaxAmount,
+                                    startLabel = uiState.trajectoryStartLabel,
+                                    endLabel = uiState.trajectoryEndLabel,
+                                )
                             }
                         }
                     }
@@ -312,6 +320,7 @@ private val DOCUMENT_MIME_TYPES = arrayOf(
 private fun NetWorthSection(
     netWorth: BigDecimal,
     changePercent: String,
+    isChangePositive: Boolean,
     asOf: String,
     showValues: Boolean,
     uniqueTransactionsCount: Int,
@@ -341,12 +350,12 @@ private fun NetWorthSection(
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 Text(
-                    text = "▲",
+                    text = if (isChangePositive) "▲" else "▼",
                     style = trendStyle,
-                    color = colors.gainGlyph,
+                    color = if (isChangePositive) colors.gainGlyph else colors.lossGlyph,
                 )
                 Text(
-                    text = changePercent,
+                    text = if (showValues) changePercent else "— —",
                     style = trendStyle,
                     color = colors.content,
                 )
@@ -402,79 +411,158 @@ private fun PeriodSelector(
 }
 
 @Composable
-private fun TrajectoryChart(points: List<Float>) {
+private fun TrajectoryChart(
+    points: List<Float>,
+    showValues: Boolean = true,
+    minAmount: BigDecimal? = null,
+    maxAmount: BigDecimal? = null,
+    startLabel: String? = null,
+    endLabel: String? = null,
+) {
     val colors = LocalOpenFolioColors.current
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .height(152.dp),
+            .height(176.dp),
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = colors.surface),
     ) {
-        Canvas(
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .height(152.dp)
-                .padding(horizontal = 16.dp, vertical = 16.dp),
+                .fillMaxSize()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.SpaceBetween,
         ) {
-            if (points.size < 2) return@Canvas
-
-            val horizontalStep = size.width / (points.size - 1)
-            val topPadding = 8.dp.toPx()
-            val bottomPadding = 14.dp.toPx()
-            val chartHeight = size.height - topPadding - bottomPadding
-            fun point(index: Int): Offset = Offset(
-                x = index * horizontalStep,
-                y = topPadding + (1f - points[index].coerceIn(0f, 1f)) * chartHeight,
-            )
-
-            val linePath = Path().apply {
-                moveTo(point(0).x, point(0).y)
-                for (index in 1 until points.lastIndex) {
-                    val current = point(index)
-                    val next = point(index + 1)
-                    val midpoint = Offset(
-                        x = (current.x + next.x) / 2f,
-                        y = (current.y + next.y) / 2f,
-                    )
-                    quadraticBezierTo(current.x, current.y, midpoint.x, midpoint.y)
+            if (minAmount != null && maxAmount != null && maxAmount > BigDecimal.ZERO) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "Low:",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.muted,
+                        )
+                        MoneyText(
+                            amount = minAmount,
+                            style = MoneyTextStyle.Body,
+                            showValues = showValues,
+                        )
+                    }
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "High:",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.muted,
+                        )
+                        MoneyText(
+                            amount = maxAmount,
+                            style = MoneyTextStyle.Body,
+                            showValues = showValues,
+                        )
+                    }
                 }
-                val lastPoint = point(points.lastIndex)
-                lineTo(lastPoint.x, lastPoint.y)
-            }
-            val fillPath = Path().apply {
-                addPath(linePath)
-                lineTo(size.width, size.height - bottomPadding)
-                lineTo(0f, size.height - bottomPadding)
-                close()
             }
 
-            drawPath(
-                path = fillPath,
-                brush = Brush.verticalGradient(
-                    colors = listOf(colors.brand.copy(alpha = 0.16f), Color.Transparent),
-                    startY = topPadding,
-                    endY = size.height - bottomPadding,
-                ),
-                style = Fill,
-            )
-            drawPath(
-                path = linePath,
-                color = colors.brand,
-                style = Stroke(
-                    width = 3.dp.toPx(),
-                    cap = StrokeCap.Round,
-                    join = StrokeJoin.Round,
-                ),
-            )
-            drawLine(
-                color = colors.border,
-                start = Offset(0f, size.height - bottomPadding),
-                end = Offset(size.width, size.height - bottomPadding),
-                strokeWidth = 1.dp.toPx(),
-                pathEffect = PathEffect.dashPathEffect(floatArrayOf(2.dp.toPx(), 4.dp.toPx())),
-            )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .padding(vertical = 4.dp),
+            ) {
+                Canvas(
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    if (points.size < 2) return@Canvas
+
+                    val horizontalStep = size.width / (points.size - 1)
+                    val topPadding = 4.dp.toPx()
+                    val bottomPadding = 4.dp.toPx()
+                    val chartHeight = (size.height - topPadding - bottomPadding).coerceAtLeast(1f)
+                    fun point(index: Int): Offset = Offset(
+                        x = index * horizontalStep,
+                        y = topPadding + (1f - points[index].coerceIn(0f, 1f)) * chartHeight,
+                    )
+
+                    val linePath = Path().apply {
+                        moveTo(point(0).x, point(0).y)
+                        for (index in 1 until points.lastIndex) {
+                            val current = point(index)
+                            val next = point(index + 1)
+                            val midpoint = Offset(
+                                x = (current.x + next.x) / 2f,
+                                y = (current.y + next.y) / 2f,
+                            )
+                            quadraticBezierTo(current.x, current.y, midpoint.x, midpoint.y)
+                        }
+                        val lastPoint = point(points.lastIndex)
+                        lineTo(lastPoint.x, lastPoint.y)
+                    }
+                    val fillPath = Path().apply {
+                        addPath(linePath)
+                        lineTo(size.width, size.height - bottomPadding)
+                        lineTo(0f, size.height - bottomPadding)
+                        close()
+                    }
+
+                    drawPath(
+                        path = fillPath,
+                        brush = Brush.verticalGradient(
+                            colors = listOf(colors.brand.copy(alpha = 0.16f), Color.Transparent),
+                            startY = topPadding,
+                            endY = size.height - bottomPadding,
+                        ),
+                        style = Fill,
+                    )
+                    drawPath(
+                        path = linePath,
+                        color = colors.brand,
+                        style = Stroke(
+                            width = 3.dp.toPx(),
+                            cap = StrokeCap.Round,
+                            join = StrokeJoin.Round,
+                        ),
+                    )
+                    drawLine(
+                        color = colors.border,
+                        start = Offset(0f, size.height - bottomPadding),
+                        end = Offset(size.width, size.height - bottomPadding),
+                        strokeWidth = 1.dp.toPx(),
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(2.dp.toPx(), 4.dp.toPx())),
+                    )
+                }
+            }
+
+            if (startLabel != null && endLabel != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        text = startLabel,
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontFeatureSettings = "tnum",
+                        ),
+                        color = colors.muted,
+                    )
+                    Text(
+                        text = endLabel,
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontFeatureSettings = "tnum",
+                        ),
+                        color = colors.muted,
+                    )
+                }
+            }
         }
     }
 }

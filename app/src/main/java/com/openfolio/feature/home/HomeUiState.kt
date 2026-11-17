@@ -22,6 +22,11 @@ sealed interface HomeUiState {
         val allocations: List<AssetAllocation> = DEFAULT_ALLOCATIONS,
         val asOf: String = "as of today",
         val changePercent: String = "2.1%",
+        val isChangePositive: Boolean = true,
+        val trajectoryMinAmount: BigDecimal? = null,
+        val trajectoryMaxAmount: BigDecimal? = null,
+        val trajectoryStartLabel: String? = null,
+        val trajectoryEndLabel: String? = null,
     ) : HomeUiState {
         companion object {
             val DEFAULT_TRAJECTORY_POINTS: List<Float> = listOf(

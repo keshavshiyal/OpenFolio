@@ -1,5 +1,6 @@
 package com.openfolio.core.domain.model
 
+import com.openfolio.core.data.local.dao.DailyNetWorthDelta
 import com.openfolio.core.data.local.entity.TransactionEntity
 import java.math.BigDecimal
 
@@ -10,6 +11,7 @@ data class DashboardData(
     val recentTransactions: List<TransactionEntity>,
     val allocations: List<DashboardAllocation> = emptyList(),
     val totalTransactions: Int = 0,
+    val dailyDeltas: List<DailyNetWorthDelta> = emptyList(),
 )
 
 data class DashboardAllocation(

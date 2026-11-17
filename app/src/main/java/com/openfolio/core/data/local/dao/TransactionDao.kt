@@ -6,8 +6,19 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Update
+import com.openfolio.core.data.local.entity.AssetClass
 import com.openfolio.core.data.local.entity.TransactionEntity
 import kotlinx.coroutines.flow.Flow
+
+data class AssetClassAllocationRow(
+    val assetClass: AssetClass,
+    val totalAmount: Double,
+)
+
+data class DailyNetWorthDelta(
+    val tradeDate: Long,
+    val delta: Double,
+)
 
 @Dao
 interface TransactionDao {
@@ -56,6 +67,31 @@ interface TransactionDao {
     @Query("SELECT COUNT(*) FROM txn")
     fun getTotalTransactionCount(): Flow<Int>
 
-    @Query("SELECT * FROM txn ORDER BY tradeDate DESC, createdAt DESC LIMIT :limit")
+    @Query("SELECT * FROM txn ORDER BY createdAt DESC, tradeDate DESC LIMIT :limit")
     fun getRecentTransactions(limit: Int = 5): Flow<List<TransactionEntity>>
+
+    @Query("""
+        SELECT COALESCE(a.assetClass, 'STOCK') AS assetClass, 
+               SUM(CAST(t.grossAmount AS REAL)) AS totalAmount 
+        FROM txn t 
+        LEFT JOIN asset a ON t.assetId = a.id 
+        WHERE t.type IN ('BUY', 'DIVIDEND', 'INTEREST') 
+        GROUP BY COALESCE(a.assetClass, 'STOCK')
+        HAVING SUM(CAST(t.grossAmount AS REAL)) > 0
+        ORDER BY totalAmount DESC
+    """)
+    fun getAssetClassAllocations(): Flow<List<AssetClassAllocationRow>>
+
+    @Query("""
+        SELECT tradeDate,
+               SUM(CASE 
+                   WHEN type IN ('BUY', 'TRANSFER_IN', 'INTEREST', 'DIVIDEND', 'BONUS') THEN CAST(grossAmount AS REAL)
+                   WHEN type IN ('SELL', 'TRANSFER_OUT', 'FEE', 'TAX', 'CHARGE') THEN -CAST(grossAmount AS REAL)
+                   ELSE 0 
+               END) AS delta
+        FROM txn
+        GROUP BY tradeDate
+        ORDER BY tradeDate ASC
+    """)
+    fun getDailyNetWorthDeltas(): Flow<List<DailyNetWorthDelta>>
 }

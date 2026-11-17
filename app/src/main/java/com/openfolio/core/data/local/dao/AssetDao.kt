@@ -31,6 +31,9 @@ interface AssetDao {
     @Query("SELECT * FROM asset ORDER BY displayName ASC")
     fun getAll(): Flow<List<AssetEntity>>
 
+    @Query("SELECT * FROM asset")
+    suspend fun getAllOnce(): List<AssetEntity>
+
     @Query("SELECT * FROM asset WHERE assetClass = :assetClass ORDER BY displayName ASC")
     fun getByAssetClass(assetClass: AssetClass): Flow<List<AssetEntity>>
 

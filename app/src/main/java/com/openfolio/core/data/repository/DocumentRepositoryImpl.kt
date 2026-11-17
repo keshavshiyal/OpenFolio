@@ -26,6 +26,7 @@ import com.openfolio.core.domain.repository.DocumentRepository
 import com.openfolio.core.domain.repository.DuplicateDocumentException
 import com.openfolio.core.domain.repository.DuplicateMatchInfo
 import com.openfolio.core.domain.repository.SaveDraftTransactionsResult
+import com.openfolio.core.utils.AssetNameNormalizer
 import com.openfolio.core.utils.DocumentTextExtractor
 import com.openfolio.core.utils.StructuredFileParser
 import com.openfolio.core.utils.StructuredTable
@@ -144,6 +145,7 @@ class DocumentRepositoryImpl @Inject constructor(
             val seenTxnIds = mutableSetOf<String>()
             val transactionsToInsert = mutableListOf<TransactionEntity>()
             var duplicateCount = 0
+            val existingAssets = database.assetDao().getAllOnce().toMutableList()
 
             val eligibleDrafts = if (selectedDraftIds != null) {
                 val (selected, unselected) = drafts.partition { it.id in selectedDraftIds }
@@ -164,7 +166,8 @@ class DocumentRepositoryImpl @Inject constructor(
                     LocalDate.ofEpochDay(Math.floorDiv(it, MILLIS_PER_DAY))
                 } ?: fallbackDate
 
-                val assetId = draft.assetName.trim().lowercase().replace("\\s+".toRegex(), "_")
+                val matchedAsset = AssetNameNormalizer.findMatchingAsset(draft.assetName, existingAssets)
+                val assetId = matchedAsset?.id ?: AssetNameNormalizer.normalize(draft.assetName)
                 val fingerprint = createTransactionFingerprint(
                     assetId = assetId,
                     transactionType = draft.transactionType,
@@ -233,38 +236,47 @@ class DocumentRepositoryImpl @Inject constructor(
                 transactionsToInsert.add(newTransaction)
 
                 // AGGREGATION LOGIC
-                val existingAsset = database.assetDao().getById(assetId)
+                val targetAsset = matchedAsset ?: existingAssets.firstOrNull { it.id == assetId }
                 val qty = quantity
                 val invested = netAmount
 
-                if (existingAsset == null) {
+                if (targetAsset == null) {
                     // Create new asset with initial values
                     val avgCost = if (qty > BigDecimal.ZERO) invested.divide(qty, 4, RoundingMode.HALF_UP) else BigDecimal.ZERO
-                    database.assetDao().insert(
-                        AssetEntity(
-                            id = assetId,
-                            displayName = draft.assetName,
-                            assetClass = assetClass,
-                            currency = "INR",
-                            totalQuantity = qty,
-                            totalInvested = invested,
-                            averageCost = avgCost,
-                        ),
+                    val newAsset = AssetEntity(
+                        id = assetId,
+                        displayName = draft.assetName.trim(),
+                        assetClass = assetClass,
+                        currency = "INR",
+                        totalQuantity = qty,
+                        totalInvested = invested,
+                        averageCost = avgCost,
                     )
+                    database.assetDao().insert(newAsset)
+                    existingAssets.add(newAsset)
                 } else {
                     // Update existing asset aggregates
-                    val newQty = existingAsset.totalQuantity.add(qty)
-                    val newInvested = existingAsset.totalInvested.add(invested)
+                    val newQty = targetAsset.totalQuantity.add(qty)
+                    val newInvested = targetAsset.totalInvested.add(invested)
                     val newAvgCost = if (newQty > BigDecimal.ZERO) newInvested.divide(newQty, 4, RoundingMode.HALF_UP) else BigDecimal.ZERO
 
                     database.assetDao().updateAggregates(
-                        assetId = assetId,
+                        assetId = targetAsset.id,
                         qty = newQty,
                         invested = newInvested,
                         avgCost = newAvgCost,
-                        realizedPnL = existingAsset.realizedPnL, // Update later for SELL
+                        realizedPnL = targetAsset.realizedPnL,
                         timestamp = System.currentTimeMillis(),
                     )
+                    val updated = targetAsset.copy(
+                        totalQuantity = newQty,
+                        totalInvested = newInvested,
+                        averageCost = newAvgCost,
+                    )
+                    val idx = existingAssets.indexOfFirst { it.id == targetAsset.id }
+                    if (idx >= 0) {
+                        existingAssets[idx] = updated
+                    }
                 }
             }
             Log.d("SaveTxn", "Total transactions to insert: ${transactionsToInsert.size}")
@@ -287,6 +299,7 @@ class DocumentRepositoryImpl @Inject constructor(
         val existingTxns = transactionDao.getAllOnce().filter { it.documentId != documentId }
         if (existingTxns.isEmpty()) return@withContext emptyMap()
 
+        val existingAssets = database.assetDao().getAllOnce()
         val existingByAsset = existingTxns.groupBy { it.assetId }
         val resultMap = mutableMapOf<String, DuplicateMatchInfo>()
 
@@ -301,7 +314,8 @@ class DocumentRepositoryImpl @Inject constructor(
                 LocalDate.ofEpochDay(Math.floorDiv(it, MILLIS_PER_DAY))
             } ?: fallbackDate
 
-            val assetId = draft.assetName.trim().lowercase().replace("\\s+".toRegex(), "_")
+            val matchedAsset = AssetNameNormalizer.findMatchingAsset(draft.assetName, existingAssets)
+            val assetId = matchedAsset?.id ?: AssetNameNormalizer.normalize(draft.assetName)
             val fingerprint = createTransactionFingerprint(
                 assetId = assetId,
                 transactionType = draft.transactionType,
@@ -821,12 +835,26 @@ internal fun createTransactionFingerprint(
     date: Long,
     assetId: String = "",
 ): String {
-    val identifier = if (assetId.isNotBlank()) assetId else assetName
+    val identifier = when {
+        assetId.isNotBlank() -> AssetNameNormalizer.normalize(assetId)
+        assetName.isNotBlank() -> AssetNameNormalizer.normalize(assetName)
+        else -> ""
+    }
+    val cleanQty = quantity.replace(",", "").replace("₹", "").trim()
+    val normQty = runCatching {
+        BigDecimal(cleanQty).stripTrailingZeros().toPlainString()
+    }.getOrDefault(cleanQty)
+
+    val cleanAmount = netAmount.replace(",", "").replace("₹", "").trim()
+    val normAmount = runCatching {
+        BigDecimal(cleanAmount).setScale(2, RoundingMode.HALF_UP).toPlainString()
+    }.getOrDefault(cleanAmount)
+
     val normalized = listOf(
-        identifier.trim().lowercase(),
-        transactionType.uppercase(),
-        quantity.trim(),
-        netAmount.trim(),
+        identifier,
+        transactionType.trim().uppercase(),
+        normQty,
+        normAmount,
         date.toString(),
     ).joinToString("|")
     return MessageDigest.getInstance("SHA-256")

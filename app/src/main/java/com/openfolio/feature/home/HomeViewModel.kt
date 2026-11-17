@@ -15,9 +15,11 @@ import java.math.BigDecimal
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -27,9 +29,6 @@ class HomeViewModel @Inject constructor(
     private val documentRepository: DocumentRepository,
     private val getDashboardDataUseCase: GetDashboardDataUseCase,
 ) : ViewModel() {
-    private val _uiState = MutableStateFlow<HomeUiState>(HomeUiState.Loading)
-    val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
-
     private val _showValues = MutableStateFlow(true)
     private val _selectedPeriod = MutableStateFlow("1M")
 
@@ -41,34 +40,34 @@ class HomeViewModel @Inject constructor(
 
     private var currentDashboardData: DashboardData? = null
 
+    val uiState: StateFlow<HomeUiState> = combine(
+        getDashboardDataUseCase(),
+        _showValues,
+        _selectedPeriod,
+    ) { data, showValues, period ->
+        currentDashboardData = data
+        mapToUiState(data, showValues, period)
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.Eagerly,
+        initialValue = HomeUiState.Loading,
+    )
+
     init {
         viewModelScope.launch {
             documentRepository.getAllDocuments().collect { documents ->
                 _documents.value = documents
             }
         }
-
-        viewModelScope.launch {
-            getDashboardDataUseCase().collect { data ->
-                currentDashboardData = data
-                _uiState.value = mapToUiState(data, _showValues.value, _selectedPeriod.value)
-            }
-        }
     }
 
     fun toggleValuesVisibility() {
         _showValues.update { !it }
-        currentDashboardData?.let { data ->
-            _uiState.value = mapToUiState(data, _showValues.value, _selectedPeriod.value)
-        }
     }
 
     fun selectPeriod(period: String) {
         require(period in PERIODS) { "Unsupported chart period: $period" }
         _selectedPeriod.value = period
-        currentDashboardData?.let { data ->
-            _uiState.value = mapToUiState(data, _showValues.value, _selectedPeriod.value)
-        }
     }
 
     private fun mapToUiState(
@@ -90,11 +89,24 @@ class HomeViewModel @Inject constructor(
                     color = color,
                 )
             }
+            val trajectoryResult = TrajectoryCalculator.calculate(
+                period = period,
+                dailyDeltas = data.dailyDeltas,
+                currentNetWorth = data.netWorth,
+            )
             HomeUiState.Success(
                 data = data,
                 showValues = showValues,
                 selectedPeriod = period,
                 allocations = allocations,
+                trajectoryPoints = trajectoryResult.points,
+                changePercent = trajectoryResult.changePercent,
+                isChangePositive = trajectoryResult.isPositive,
+                asOf = trajectoryResult.asOf,
+                trajectoryMinAmount = trajectoryResult.minAmount,
+                trajectoryMaxAmount = trajectoryResult.maxAmount,
+                trajectoryStartLabel = trajectoryResult.startLabel,
+                trajectoryEndLabel = trajectoryResult.endLabel,
             )
         }
     }

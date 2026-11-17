@@ -168,6 +168,31 @@ class GetDashboardDataUseCaseTest {
         override fun getTotalLiabilitiesFlow(): Flow<Double?> = flowOf(liabilities)
         override fun getTotalTransactionCount(): Flow<Int> = flowOf(totalCount)
         override fun getRecentTransactions(limit: Int): Flow<List<TransactionEntity>> = flowOf(recentTransactions)
+        override fun getAssetClassAllocations(): Flow<List<com.openfolio.core.data.local.dao.AssetClassAllocationRow>> {
+            val list = allTransactions
+                .filter { it.type.name in setOf("BUY", "DIVIDEND", "INTEREST") }
+                .groupBy { com.openfolio.core.data.local.entity.AssetClass.STOCK }
+                .map { (cls, txns) ->
+                    com.openfolio.core.data.local.dao.AssetClassAllocationRow(cls, txns.sumOf { it.grossAmount.toDouble() })
+                }
+            return flowOf(list)
+        }
+        override fun getDailyNetWorthDeltas(): Flow<List<com.openfolio.core.data.local.dao.DailyNetWorthDelta>> {
+            val list = allTransactions
+                .groupBy { it.tradeDate.toEpochDay() }
+                .map { (date, txns) ->
+                    val delta = txns.sumOf { txn ->
+                        if (txn.type.name in setOf("BUY", "TRANSFER_IN", "INTEREST", "DIVIDEND")) {
+                            txn.grossAmount.toDouble()
+                        } else {
+                            -txn.grossAmount.toDouble()
+                        }
+                    }
+                    com.openfolio.core.data.local.dao.DailyNetWorthDelta(date, delta)
+                }
+                .sortedBy { it.tradeDate }
+            return flowOf(list)
+        }
     }
 
     @Test
@@ -219,6 +244,7 @@ class GetDashboardDataUseCaseTest {
         override suspend fun getById(id: String): com.openfolio.core.data.local.entity.AssetEntity? =
             assets.firstOrNull { it.id == id }
         override fun getAll(): Flow<List<com.openfolio.core.data.local.entity.AssetEntity>> = flowOf(assets)
+        override suspend fun getAllOnce(): List<com.openfolio.core.data.local.entity.AssetEntity> = assets
         override fun getByAssetClass(assetClass: com.openfolio.core.data.local.entity.AssetClass): Flow<List<com.openfolio.core.data.local.entity.AssetEntity>> =
             flowOf(assets.filter { it.assetClass == assetClass })
         override suspend fun updateAggregates(
