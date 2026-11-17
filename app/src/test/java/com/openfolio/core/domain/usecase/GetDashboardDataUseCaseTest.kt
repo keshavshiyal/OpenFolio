@@ -168,8 +168,47 @@ class GetDashboardDataUseCaseTest {
         override fun getRecentTransactions(limit: Int): Flow<List<TransactionEntity>> = flowOf(recentTransactions)
     }
 
+    @Test
+    fun returnsTotalPortfolioValueFromAssetDaoFlow() = runTest {
+        val sampleTxn = TransactionEntity(
+            id = "txn-1",
+            accountId = "acc-1",
+            assetId = "reliance",
+            type = TransactionType.BUY,
+            tradeDate = LocalDate.now(),
+            grossAmount = BigDecimal("200000.00"),
+            netAmount = BigDecimal("200000.00"),
+            currency = "INR",
+            fingerprint = "fp-1",
+            status = TransactionStatus.CONFIRMED,
+        )
+        val dao = FakeTransactionDao(
+            assets = 0.0,
+            liabilities = 0.0,
+            recentTransactions = listOf(sampleTxn),
+        )
+        val assetDao = FakeAssetDao(
+            assets = listOf(
+                com.openfolio.core.data.local.entity.AssetEntity(
+                    id = "reliance",
+                    displayName = "Reliance Industries",
+                    assetClass = com.openfolio.core.data.local.entity.AssetClass.STOCK,
+                    totalQuantity = BigDecimal("10"),
+                    totalInvested = BigDecimal("250000.00"),
+                ),
+            ),
+            portfolioValue = BigDecimal("250000.00"),
+        )
+        val useCase = GetDashboardDataUseCase(dao, assetDao)
+
+        val result = useCase().first()
+        assertEquals(0, BigDecimal("250000.00").compareTo(result.totalAssets))
+        assertEquals(0, BigDecimal("250000.00").compareTo(result.netWorth))
+    }
+
     private class FakeAssetDao(
         private val assets: List<com.openfolio.core.data.local.entity.AssetEntity> = emptyList(),
+        private val portfolioValue: BigDecimal? = null,
     ) : com.openfolio.core.data.local.dao.AssetDao {
         override suspend fun insert(asset: com.openfolio.core.data.local.entity.AssetEntity) = Unit
         override suspend fun insertAll(assets: List<com.openfolio.core.data.local.entity.AssetEntity>) = Unit
@@ -180,5 +219,19 @@ class GetDashboardDataUseCaseTest {
         override fun getAll(): Flow<List<com.openfolio.core.data.local.entity.AssetEntity>> = flowOf(assets)
         override fun getByAssetClass(assetClass: com.openfolio.core.data.local.entity.AssetClass): Flow<List<com.openfolio.core.data.local.entity.AssetEntity>> =
             flowOf(assets.filter { it.assetClass == assetClass })
+        override suspend fun updateAggregates(
+            assetId: String,
+            qty: BigDecimal,
+            invested: BigDecimal,
+            avgCost: BigDecimal,
+            realizedPnL: BigDecimal,
+            timestamp: Long,
+        ) = Unit
+        override fun getTotalPortfolioValueFlow(): Flow<BigDecimal?> = flowOf(
+            portfolioValue ?: assets.filter { it.status == com.openfolio.core.data.local.entity.AssetStatus.ACTIVE }
+                .map { it.totalInvested }
+                .fold(BigDecimal.ZERO) { acc, v -> acc + v }
+                .takeIf { it > BigDecimal.ZERO || assets.isNotEmpty() },
+        )
     }
 }

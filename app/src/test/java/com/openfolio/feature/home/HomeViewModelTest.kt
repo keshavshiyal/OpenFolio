@@ -234,6 +234,20 @@ class HomeViewModelTest {
         override fun getAll(): Flow<List<com.openfolio.core.data.local.entity.AssetEntity>> = flowOf(assets)
         override fun getByAssetClass(assetClass: com.openfolio.core.data.local.entity.AssetClass): Flow<List<com.openfolio.core.data.local.entity.AssetEntity>> =
             flowOf(assets.filter { it.assetClass == assetClass })
+        override suspend fun updateAggregates(
+            assetId: String,
+            qty: BigDecimal,
+            invested: BigDecimal,
+            avgCost: BigDecimal,
+            realizedPnL: BigDecimal,
+            timestamp: Long,
+        ) = Unit
+        override fun getTotalPortfolioValueFlow(): Flow<BigDecimal?> = flowOf(
+            assets.filter { it.status == com.openfolio.core.data.local.entity.AssetStatus.ACTIVE }
+                .map { it.totalInvested }
+                .fold(BigDecimal.ZERO) { acc, v -> acc + v }
+                .takeIf { it > BigDecimal.ZERO || assets.isNotEmpty() },
+        )
     }
 
     private class FakeDocumentRepository(

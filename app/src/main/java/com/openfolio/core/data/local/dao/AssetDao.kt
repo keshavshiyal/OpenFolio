@@ -8,6 +8,7 @@ import androidx.room.Query
 import androidx.room.Update
 import com.openfolio.core.data.local.entity.AssetClass
 import com.openfolio.core.data.local.entity.AssetEntity
+import java.math.BigDecimal
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -32,4 +33,17 @@ interface AssetDao {
 
     @Query("SELECT * FROM asset WHERE assetClass = :assetClass ORDER BY displayName ASC")
     fun getByAssetClass(assetClass: AssetClass): Flow<List<AssetEntity>>
+
+    @Query("UPDATE asset SET totalQuantity = :qty, totalInvested = :invested, averageCost = :avgCost, realizedPnL = :realizedPnL, updatedAt = :timestamp WHERE id = :assetId")
+    suspend fun updateAggregates(
+        assetId: String,
+        qty: BigDecimal,
+        invested: BigDecimal,
+        avgCost: BigDecimal,
+        realizedPnL: BigDecimal,
+        timestamp: Long,
+    )
+
+    @Query("SELECT SUM(totalInvested) FROM asset WHERE status = 'ACTIVE'")
+    fun getTotalPortfolioValueFlow(): Flow<BigDecimal?>
 }

@@ -20,9 +20,9 @@ class GetDashboardDataUseCase @Inject constructor(
     private val assetDao: AssetDao? = null,
 ) {
     operator fun invoke(): Flow<DashboardData> {
-        val assets = transactionDao.getTotalAssetsFlow().map {
+        val assets = (assetDao?.getTotalPortfolioValueFlow() ?: transactionDao.getTotalAssetsFlow().map {
             if (it == null || it == 0.0) BigDecimal.ZERO else BigDecimal(it)
-        }
+        }).map { it ?: BigDecimal.ZERO }
         val liabilities = transactionDao.getTotalLiabilitiesFlow().map {
             if (it == null || it == 0.0) BigDecimal.ZERO else BigDecimal(it)
         }

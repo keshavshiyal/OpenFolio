@@ -143,7 +143,7 @@ class DocumentRepositoryImpl @Inject constructor(
             val transactionsToInsert = mutableListOf<TransactionEntity>()
             var duplicateCount = 0
 
-            drafts.forEach { draft ->
+            for (draft in drafts) {
                 Log.d("SaveTxn", "Saving draft ID: ${draft.id}")
                 val fallbackDate = if (document.importDate > 0) {
                     LocalDate.ofEpochDay(Math.floorDiv(document.importDate, MILLIS_PER_DAY))
@@ -154,76 +154,106 @@ class DocumentRepositoryImpl @Inject constructor(
                     LocalDate.ofEpochDay(Math.floorDiv(it, MILLIS_PER_DAY))
                 } ?: fallbackDate
 
+                val assetId = draft.assetName.trim().lowercase().replace("\\s+".toRegex(), "_")
                 val fingerprint = createTransactionFingerprint(
-                    assetName = draft.assetName,
+                    assetId = assetId,
                     transactionType = draft.transactionType,
                     quantity = draft.quantity,
                     netAmount = draft.netAmount,
                     date = resolvedTradeDate.toEpochDay(),
                 )
+
+                // PRE-CHECK: Explicitly check if it exists
                 if (transactionDao.containsFingerprint(fingerprint)) {
                     duplicateCount++
+                    continue // Skip this draft entirely
+                }
+
+                val cleanQty = draft.quantity.replace(",", "").replace("₹", "").trim().ifBlank { "0" }
+                val cleanPrice = draft.price.replace(",", "").replace("₹", "").trim().ifBlank { "0" }
+                val cleanNetAmount = draft.netAmount.replace(",", "").replace("₹", "").trim().ifBlank { "0" }
+                val quantity = BigDecimal(cleanQty)
+                val price = BigDecimal(cleanPrice)
+                val netAmount = BigDecimal(cleanNetAmount)
+                val accountId = "default_account"
+                val assetClass = try {
+                    AssetClass.valueOf(draft.assetClass.trim().uppercase())
+                } catch (_: Exception) {
+                    AssetClass.STOCK
+                }
+                database.accountDao().insert(
+                    AccountEntity(
+                        id = accountId,
+                        name = "Default Account",
+                        type = AccountType.BROKER,
+                        currency = "INR",
+                    ),
+                )
+
+                val transactionId = if (!allDraftIdsSame && draft.id.isNotBlank() && seenTxnIds.add(draft.id)) {
+                    draft.id
                 } else {
-                    val cleanQty = draft.quantity.replace(",", "").replace("₹", "").trim().ifBlank { "0" }
-                    val cleanPrice = draft.price.replace(",", "").replace("₹", "").trim().ifBlank { "0" }
-                    val cleanNetAmount = draft.netAmount.replace(",", "").replace("₹", "").trim().ifBlank { "0" }
-                    val quantity = BigDecimal(cleanQty.trim())
-                    val price = BigDecimal(cleanPrice.trim())
-                    val netAmount = BigDecimal(cleanNetAmount.trim())
-                    val accountId = "default_account"
-                    val assetId = draft.assetName.trim().lowercase().replace("\\s+".toRegex(), "_")
-                    val assetClass = try {
-                        AssetClass.valueOf(draft.assetClass.trim().uppercase())
-                    } catch (_: Exception) {
-                        AssetClass.STOCK
-                    }
-                    database.accountDao().insert(
-                        AccountEntity(
-                            id = accountId,
-                            name = "Default Account",
-                            type = AccountType.BROKER,
-                            currency = "INR",
-                        ),
-                    )
+                    UUID.randomUUID().toString()
+                }
+                val newTransaction = TransactionEntity(
+                    id = transactionId,
+                    accountId = accountId,
+                    assetId = assetId,
+                    type = TransactionType.valueOf(draft.transactionType),
+                    tradeDate = resolvedTradeDate,
+                    settlementDate = null,
+                    quantity = quantity,
+                    unitPrice = price,
+                    grossAmount = quantity.multiply(price),
+                    fees = BigDecimal.ZERO,
+                    taxes = BigDecimal.ZERO,
+                    netAmount = netAmount,
+                    currency = "INR",
+                    fxRate = null,
+                    baseCurrencyAmount = null,
+                    description = null,
+                    notes = null,
+                    fingerprint = fingerprint,
+                    externalRef = null,
+                    status = TransactionStatus.CONFIRMED,
+                    documentId = document.id,
+                    sourcePage = null,
+                    confidence = draft.confidence / 100.0,
+                )
+                transactionsToInsert.add(newTransaction)
+
+                // AGGREGATION LOGIC
+                val existingAsset = database.assetDao().getById(assetId)
+                val qty = quantity
+                val invested = netAmount
+
+                if (existingAsset == null) {
+                    // Create new asset with initial values
+                    val avgCost = if (qty > BigDecimal.ZERO) invested.divide(qty, 4, RoundingMode.HALF_UP) else BigDecimal.ZERO
                     database.assetDao().insert(
                         AssetEntity(
                             id = assetId,
                             displayName = draft.assetName,
                             assetClass = assetClass,
                             currency = "INR",
+                            totalQuantity = qty,
+                            totalInvested = invested,
+                            averageCost = avgCost,
                         ),
                     )
-                    val transactionId = if (!allDraftIdsSame && draft.id.isNotBlank() && seenTxnIds.add(draft.id)) {
-                        draft.id
-                    } else {
-                        UUID.randomUUID().toString()
-                    }
-                    transactionsToInsert.add(
-                        TransactionEntity(
-                            id = transactionId,
-                            accountId = accountId,
-                            assetId = assetId,
-                            type = TransactionType.valueOf(draft.transactionType),
-                            tradeDate = resolvedTradeDate,
-                            settlementDate = null,
-                            quantity = quantity,
-                            unitPrice = price,
-                            grossAmount = quantity.multiply(price),
-                            fees = BigDecimal.ZERO,
-                            taxes = BigDecimal.ZERO,
-                            netAmount = netAmount,
-                            currency = "INR",
-                            fxRate = null,
-                            baseCurrencyAmount = null,
-                            description = null,
-                            notes = null,
-                            fingerprint = fingerprint,
-                            externalRef = null,
-                            status = TransactionStatus.CONFIRMED,
-                            documentId = document.id,
-                            sourcePage = null,
-                            confidence = draft.confidence / 100.0,
-                        ),
+                } else {
+                    // Update existing asset aggregates
+                    val newQty = existingAsset.totalQuantity.add(qty)
+                    val newInvested = existingAsset.totalInvested.add(invested)
+                    val newAvgCost = if (newQty > BigDecimal.ZERO) newInvested.divide(newQty, 4, RoundingMode.HALF_UP) else BigDecimal.ZERO
+
+                    database.assetDao().updateAggregates(
+                        assetId = assetId,
+                        qty = newQty,
+                        invested = newInvested,
+                        avgCost = newAvgCost,
+                        realizedPnL = existingAsset.realizedPnL, // Update later for SELL
+                        timestamp = System.currentTimeMillis(),
                     )
                 }
             }
@@ -686,14 +716,16 @@ internal suspend fun calculateSha256(inputStream: InputStream): String =
     }
 
 internal fun createTransactionFingerprint(
-    assetName: String,
+    assetName: String = "",
     transactionType: String,
     quantity: String,
     netAmount: String,
     date: Long,
+    assetId: String = "",
 ): String {
+    val identifier = if (assetId.isNotBlank()) assetId else assetName
     val normalized = listOf(
-        assetName.trim().lowercase(),
+        identifier.trim().lowercase(),
         transactionType.uppercase(),
         quantity.trim(),
         netAmount.trim(),
