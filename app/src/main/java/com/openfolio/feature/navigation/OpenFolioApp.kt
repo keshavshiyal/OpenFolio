@@ -25,10 +25,12 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.openfolio.core.ui.theme.LocalOpenFolioColors
+import com.openfolio.feature.activity.ActivityViewModel
 import com.openfolio.feature.assets.AssetDetailViewModel
 import com.openfolio.feature.assets.AssetsViewModel
 import com.openfolio.feature.home.HomeViewModel
 import com.openfolio.feature.inbox.InboxViewModel
+import com.openfolio.feature.screens.ActivityScreen
 import com.openfolio.feature.screens.AssetDetailScreen
 import com.openfolio.feature.screens.AssetsScreen
 import com.openfolio.feature.screens.EmptyScreen
@@ -47,6 +49,7 @@ fun OpenFolioApp(
     homeViewModel: HomeViewModel,
     assetsViewModel: AssetsViewModel,
     assetDetailViewModel: AssetDetailViewModel,
+    activityViewModel: ActivityViewModel,
     inboxViewModel: InboxViewModel,
     reviewViewModel: ReviewViewModel,
     settingsViewModel: SettingsViewModel,
@@ -161,11 +164,16 @@ fun OpenFolioApp(
                 )
             }
             composable(AppDestination.Activity.route) {
-                EmptyScreen(
-                    destination = AppDestination.Activity,
-                    message = "Your confirmed transactions will appear here.",
-                    actionLabel = "Review imported files",
-                    onAction = { navController.navigate(AppDestination.Inbox.route) },
+                ActivityScreen(
+                    viewModel = activityViewModel,
+                    onNavigateToInbox = {
+                        navController.navigate(AppDestination.Inbox.route) {
+                            launchSingleTop = true
+                        }
+                    },
+                    onNavigateToAsset = { assetId ->
+                        navController.navigate("asset_detail/$assetId")
+                    },
                 )
             }
             composable(AppDestination.Inbox.route) {
@@ -177,6 +185,7 @@ fun OpenFolioApp(
                     onProcessWithAiClick = { documentId ->
                         navController.navigate("review/$documentId")
                     },
+                    onImport = homeViewModel::ingestFile,
                 )
             }
             composable(
@@ -199,7 +208,8 @@ fun OpenFolioApp(
                     onProcessWithAi = reviewViewModel::onProcessWithAi,
                     onProcessMappedData = reviewViewModel::processMappedData,
                     onReloadHeaders = reviewViewModel::loadHeadersForHeaderRow,
-                    onSaveDraft = reviewViewModel::saveDraft,
+                    onSaveDraft = { id, a, t, q, p, amt -> reviewViewModel.saveDraft(id, a, t, q, p, amt) },
+                    onSaveDraftWithClass = { id, a, t, q, p, amt, cls -> reviewViewModel.saveDraft(id, a, t, q, p, amt, cls) },
                     onSaveConfirmed = { reviewViewModel.saveConfirmed() },
                     onSaveComplete = { navController.popBackStack() },
                     onNavigateToInbox = { navController.popBackStack() },

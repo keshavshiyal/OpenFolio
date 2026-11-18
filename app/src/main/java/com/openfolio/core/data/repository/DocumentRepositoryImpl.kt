@@ -14,6 +14,7 @@ import com.openfolio.core.data.local.entity.AccountEntity
 import com.openfolio.core.data.local.entity.AccountType
 import com.openfolio.core.data.local.entity.AssetClass
 import com.openfolio.core.data.local.entity.AssetEntity
+import com.openfolio.core.data.local.entity.AssetStatus
 import com.openfolio.core.data.local.entity.ColumnMappingEntity
 import com.openfolio.core.data.local.entity.DocumentEntity
 import com.openfolio.core.data.local.entity.DocumentStatus
@@ -22,6 +23,7 @@ import com.openfolio.core.data.local.entity.TransactionEntity
 import com.openfolio.core.data.local.entity.TransactionStatus
 import com.openfolio.core.data.local.entity.TransactionType
 import com.openfolio.core.di.ApplicationScope
+import com.openfolio.core.domain.calculator.FifoCostBasisCalculator
 import com.openfolio.core.domain.repository.DocumentRepository
 import com.openfolio.core.domain.repository.DuplicateDocumentException
 import com.openfolio.core.domain.repository.DuplicateMatchInfo
@@ -144,6 +146,7 @@ class DocumentRepositoryImpl @Inject constructor(
             val allDraftIdsSame = drafts.size > 1 && drafts.all { it.id == drafts.first().id }
             val seenTxnIds = mutableSetOf<String>()
             val transactionsToInsert = mutableListOf<TransactionEntity>()
+            val touchedAssetIds = mutableSetOf<String>()
             var duplicateCount = 0
             val existingAssets = database.assetDao().getAllOnce().toMutableList()
 
@@ -185,15 +188,23 @@ class DocumentRepositoryImpl @Inject constructor(
                 val cleanQty = draft.quantity.replace(",", "").replace("₹", "").trim().ifBlank { "0" }
                 val cleanPrice = draft.price.replace(",", "").replace("₹", "").trim().ifBlank { "0" }
                 val cleanNetAmount = draft.netAmount.replace(",", "").replace("₹", "").trim().ifBlank { "0" }
-                val quantity = BigDecimal(cleanQty)
-                val price = BigDecimal(cleanPrice)
-                val netAmount = BigDecimal(cleanNetAmount)
+                var quantity = BigDecimal(cleanQty).abs()
+                var price = BigDecimal(cleanPrice).abs()
+                var netAmount = BigDecimal(cleanNetAmount).abs()
+
+                if (price.compareTo(BigDecimal.ZERO) == 0 && quantity > BigDecimal.ZERO && netAmount > BigDecimal.ZERO) {
+                    price = netAmount.divide(quantity, 4, RoundingMode.HALF_UP)
+                } else if (netAmount.compareTo(BigDecimal.ZERO) == 0 && quantity > BigDecimal.ZERO && price > BigDecimal.ZERO) {
+                    netAmount = quantity.multiply(price)
+                }
+
                 val accountId = "default_account"
-                val assetClass = try {
+                val draftAssetClass = try {
                     AssetClass.valueOf(draft.assetClass.trim().uppercase())
                 } catch (_: Exception) {
-                    AssetClass.STOCK
+                    document.getAssetClassEnum()
                 }
+
                 database.accountDao().insert(
                     AccountEntity(
                         id = accountId,
@@ -202,6 +213,32 @@ class DocumentRepositoryImpl @Inject constructor(
                         currency = "INR",
                     ),
                 )
+
+                val targetAsset = matchedAsset ?: existingAssets.firstOrNull { it.id == assetId }
+                    ?: database.assetDao().getById(assetId)
+
+                if (targetAsset == null) {
+                    val newAsset = AssetEntity(
+                        id = assetId,
+                        displayName = draft.assetName.trim(),
+                        assetClass = draftAssetClass,
+                        currency = "INR",
+                        totalQuantity = BigDecimal.ZERO,
+                        totalInvested = BigDecimal.ZERO,
+                        averageCost = BigDecimal.ZERO,
+                        realizedPnL = BigDecimal.ZERO,
+                        status = AssetStatus.ACTIVE,
+                    )
+                    database.assetDao().insert(newAsset)
+                    existingAssets.add(newAsset)
+                } else if (targetAsset.assetClass == AssetClass.STOCK && draftAssetClass != AssetClass.STOCK) {
+                    val updatedAsset = targetAsset.copy(assetClass = draftAssetClass)
+                    database.assetDao().update(updatedAsset)
+                    val idx = existingAssets.indexOfFirst { it.id == targetAsset.id }
+                    if (idx >= 0) {
+                        existingAssets[idx] = updatedAsset
+                    }
+                }
 
                 val transactionId = if (!allDraftIdsSame && draft.id.isNotBlank() && seenTxnIds.add(draft.id)) {
                     draft.id
@@ -234,55 +271,39 @@ class DocumentRepositoryImpl @Inject constructor(
                     confidence = draft.confidence / 100.0,
                 )
                 transactionsToInsert.add(newTransaction)
-
-                // AGGREGATION LOGIC
-                val targetAsset = matchedAsset ?: existingAssets.firstOrNull { it.id == assetId }
-                val qty = quantity
-                val invested = netAmount
-
-                if (targetAsset == null) {
-                    // Create new asset with initial values
-                    val avgCost = if (qty > BigDecimal.ZERO) invested.divide(qty, 4, RoundingMode.HALF_UP) else BigDecimal.ZERO
-                    val newAsset = AssetEntity(
-                        id = assetId,
-                        displayName = draft.assetName.trim(),
-                        assetClass = assetClass,
-                        currency = "INR",
-                        totalQuantity = qty,
-                        totalInvested = invested,
-                        averageCost = avgCost,
-                    )
-                    database.assetDao().insert(newAsset)
-                    existingAssets.add(newAsset)
-                } else {
-                    // Update existing asset aggregates
-                    val newQty = targetAsset.totalQuantity.add(qty)
-                    val newInvested = targetAsset.totalInvested.add(invested)
-                    val newAvgCost = if (newQty > BigDecimal.ZERO) newInvested.divide(newQty, 4, RoundingMode.HALF_UP) else BigDecimal.ZERO
-
-                    database.assetDao().updateAggregates(
-                        assetId = targetAsset.id,
-                        qty = newQty,
-                        invested = newInvested,
-                        avgCost = newAvgCost,
-                        realizedPnL = targetAsset.realizedPnL,
-                        timestamp = System.currentTimeMillis(),
-                    )
-                    val updated = targetAsset.copy(
-                        totalQuantity = newQty,
-                        totalInvested = newInvested,
-                        averageCost = newAvgCost,
-                    )
-                    val idx = existingAssets.indexOfFirst { it.id == targetAsset.id }
-                    if (idx >= 0) {
-                        existingAssets[idx] = updated
-                    }
-                }
+                touchedAssetIds.add(assetId)
             }
+
             Log.d("SaveTxn", "Total transactions to insert: ${transactionsToInsert.size}")
             if (transactionsToInsert.isNotEmpty()) {
                 transactionDao.insertAll(transactionsToInsert)
             }
+
+            // Recalculate cost basis and aggregates on FIFO basis for all touched assets
+            for (assetId in touchedAssetIds) {
+                val allTxns = transactionDao.getByAssetIdOnce(assetId)
+                val fifoResult = FifoCostBasisCalculator.calculate(assetId, allTxns)
+
+                val lotDao = runCatching { database.lotDao() }.getOrNull()
+                lotDao?.deleteByAssetId(assetId)
+                if (fifoResult.lots.isNotEmpty()) {
+                    lotDao?.insertAll(fifoResult.lots)
+                }
+
+                database.assetDao().updateAggregates(
+                    assetId = assetId,
+                    qty = fifoResult.totalQuantity,
+                    invested = fifoResult.totalInvested,
+                    avgCost = fifoResult.averageCost,
+                    realizedPnL = fifoResult.realizedPnL,
+                    timestamp = System.currentTimeMillis(),
+                )
+                val currentAsset = database.assetDao().getById(assetId)
+                if (currentAsset != null && currentAsset.status != fifoResult.status) {
+                    database.assetDao().update(currentAsset.copy(status = fifoResult.status))
+                }
+            }
+
             draftTransactionDao.deleteByDocumentId(documentId)
             documentDao.updateStatus(documentId, DocumentStatus.COMPLETED.name)
             SaveDraftTransactionsResult(transactionsToInsert.size, duplicateCount)
@@ -436,11 +457,17 @@ class DocumentRepositoryImpl @Inject constructor(
                 aggregatedDrafts.addAll(drafts)
             }
 
-            if (aggregatedDrafts.isEmpty()) {
+            val adjustedDrafts = aggregatedDrafts.map { draft ->
+                if (draft.assetClass == "STOCK" && document.assetClass != "STOCK") {
+                    draft.copy(assetClass = document.assetClass)
+                } else draft
+            }
+
+            if (adjustedDrafts.isEmpty()) {
                 throw NoFinancialDataException()
             }
 
-            draftTransactionDao.insertAll(aggregatedDrafts)
+            draftTransactionDao.insertAll(adjustedDrafts)
             documentDao.updateStatus(documentId, DocumentStatus.AI_COMPLETE.name)
         }
 
@@ -462,7 +489,7 @@ class DocumentRepositoryImpl @Inject constructor(
             val textChunks = document.extractedText.chunked(AI_CHUNK_SIZE)
             require(textChunks.isNotEmpty()) { "No extracted text is available to process." }
             textChunks.forEach { kotlinx.coroutines.yield() }
-            insertDraftTransactionsIfEmpty(documentId, mockAiDraftTransactions(documentId))
+            insertDraftTransactionsIfEmpty(documentId, mockAiDraftTransactions(document))
         }
 
     override suspend fun getStructuredFileHeaders(
@@ -494,7 +521,16 @@ class DocumentRepositoryImpl @Inject constructor(
         persistMappedDrafts(document, mapping, drafts)
     }
 
-    override suspend fun ingestFile(uri: Uri, context: Context): DocumentEntity =
+    override suspend fun ingestFile(
+        uri: Uri,
+        context: Context,
+    ): DocumentEntity = ingestFile(uri, context, AssetClass.STOCK)
+
+    override suspend fun ingestFile(
+        uri: Uri,
+        context: Context,
+        assetClass: AssetClass,
+    ): DocumentEntity =
         withContext(Dispatchers.IO) {
             val resolver = context.contentResolver
             val metadata = resolver.query(
@@ -554,6 +590,7 @@ class DocumentRepositoryImpl @Inject constructor(
                     } else {
                         DocumentStatus.PENDING_OCR.name
                     },
+                    assetClass = assetClass.name,
                 )
                 documentDao.insert(document)
                 insertedDocument = document
@@ -693,6 +730,7 @@ class DocumentRepositoryImpl @Inject constructor(
                 tradeDate = dateIndex?.let { index ->
                     parseMappedDate(row.getOrNull(index).orEmpty())
                 },
+                assetClass = document.assetClass,
             )
         }
     }
@@ -865,51 +903,58 @@ internal fun createTransactionFingerprint(
 private fun ByteArray.toLowerHex(): String =
     joinToString(separator = "") { byte -> "%02x".format(byte.toInt() and 0xff) }
 
-private fun mockAiDraftTransactions(documentId: String): List<DraftTransactionEntity> =
-    listOf(
+private fun mockAiDraftTransactions(document: DocumentEntity): List<DraftTransactionEntity> {
+    val defaultClass = document.assetClass
+    return listOf(
         DraftTransactionEntity(
-            documentId = documentId,
+            documentId = document.id,
             assetName = "Reliance Industries",
             transactionType = "BUY",
             quantity = "10",
             price = "2850.00",
             netAmount = "28500.00",
             confidence = 98,
+            assetClass = defaultClass,
         ),
         DraftTransactionEntity(
-            documentId = documentId,
+            documentId = document.id,
             assetName = "HDFC Bank",
             transactionType = "BUY",
             quantity = "5",
             price = "1680.00",
             netAmount = "8400.00",
             confidence = 98,
+            assetClass = defaultClass,
         ),
         DraftTransactionEntity(
-            documentId = documentId,
+            documentId = document.id,
             assetName = "Tata Consultancy Services",
             transactionType = "SELL",
             quantity = "2",
             price = "4125.00",
             netAmount = "8250.00",
             confidence = 98,
+            assetClass = defaultClass,
         ),
         DraftTransactionEntity(
-            documentId = documentId,
+            documentId = document.id,
             assetName = "ICICI Prudential Bluechip Fund",
             transactionType = "BUY",
             quantity = "12.5",
             price = "78.40",
             netAmount = "980.00",
             confidence = 85,
+            assetClass = if (defaultClass != "STOCK") defaultClass else "MUTUAL_FUND",
         ),
         DraftTransactionEntity(
-            documentId = documentId,
+            documentId = document.id,
             assetName = "Nippon India Small Cap Fund",
             transactionType = "BUY",
             quantity = "8",
             price = "156.25",
             netAmount = "1250.00",
             confidence = 65,
+            assetClass = if (defaultClass != "STOCK") defaultClass else "MUTUAL_FUND",
         ),
     )
+}

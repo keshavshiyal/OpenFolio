@@ -306,4 +306,112 @@ class FifoCostBasisCalculatorTest {
         assertEquals(0, BigDecimal("4800.00").compareTo(result.totalInvested))
         assertEquals(0, BigDecimal("2800.00").compareTo(result.realizedPnL))
     }
+
+    @Test
+    fun fifoUserExampleNmdcBuyAndSellCalculatesRealizedGainAndRemainingHolding() {
+        // 1-1-2020 buy NMDC 10 rs/share 10 qty amounts to 100. Dashboard status 100 networth
+        val buy = createTxn(
+            id = "nmdc_buy_1",
+            type = TransactionType.BUY,
+            tradeDate = LocalDate.of(2020, 1, 1),
+            quantity = BigDecimal("10"),
+            unitPrice = BigDecimal("10"),
+            netAmount = BigDecimal("100"),
+        )
+
+        val buyResult = FifoCostBasisCalculator.calculate("nmdc", listOf(buy))
+        assertEquals(0, BigDecimal("10").compareTo(buyResult.totalQuantity))
+        assertEquals(0, BigDecimal("100.00").compareTo(buyResult.totalInvested))
+        assertEquals(0, BigDecimal("10.0000").compareTo(buyResult.averageCost))
+        assertEquals(0, BigDecimal.ZERO.compareTo(buyResult.realizedPnL))
+        assertEquals(AssetStatus.ACTIVE, buyResult.status)
+
+        // 3-1-2020 sell NMDC 20 rs/share 5 qty amounts to 100. Dashboard status 50 networth, realised Gain 50 rs
+        val sell = createTxn(
+            id = "nmdc_sell_1",
+            type = TransactionType.SELL,
+            tradeDate = LocalDate.of(2020, 1, 3),
+            quantity = BigDecimal("5"),
+            unitPrice = BigDecimal("20"),
+            netAmount = BigDecimal("100"),
+        )
+
+        val sellResult = FifoCostBasisCalculator.calculate("nmdc", listOf(buy, sell))
+        assertEquals(0, BigDecimal("5").compareTo(sellResult.totalQuantity))
+        assertEquals(0, BigDecimal("50.00").compareTo(sellResult.totalInvested))
+        assertEquals(0, BigDecimal("10.0000").compareTo(sellResult.averageCost))
+        assertEquals(0, BigDecimal("50.00").compareTo(sellResult.realizedPnL))
+        assertEquals(AssetStatus.ACTIVE, sellResult.status)
+
+        // Verify per-transaction gain mapping
+        val gains = FifoCostBasisCalculator.calculateTransactionGains(listOf(buy, sell))
+        assertEquals(0, BigDecimal("50.00").compareTo(gains[sell.id]))
+    }
+
+    @Test
+    fun fifoSellAtALossCalculatesNegativeRealizedPnL() {
+        val buy = createTxn(
+            id = "buy_1",
+            type = TransactionType.BUY,
+            tradeDate = LocalDate.of(2020, 1, 1),
+            quantity = BigDecimal("10"),
+            unitPrice = BigDecimal("10"),
+            netAmount = BigDecimal("100"),
+        )
+        // Sell 5 units @ 8 = 40 (cost basis was 5 * 10 = 50, so loss is -10)
+        val sell = createTxn(
+            id = "sell_loss_1",
+            type = TransactionType.SELL,
+            tradeDate = LocalDate.of(2020, 1, 3),
+            quantity = BigDecimal("5"),
+            unitPrice = BigDecimal("8"),
+            netAmount = BigDecimal("40"),
+        )
+
+        val result = FifoCostBasisCalculator.calculate("asset_rel", listOf(buy, sell))
+        assertEquals(0, BigDecimal("5").compareTo(result.totalQuantity))
+        assertEquals(0, BigDecimal("50.00").compareTo(result.totalInvested))
+        assertEquals(0, BigDecimal("10.0000").compareTo(result.averageCost))
+        assertEquals(0, BigDecimal("-10.00").compareTo(result.realizedPnL))
+
+        val gains = FifoCostBasisCalculator.calculateTransactionGains(listOf(buy, sell))
+        assertEquals(0, BigDecimal("-10.00").compareTo(gains[sell.id]))
+    }
+
+    @Test
+    fun fifoStockSplitAdjustsRemainingLotsAndCostBasisPerShare() {
+        val buy = createTxn(
+            id = "buy_1",
+            type = TransactionType.BUY,
+            tradeDate = LocalDate.of(2020, 1, 1),
+            quantity = BigDecimal("10"),
+            unitPrice = BigDecimal("100"),
+            netAmount = BigDecimal("1000"),
+        )
+        val split = createTxn(
+            id = "split_1",
+            type = TransactionType.SPLIT,
+            tradeDate = LocalDate.of(2020, 2, 1),
+            quantity = BigDecimal("2"), // 2:1 split
+            unitPrice = null,
+            netAmount = BigDecimal.ZERO,
+        )
+        val sell = createTxn(
+            id = "sell_1",
+            type = TransactionType.SELL,
+            tradeDate = LocalDate.of(2020, 3, 1),
+            quantity = BigDecimal("10"),
+            unitPrice = BigDecimal("80"),
+            netAmount = BigDecimal("800"),
+        )
+
+        val result = FifoCostBasisCalculator.calculate("asset_rel", listOf(buy, split, sell))
+        // 10 bought -> split to 20 @ 50 avg cost. Sold 10 @ 80.
+        // Proceeds: 800. Cost of 10 shares: 10 * 50 = 500. Gain: 300.
+        // Remaining: 10 shares @ 50 = 500 invested.
+        assertEquals(0, BigDecimal("10").compareTo(result.totalQuantity))
+        assertEquals(0, BigDecimal("500.00").compareTo(result.totalInvested))
+        assertEquals(0, BigDecimal("50.0000").compareTo(result.averageCost))
+        assertEquals(0, BigDecimal("300.00").compareTo(result.realizedPnL))
+    }
 }

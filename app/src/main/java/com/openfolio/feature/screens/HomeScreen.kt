@@ -63,8 +63,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import com.openfolio.core.data.local.entity.AssetClass
 import com.openfolio.core.data.local.entity.TransactionEntity
 import com.openfolio.core.data.local.entity.TransactionType
+import com.openfolio.core.ui.components.AssetTypeSelectionBottomSheet
 import com.openfolio.core.ui.components.MoneyText
 import com.openfolio.core.ui.components.MoneyTextStyle
 import com.openfolio.core.ui.theme.LocalOpenFolioColors
@@ -99,7 +103,6 @@ fun HomeScreen(
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     uiState: HomeUiState,
@@ -112,11 +115,40 @@ fun HomeScreen(
     onSettings: () -> Unit,
     onAddManually: () -> Unit = {},
 ) {
+    HomeScreen(
+        uiState = uiState,
+        ingestionState = ingestionState,
+        onToggleValues = onToggleValues,
+        onSelectPeriod = onSelectPeriod,
+        onImport = { uri, _ -> onImport(uri) },
+        onImportSuccess = onImportSuccess,
+        onIngestionHandled = onIngestionHandled,
+        onSettings = onSettings,
+        onAddManually = onAddManually,
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun HomeScreen(
+    uiState: HomeUiState,
+    ingestionState: IngestionState,
+    onToggleValues: () -> Unit,
+    onSelectPeriod: (String) -> Unit,
+    onImport: (Uri, AssetClass) -> Unit,
+    onImportSuccess: () -> Unit,
+    onIngestionHandled: () -> Unit,
+    onSettings: () -> Unit,
+    onAddManually: () -> Unit = {},
+) {
     val colors = LocalOpenFolioColors.current
     val snackbarHostState = remember { SnackbarHostState() }
+    var showAssetTypeSheet by remember { mutableStateOf(false) }
+    var pendingAssetClass by remember { mutableStateOf(AssetClass.STOCK) }
+
     val documentPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
-        onResult = { uri -> uri?.let(onImport) },
+        onResult = { uri -> uri?.let { onImport(it, pendingAssetClass) } },
     )
 
     LaunchedEffect(ingestionState) {
@@ -169,7 +201,7 @@ fun HomeScreen(
                 ExtendedFloatingActionButton(
                     onClick = {
                         if (ingestionState != IngestionState.Loading) {
-                            documentPicker.launch(DOCUMENT_MIME_TYPES)
+                            showAssetTypeSheet = true
                         }
                     },
                     icon = {
@@ -217,7 +249,7 @@ fun HomeScreen(
                         actionLabel = "Import",
                         onAction = {
                             if (ingestionState != IngestionState.Loading) {
-                                documentPicker.launch(DOCUMENT_MIME_TYPES)
+                                showAssetTypeSheet = true
                             }
                         },
                         secondaryActionLabel = "Add Manually",
@@ -303,6 +335,17 @@ fun HomeScreen(
                 }
             }
         }
+    }
+
+    if (showAssetTypeSheet) {
+        AssetTypeSelectionBottomSheet(
+            onDismissRequest = { showAssetTypeSheet = false },
+            onSelectAssetType = { selectedClass ->
+                pendingAssetClass = selectedClass
+                showAssetTypeSheet = false
+                documentPicker.launch(DOCUMENT_MIME_TYPES)
+            },
+        )
     }
 }
 

@@ -238,6 +238,7 @@ class ReviewViewModel @Inject constructor(
         quantity: String,
         price: String,
         netAmount: String,
+        assetClass: String? = null,
     ) {
         val documentId = (uiState.value as? ReviewUiState.Loaded)?.document?.id ?: return
         viewModelScope.launch {
@@ -258,6 +259,10 @@ class ReviewViewModel @Inject constructor(
                 val previous = draftId?.let { id ->
                     _drafts.value.firstOrNull { it.id == id }
                 }
+                val resolvedAssetClass = assetClass
+                    ?: previous?.assetClass
+                    ?: (uiState.value as? ReviewUiState.Loaded)?.document?.assetClass
+                    ?: "STOCK"
                 val draft = DraftTransactionEntity(
                     id = previous?.id ?: java.util.UUID.randomUUID().toString(),
                     documentId = documentId,
@@ -270,7 +275,7 @@ class ReviewViewModel @Inject constructor(
                     isAccepted = previous?.isAccepted ?: false,
                     isManual = true,
                     tradeDate = previous?.tradeDate,
-                    assetClass = previous?.assetClass ?: "STOCK",
+                    assetClass = resolvedAssetClass,
                 )
                 if (previous == null) {
                     documentRepository.insertDraftTransaction(draft)

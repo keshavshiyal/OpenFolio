@@ -1,6 +1,10 @@
 package com.openfolio.feature.screens
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -11,84 +15,143 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.openfolio.core.data.local.entity.AssetClass
 import com.openfolio.core.data.local.entity.DocumentEntity
 import com.openfolio.core.data.local.entity.DocumentStatus
+import com.openfolio.core.ui.components.AssetTypeSelectionBottomSheet
 import com.openfolio.core.ui.theme.LocalOpenFolioColors
+import com.openfolio.feature.assets.toDisplayTitle
 import java.util.Locale
+
+private val DOCUMENT_MIME_TYPES = arrayOf(
+    "application/pdf",
+    "image/*",
+    "text/csv",
+    "text/comma-separated-values",
+    "application/csv",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+)
 
 @Composable
 fun InboxScreen(
     documents: List<DocumentEntity>,
     onDocumentClick: (String) -> Unit,
     onProcessWithAiClick: ((String) -> Unit)? = null,
+    onImport: ((Uri, AssetClass) -> Unit)? = null,
 ) {
     val colors = LocalOpenFolioColors.current
     val awaitingReview = documents.count { it.status != DocumentStatus.COMPLETED.name }
+    var showAssetTypeSheet by remember { mutableStateOf(false) }
+    var pendingAssetClass by remember { mutableStateOf(AssetClass.STOCK) }
 
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(
-            start = 20.dp,
-            top = 24.dp,
-            end = 20.dp,
-            bottom = 100.dp,
-        ),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        item {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Text(
-                    text = "Inbox",
-                    style = MaterialTheme.typography.headlineMedium,
-                    color = colors.content,
-                )
-                Text(
-                    text = "$awaitingReview documents awaiting review",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = colors.muted,
+    val documentPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+        onResult = { uri ->
+            uri?.let { onImport?.invoke(it, pendingAssetClass) }
+        },
+    )
+
+    Scaffold(
+        containerColor = colors.background,
+        floatingActionButton = {
+            if (onImport != null) {
+                ExtendedFloatingActionButton(
+                    onClick = { showAssetTypeSheet = true },
+                    icon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                    text = { Text("Import") },
+                    containerColor = colors.brand,
+                    contentColor = colors.onAccent,
                 )
             }
-        }
-
-        if (documents.isEmpty()) {
+        },
+    ) { innerPadding ->
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding),
+            contentPadding = PaddingValues(
+                start = 20.dp,
+                top = 24.dp,
+                end = 20.dp,
+                bottom = 100.dp,
+            ),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
             item {
-                Text(
-                    text = "Imported statements will appear here.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = colors.muted,
-                    modifier = Modifier.padding(vertical = 12.dp),
-                )
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        text = "Inbox",
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = colors.content,
+                    )
+                    Text(
+                        text = "$awaitingReview documents awaiting review",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.muted,
+                    )
+                }
             }
-        } else {
-            items(documents, key = DocumentEntity::id) { document ->
-                DocumentCard(
-                    document = document,
-                    onClick = { onDocumentClick(document.id) },
-                    onProcessWithAi = { (onProcessWithAiClick ?: onDocumentClick)(document.id) },
-                )
+
+            if (documents.isEmpty()) {
+                item {
+                    Text(
+                        text = "Imported statements will appear here.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.muted,
+                        modifier = Modifier.padding(vertical = 12.dp),
+                    )
+                }
+            } else {
+                items(documents, key = DocumentEntity::id) { document ->
+                    DocumentCard(
+                        document = document,
+                        onClick = { onDocumentClick(document.id) },
+                        onProcessWithAi = { (onProcessWithAiClick ?: onDocumentClick)(document.id) },
+                    )
+                }
             }
         }
+    }
+
+    if (showAssetTypeSheet) {
+        AssetTypeSelectionBottomSheet(
+            onDismissRequest = { showAssetTypeSheet = false },
+            onSelectAssetType = { selectedClass ->
+                pendingAssetClass = selectedClass
+                showAssetTypeSheet = false
+                documentPicker.launch(DOCUMENT_MIME_TYPES)
+            },
+        )
     }
 }
 
@@ -131,15 +194,31 @@ fun DocumentCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(4.dp),
+                        color = colors.brand.copy(alpha = 0.12f),
+                    ) {
+                        Text(
+                            text = document.getAssetClassEnum().toDisplayTitle(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.brand,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        )
+                    }
+                    Text(
+                        text = "•  ${formatFileSize(document.fileSize)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.muted,
+                    )
+                }
                 Text(
                     text = "SHA-256: ${document.fileHash.take(8)}...",
                     style = MaterialTheme.typography.bodySmall,
                     fontFamily = FontFamily.Monospace,
-                    color = colors.muted,
-                )
-                Text(
-                    text = formatFileSize(document.fileSize),
-                    style = MaterialTheme.typography.bodySmall,
                     color = colors.muted,
                 )
             }

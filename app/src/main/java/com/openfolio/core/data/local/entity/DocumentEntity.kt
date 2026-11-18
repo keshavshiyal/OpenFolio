@@ -28,4 +28,11 @@ data class DocumentEntity(
     val extractionStatus: ExtractionStatus = ExtractionStatus.PENDING_OCR,
     val extractedText: String? = null,
     val status: String = extractionStatus.name,
-)
+    val assetClass: String = "STOCK",
+) {
+    fun getAssetClassEnum(): AssetClass = try {
+        AssetClass.valueOf(assetClass.trim().uppercase())
+    } catch (_: Exception) {
+        AssetClass.STOCK
+    }
+}

@@ -744,6 +744,92 @@ class DocumentRepositoryImplTest {
         assertEquals("1448.0000000000001", drafts[0].netAmount)
     }
 
+    @Test
+    fun createMappedDraftsPropagatesMutualFundAssetClass() {
+        val repository = createTestRepository()
+        val document = DocumentEntity(
+            id = "doc-mf",
+            fileName = "cams_statement.csv",
+            localPath = "/tmp/cams.csv",
+            fileHash = "hash-mf",
+            fileSize = 100L,
+            importDate = 1700000000000L,
+            status = DocumentStatus.READY_FOR_MAPPING.name,
+            assetClass = "MUTUAL_FUND",
+        )
+        val table = StructuredTable(
+            headers = listOf("Scheme", "Type", "Units", "NAV", "Amount"),
+            rows = listOf(
+                listOf("Parag Parikh Flexi Cap Fund", "BUY", "100.5", "50.00", "5025.00"),
+            ),
+        )
+        val mapping = ColumnMappingEntity(
+            brokerName = "CAMS",
+            assetColumn = "Scheme",
+            typeColumn = "Type",
+            quantityColumn = "Units",
+            priceColumn = "NAV",
+            amountColumn = "Amount",
+            dateColumn = "",
+        )
+
+        val drafts = repository.createMappedDrafts(document, table, mapping)
+        assertEquals(1, drafts.size)
+        assertEquals("MUTUAL_FUND", drafts[0].assetClass)
+        assertEquals("Parag Parikh Flexi Cap Fund", drafts[0].assetName)
+    }
+
+    @Test
+    fun ingestFileWithMutualFundAssetClassPersistsAssetClass() = runBlocking {
+        val dao = mock<DocumentDao>()
+        val columnMappingDao = mock<ColumnMappingDao>()
+        val context = mock<Context>()
+        val resolver = mock<ContentResolver>()
+        val cursor = mock<Cursor>()
+        val uri = mock<Uri>()
+        val fileBytes = "cams statement".toByteArray()
+
+        whenever(context.contentResolver).thenReturn(resolver)
+        whenever(context.filesDir).thenReturn(java.io.File(System.getProperty("java.io.tmpdir")))
+        whenever(
+            resolver.query(
+                eq(uri),
+                anyOrNull(),
+                isNull(),
+                isNull(),
+                isNull(),
+            ),
+        ).thenReturn(cursor)
+        whenever(cursor.moveToFirst()).thenReturn(true)
+        whenever(cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)).thenReturn(0)
+        whenever(cursor.getColumnIndex(OpenableColumns.SIZE)).thenReturn(1)
+        whenever(cursor.getString(0)).thenReturn("cams.csv")
+        whenever(cursor.getLong(1)).thenReturn(fileBytes.size.toLong())
+        whenever(resolver.openInputStream(uri)).thenReturn(ByteArrayInputStream(fileBytes))
+        whenever(dao.getDocumentByHash(org.mockito.kotlin.any())).thenReturn(null)
+        whenever(columnMappingDao.getAll()).thenReturn(emptyList())
+
+        val repository = DocumentRepositoryImpl(
+            documentDao = dao,
+            columnMappingDao = columnMappingDao,
+            draftTransactionDao = mock<DraftTransactionDao>(),
+            transactionDao = mock<TransactionDao>(),
+            database = mock<OpenFolioDatabase>(),
+            documentTextExtractor = mock<DocumentTextExtractor>(),
+            structuredFileParser = mock<StructuredFileParser>(),
+            settingsRepository = mock<SettingsRepository>(),
+            aiProvider = mock<AiProvider>(),
+            applicationScope = mock<CoroutineScope>(),
+        )
+
+        val doc = repository.ingestFile(uri, context, com.openfolio.core.data.local.entity.AssetClass.MUTUAL_FUND)
+
+        assertEquals("MUTUAL_FUND", doc.assetClass)
+        val captor = org.mockito.kotlin.argumentCaptor<DocumentEntity>()
+        verify(dao).insert(captor.capture())
+        assertEquals("MUTUAL_FUND", captor.firstValue.assetClass)
+    }
+
     private fun createTestRepository() = DocumentRepositoryImpl(
         documentDao = mock<DocumentDao>(),
         columnMappingDao = mock<ColumnMappingDao>(),

@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.openfolio.core.data.local.entity.AssetClass
 import com.openfolio.core.data.local.entity.DocumentEntity
 import com.openfolio.core.data.repository.SettingsRepository
 import com.openfolio.core.domain.model.DashboardData
@@ -119,11 +120,11 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    fun ingestFile(uri: Uri) {
+    fun ingestFile(uri: Uri, assetClass: AssetClass = AssetClass.STOCK) {
         viewModelScope.launch {
             _ingestionState.value = IngestionState.Loading
             try {
-                val document = documentRepository.ingestFile(uri, context)
+                val document = documentRepository.ingestFile(uri, context, assetClass)
                 _ingestionState.value = IngestionState.Success(document.fileName)
             } catch (exception: CancellationException) {
                 _ingestionState.value = IngestionState.Idle

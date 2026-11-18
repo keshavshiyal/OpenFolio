@@ -40,7 +40,16 @@ interface DocumentRepository {
 
     suspend fun updateDocumentStatus(documentId: String, status: String)
 
-    suspend fun ingestFile(uri: Uri, context: Context): DocumentEntity
+    suspend fun ingestFile(
+        uri: Uri,
+        context: Context,
+        assetClass: com.openfolio.core.data.local.entity.AssetClass,
+    ): DocumentEntity = ingestFile(uri, context)
+
+    suspend fun ingestFile(
+        uri: Uri,
+        context: Context,
+    ): DocumentEntity
 
     suspend fun processDocumentWithAi(documentId: String)
 

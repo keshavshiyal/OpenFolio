@@ -83,6 +83,7 @@ fun ReviewScreen(
     onProcessMappedData: (String, String, String, String, String, String, String, Int) -> Unit,
     onReloadHeaders: (Int) -> Unit,
     onSaveDraft: (String?, String, String, String, String, String) -> Unit,
+    onSaveDraftWithClass: ((String?, String, String, String, String, String, String) -> Unit)? = null,
     onSaveConfirmed: () -> Unit,
     onSaveComplete: () -> Unit,
     onNavigateToInbox: () -> Unit = onBack,
@@ -530,8 +531,12 @@ fun ReviewScreen(
             ManualDraftForm(
                 draft = editingDraft,
                 documentImportDate = document?.importDate,
-                onSave = { draftId, asset, type, quantity, price, amount ->
-                    onSaveDraft(draftId, asset, type, quantity, price, amount)
+                onSave = { draftId, asset, type, quantity, price, amount, assetClass ->
+                    if (onSaveDraftWithClass != null) {
+                        onSaveDraftWithClass(draftId, asset, type, quantity, price, amount, assetClass)
+                    } else {
+                        onSaveDraft(draftId, asset, type, quantity, price, amount)
+                    }
                     showManualForm = false
                 },
             )
@@ -911,6 +916,17 @@ private fun DraftTransactionRow(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false),
                     )
+                    Surface(
+                        shape = RoundedCornerShape(4.dp),
+                        color = colors.brand.copy(alpha = 0.12f),
+                    ) {
+                        Text(
+                            text = draft.assetClass,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.brand,
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+                        )
+                    }
                     if (item.isDuplicate) {
                         Surface(
                             shape = RoundedCornerShape(4.dp),
@@ -1008,11 +1024,12 @@ private fun ConfidenceBadge(confidence: Int) {
 private fun ManualDraftForm(
     draft: DraftTransactionEntity?,
     documentImportDate: Long? = null,
-    onSave: (String?, String, String, String, String, String) -> Unit,
+    onSave: (String?, String, String, String, String, String, String) -> Unit,
 ) {
     val colors = LocalOpenFolioColors.current
     var asset by remember(draft?.id) { mutableStateOf(draft?.assetName.orEmpty()) }
     var type by remember(draft?.id) { mutableStateOf(draft?.transactionType ?: "BUY") }
+    var assetClass by remember(draft?.id) { mutableStateOf(draft?.assetClass ?: "STOCK") }
     var quantity by remember(draft?.id) { mutableStateOf(draft?.quantity.orEmpty()) }
     var price by remember(draft?.id) { mutableStateOf(draft?.price.orEmpty()) }
     var amount by remember(draft?.id) { mutableStateOf(draft?.netAmount.orEmpty()) }
@@ -1051,6 +1068,13 @@ private fun ManualDraftForm(
             singleLine = true,
         )
         OutlinedTextField(
+            value = assetClass,
+            onValueChange = { assetClass = it.uppercase() },
+            label = { Text("Asset Class (STOCK, MUTUAL_FUND, etc.)") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+        )
+        OutlinedTextField(
             value = type,
             onValueChange = { type = it.uppercase() },
             label = { Text("Type (BUY, SELL, DIVIDEND)") },
@@ -1079,7 +1103,7 @@ private fun ManualDraftForm(
             singleLine = true,
         )
         Button(
-            onClick = { onSave(draft?.id, asset, type, quantity, price, amount) },
+            onClick = { onSave(draft?.id, asset, type, quantity, price, amount, assetClass) },
             enabled = asset.isNotBlank() &&
                 type in setOf("BUY", "SELL", "DIVIDEND", "INTEREST", "FEE", "TAX") &&
                 quantity.toBigDecimalOrNull()?.let { it.signum() > 0 } == true &&

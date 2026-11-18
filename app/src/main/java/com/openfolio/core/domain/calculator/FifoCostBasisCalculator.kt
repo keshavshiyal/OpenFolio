@@ -26,7 +26,7 @@ object FifoCostBasisCalculator {
         val acquiredDate: java.time.LocalDate,
         val originalQuantity: BigDecimal,
         var remainingQuantity: BigDecimal,
-        val costPerUnit: BigDecimal,
+        var costPerUnit: BigDecimal,
         val sourceTransactionId: String,
     ) {
         fun toEntity(): LotEntity = LotEntity(
@@ -118,13 +118,18 @@ object FifoCostBasisCalculator {
                         for (lot in lots) {
                             if (lot.remainingQuantity > BigDecimal.ZERO) {
                                 lot.remainingQuantity = lot.remainingQuantity.multiply(splitRatio)
+                                lot.costPerUnit = lot.costPerUnit.divide(splitRatio, 6, RoundingMode.HALF_UP)
                             }
                         }
                     }
                 }
 
                 TransactionType.SELL, TransactionType.TRANSFER_OUT -> {
-                    val sellQty = tx.quantity ?: BigDecimal.ZERO
+                    val sellQty = tx.quantity ?: if (tx.unitPrice != null && tx.unitPrice > BigDecimal.ZERO) {
+                        tx.netAmount.divide(tx.unitPrice, 6, RoundingMode.HALF_UP)
+                    } else {
+                        BigDecimal.ZERO
+                    }
                     val proceeds = tx.netAmount
                     if (sellQty > BigDecimal.ZERO) {
                         var remainingToSell = sellQty
@@ -190,5 +195,113 @@ object FifoCostBasisCalculator {
             status = status,
             lots = lots.map { it.toEntity() },
         )
+    }
+
+    fun calculateTransactionGains(
+        transactions: List<TransactionEntity>,
+    ): Map<String, BigDecimal> {
+        if (transactions.isEmpty()) return emptyMap()
+
+        val sortedTxns = transactions.sortedWith(
+            compareBy<TransactionEntity> { it.tradeDate }
+                .thenBy { it.createdAt }
+                .thenBy { it.id }
+        )
+
+        val lots = mutableListOf<MutableLot>()
+        val gainsMap = mutableMapOf<String, BigDecimal>()
+
+        for (tx in sortedTxns) {
+            when (tx.type) {
+                TransactionType.BUY, TransactionType.TRANSFER_IN -> {
+                    val qty = tx.quantity ?: if (tx.unitPrice != null && tx.unitPrice > BigDecimal.ZERO) {
+                        tx.netAmount.divide(tx.unitPrice, 6, RoundingMode.HALF_UP)
+                    } else {
+                        BigDecimal.ZERO
+                    }
+                    val invested = tx.netAmount
+                    val costPerUnit = if (qty > BigDecimal.ZERO) {
+                        invested.divide(qty, 6, RoundingMode.HALF_UP)
+                    } else {
+                        BigDecimal.ZERO
+                    }
+
+                    if (qty > BigDecimal.ZERO) {
+                        lots.add(
+                            MutableLot(
+                                assetId = tx.assetId,
+                                acquiredDate = tx.tradeDate,
+                                originalQuantity = qty,
+                                remainingQuantity = qty,
+                                costPerUnit = costPerUnit,
+                                sourceTransactionId = tx.id,
+                            )
+                        )
+                    }
+                }
+
+                TransactionType.BONUS -> {
+                    val qty = tx.quantity ?: BigDecimal.ZERO
+                    if (qty > BigDecimal.ZERO) {
+                        lots.add(
+                            MutableLot(
+                                assetId = tx.assetId,
+                                acquiredDate = tx.tradeDate,
+                                originalQuantity = qty,
+                                remainingQuantity = qty,
+                                costPerUnit = BigDecimal.ZERO,
+                                sourceTransactionId = tx.id,
+                            )
+                        )
+                    }
+                }
+
+                TransactionType.SPLIT -> {
+                    val splitRatio = tx.quantity
+                    if (splitRatio != null && splitRatio > BigDecimal.ZERO && splitRatio != BigDecimal.ONE) {
+                        for (lot in lots) {
+                            if (lot.remainingQuantity > BigDecimal.ZERO) {
+                                lot.remainingQuantity = lot.remainingQuantity.multiply(splitRatio)
+                                lot.costPerUnit = lot.costPerUnit.divide(splitRatio, 6, RoundingMode.HALF_UP)
+                            }
+                        }
+                    }
+                }
+
+                TransactionType.SELL, TransactionType.TRANSFER_OUT -> {
+                    val sellQty = tx.quantity ?: if (tx.unitPrice != null && tx.unitPrice > BigDecimal.ZERO) {
+                        tx.netAmount.divide(tx.unitPrice, 6, RoundingMode.HALF_UP)
+                    } else {
+                        BigDecimal.ZERO
+                    }
+                    val proceeds = tx.netAmount
+                    if (sellQty > BigDecimal.ZERO) {
+                        var remainingToSell = sellQty
+                        var costOfSoldShares = BigDecimal.ZERO
+
+                        for (lot in lots) {
+                            if (remainingToSell <= BigDecimal.ZERO) break
+                            if (lot.remainingQuantity <= BigDecimal.ZERO) continue
+
+                            val matchQty = lot.remainingQuantity.min(remainingToSell)
+                            val lotCost = matchQty.multiply(lot.costPerUnit)
+                            costOfSoldShares = costOfSoldShares.add(lotCost)
+
+                            lot.remainingQuantity = lot.remainingQuantity.subtract(matchQty)
+                            remainingToSell = remainingToSell.subtract(matchQty)
+                        }
+
+                        val saleGain = proceeds.subtract(costOfSoldShares).setScale(2, RoundingMode.HALF_UP)
+                        gainsMap[tx.id] = saleGain
+                    }
+                }
+
+                else -> {
+                    // Non-holding-altering transactions
+                }
+            }
+        }
+
+        return gainsMap
     }
 }
