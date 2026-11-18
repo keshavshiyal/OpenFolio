@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import com.openfolio.core.data.local.entity.AssetClass
 import com.openfolio.core.data.local.entity.TransactionType
 import com.openfolio.core.ui.theme.LocalOpenFolioColors
+import com.openfolio.core.utils.DateParser
 import com.openfolio.feature.assets.toDisplayTitle
 import java.math.BigDecimal
 import java.math.RoundingMode
@@ -59,10 +60,14 @@ fun ManualTransactionDialog(
         fees: BigDecimal,
         taxes: BigDecimal,
         notes: String?,
+        broker: String?,
+        tickerOrIsin: String?,
     ) -> Unit,
 ) {
     val colors = LocalOpenFolioColors.current
     var assetName by remember { mutableStateOf("") }
+    var tickerOrIsinText by remember { mutableStateOf("") }
+    var brokerText by remember { mutableStateOf("") }
     var selectedClass by remember { mutableStateOf(AssetClass.STOCK) }
     var classDropdownExpanded by remember { mutableStateOf(false) }
 
@@ -78,9 +83,10 @@ fun ManualTransactionDialog(
     var taxesText by remember { mutableStateOf("0") }
     var notesText by remember { mutableStateOf("") }
 
-    val isDateValid = remember(tradeDateText) {
-        runCatching { LocalDate.parse(tradeDateText.trim()) }.isSuccess
+    val parsedDate = remember(tradeDateText) {
+        DateParser.parseToLocalDate(tradeDateText)
     }
+    val isDateValid = parsedDate != null
     val qtyBigDecimal = quantityText.toBigDecimalOrNull()
     val priceBigDecimal = unitPriceText.toBigDecimalOrNull()
     val amountBigDecimal = netAmountText.toBigDecimalOrNull()
@@ -111,7 +117,43 @@ fun ManualTransactionDialog(
                 OutlinedTextField(
                     value = assetName,
                     onValueChange = { assetName = it },
-                    label = { Text("Asset Name / Symbol (e.g., INFY, HDFC)") },
+                    label = { Text("Asset Name (e.g., Reliance Industries, HDFC)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = colors.surface,
+                        unfocusedContainerColor = colors.surface,
+                        focusedBorderColor = colors.brand,
+                        unfocusedBorderColor = colors.border,
+                        focusedTextColor = colors.content,
+                        unfocusedTextColor = colors.content,
+                    ),
+                )
+
+                // Ticker / ISIN (Optional)
+                OutlinedTextField(
+                    value = tickerOrIsinText,
+                    onValueChange = { tickerOrIsinText = it },
+                    label = { Text("Ticker or ISIN (Optional, e.g., RELIANCE, INE002A01018)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = colors.surface,
+                        unfocusedContainerColor = colors.surface,
+                        focusedBorderColor = colors.brand,
+                        unfocusedBorderColor = colors.border,
+                        focusedTextColor = colors.content,
+                        unfocusedTextColor = colors.content,
+                    ),
+                )
+
+                // Broker / Institution (Optional)
+                OutlinedTextField(
+                    value = brokerText,
+                    onValueChange = { brokerText = it },
+                    label = { Text("Broker / Institution (e.g., Zerodha, Groww, HDFC)") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(8.dp),
@@ -337,7 +379,7 @@ fun ManualTransactionDialog(
         confirmButton = {
             Button(
                 onClick = {
-                    val parsedDate = LocalDate.parse(tradeDateText.trim())
+                    val resolvedDate = parsedDate ?: LocalDate.now()
                     val cleanQty = qtyBigDecimal ?: BigDecimal.ONE
                     val cleanPrice = priceBigDecimal ?: BigDecimal.ZERO
                     val cleanAmount = amountBigDecimal ?: cleanQty.multiply(cleanPrice)
@@ -348,13 +390,15 @@ fun ManualTransactionDialog(
                         assetName.trim(),
                         selectedClass,
                         selectedType,
-                        parsedDate,
+                        resolvedDate,
                         cleanQty,
                         cleanPrice,
                         cleanAmount,
                         cleanFees,
                         cleanTaxes,
                         notesText.trim().takeIf(String::isNotBlank),
+                        brokerText.trim().takeIf(String::isNotBlank),
+                        tickerOrIsinText.trim().takeIf(String::isNotBlank),
                     )
                     onDismiss()
                 },

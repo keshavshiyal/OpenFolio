@@ -126,4 +126,56 @@ class AssetNameNormalizerTest {
         assertNotNull(match3)
         assertEquals("infy", match3?.id)
     }
+
+    @Test
+    fun prioritizesIsinOverConflictingName() {
+        val relAsset = AssetEntity(
+            id = "rel",
+            displayName = "Reliance Industries",
+            assetClass = AssetClass.STOCK,
+            identifiersJson = """{"isin":"INE002A01018","ticker":"RELIANCE"}""",
+        )
+        val tcsAsset = AssetEntity(
+            id = "tcs",
+            displayName = "Tata Consultancy Services",
+            assetClass = AssetClass.STOCK,
+            identifiersJson = """{"isin":"INE467B01029","ticker":"TCS"}""",
+        )
+        val assets = listOf(relAsset, tcsAsset)
+
+        // Incoming name says "Reliance" but ISIN belongs to TCS -> ISIN takes absolute priority
+        val match = AssetNameNormalizer.findMatchingAsset("Reliance Industries", assets, isin = "INE467B01029")
+        assertNotNull(match)
+        assertEquals("tcs", match?.id)
+    }
+
+    @Test
+    fun bypassesFuzzyMatchingWhenExplicitIdentifierMismatchesExistingAssets() {
+        val relianceAsset = AssetEntity(
+            id = "rel",
+            displayName = "Reliance Industries",
+            assetClass = AssetClass.STOCK,
+            identifiersJson = """{"isin":"INE002A01018","ticker":"RELIANCE"}""",
+        )
+        val assets = listOf(relianceAsset)
+
+        // Incoming has same name "Reliance Industries" but explicitly different ISIN
+        // Should NOT match existing asset, preventing duplicate asset collision
+        val match = AssetNameNormalizer.findMatchingAsset("Reliance Industries", assets, isin = "INE999999999")
+        assertNull(match)
+    }
+
+    @Test
+    fun buildIdentifiersJsonMergesFieldsCorrectly() {
+        val json1 = AssetNameNormalizer.buildIdentifiersJson(null, isin = "INE002A01018", ticker = "RELIANCE")
+        assertNotNull(json1)
+        org.junit.Assert.assertTrue(json1!!.contains("\"isin\":\"INE002A01018\""))
+        org.junit.Assert.assertTrue(json1.contains("\"ticker\":\"RELIANCE\""))
+
+        // Updating with new ticker preserves isin
+        val json2 = AssetNameNormalizer.buildIdentifiersJson(json1, isin = null, ticker = "RIL")
+        assertNotNull(json2)
+        org.junit.Assert.assertTrue(json2!!.contains("\"isin\":\"INE002A01018\""))
+        org.junit.Assert.assertTrue(json2.contains("\"ticker\":\"RIL\""))
+    }
 }

@@ -601,8 +601,9 @@ private fun ActivityTransactionRow(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
+                    val brokerPart = tx.broker?.let { " • $it" } ?: ""
                     Text(
-                        text = "${tx.type.name} • ${tx.tradeDate.format(dateFormatter)}",
+                        text = "${tx.type.name} • ${tx.tradeDate.format(dateFormatter)}$brokerPart",
                         style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
                         color = colors.muted,
                     )
@@ -770,6 +771,10 @@ private fun TransactionDetailsSheet(
 
                     if (tx.taxes != null && tx.taxes > BigDecimal.ZERO) {
                         DetailRow(label = "Taxes", value = "₹${tx.taxes.toPlainString()}")
+                    }
+
+                    if (!tx.broker.isNullOrBlank()) {
+                        DetailRow(label = "Broker / Institution", value = tx.broker)
                     }
 
                     if (!tx.externalRef.isNullOrBlank()) {

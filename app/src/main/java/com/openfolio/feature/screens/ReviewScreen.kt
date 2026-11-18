@@ -1000,6 +1000,33 @@ private fun DraftTransactionRow(
                             modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
                         )
                     }
+                    if (!draft.broker.isNullOrBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = colors.muted.copy(alpha = 0.12f),
+                        ) {
+                            Text(
+                                text = draft.broker!!,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.muted,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+                            )
+                        }
+                    }
+                    val identifier = draft.isin ?: draft.ticker
+                    if (!identifier.isNullOrBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = colors.brand.copy(alpha = 0.08f),
+                        ) {
+                            Text(
+                                text = identifier,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.brand,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+                            )
+                        }
+                    }
                     if (item.isDuplicate) {
                         Surface(
                             shape = RoundedCornerShape(4.dp),

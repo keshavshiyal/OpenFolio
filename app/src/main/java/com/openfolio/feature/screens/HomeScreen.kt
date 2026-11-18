@@ -118,7 +118,7 @@ fun HomeScreen(
     onIngestionHandled: () -> Unit,
     onSettings: () -> Unit,
     onAddManually: () -> Unit = {},
-    onSaveManualTransaction: ((String, AssetClass, TransactionType, LocalDate, BigDecimal, BigDecimal, BigDecimal, BigDecimal, BigDecimal, String?) -> Unit)? = null,
+    onSaveManualTransaction: ((String, AssetClass, TransactionType, LocalDate, BigDecimal, BigDecimal, BigDecimal, BigDecimal, BigDecimal, String?, String?, String?) -> Unit)? = null,
 ) {
     HomeScreen(
         uiState = uiState,
@@ -146,7 +146,7 @@ fun HomeScreen(
     onIngestionHandled: () -> Unit,
     onSettings: () -> Unit,
     onAddManually: () -> Unit = {},
-    onSaveManualTransaction: ((String, AssetClass, TransactionType, LocalDate, BigDecimal, BigDecimal, BigDecimal, BigDecimal, BigDecimal, String?) -> Unit)? = null,
+    onSaveManualTransaction: ((String, AssetClass, TransactionType, LocalDate, BigDecimal, BigDecimal, BigDecimal, BigDecimal, BigDecimal, String?, String?, String?) -> Unit)? = null,
 ) {
     val colors = LocalOpenFolioColors.current
     val snackbarHostState = remember { SnackbarHostState() }
@@ -374,8 +374,8 @@ fun HomeScreen(
     if (showManualTransactionDialog) {
         ManualTransactionDialog(
             onDismiss = { showManualTransactionDialog = false },
-            onSave = { name, cls, type, date, qty, price, netAmt, fees, taxes, notes ->
-                onSaveManualTransaction?.invoke(name, cls, type, date, qty, price, netAmt, fees, taxes, notes)
+            onSave = { name, cls, type, date, qty, price, netAmt, fees, taxes, notes, broker, tickerOrIsin ->
+                onSaveManualTransaction?.invoke(name, cls, type, date, qty, price, netAmt, fees, taxes, notes, broker, tickerOrIsin)
                     ?: onAddManually()
             },
         )

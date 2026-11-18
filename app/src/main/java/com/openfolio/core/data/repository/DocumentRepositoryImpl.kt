@@ -27,8 +27,10 @@ import com.openfolio.core.domain.calculator.FifoCostBasisCalculator
 import com.openfolio.core.domain.repository.DocumentRepository
 import com.openfolio.core.domain.repository.DuplicateDocumentException
 import com.openfolio.core.domain.repository.DuplicateMatchInfo
+import com.openfolio.core.domain.repository.DuplicateTransactionException
 import com.openfolio.core.domain.repository.SaveDraftTransactionsResult
 import com.openfolio.core.utils.AssetNameNormalizer
+import com.openfolio.core.utils.DateParser
 import com.openfolio.core.utils.DocumentTextExtractor
 import com.openfolio.core.utils.StructuredFileParser
 import com.openfolio.core.utils.StructuredTable
@@ -169,14 +171,33 @@ class DocumentRepositoryImpl @Inject constructor(
                     LocalDate.ofEpochDay(Math.floorDiv(it, MILLIS_PER_DAY))
                 } ?: fallbackDate
 
-                val matchedAsset = AssetNameNormalizer.findMatchingAsset(draft.assetName, existingAssets)
-                val assetId = matchedAsset?.id ?: AssetNameNormalizer.normalize(draft.assetName)
+                val isin = draft.isin?.takeIf(String::isNotBlank)
+                    ?: AssetNameNormalizer.extractIsin(draft.assetName)
+                val ticker = draft.ticker?.takeIf(String::isNotBlank)
+
+                val matchedAsset = AssetNameNormalizer.findMatchingAsset(
+                    rawName = draft.assetName,
+                    existingAssets = existingAssets,
+                    identifier = isin ?: ticker,
+                    isin = isin,
+                    ticker = ticker,
+                )
+                val assetId = matchedAsset?.id ?: when {
+                    isin != null -> isin.uppercase()
+                    ticker != null -> ticker.uppercase()
+                    else -> AssetNameNormalizer.normalize(draft.assetName).ifBlank { UUID.randomUUID().toString() }
+                }
                 val fingerprint = createTransactionFingerprint(
                     assetId = assetId,
+                    isin = isin,
+                    ticker = ticker,
+                    assetName = draft.assetName,
                     transactionType = draft.transactionType,
                     quantity = draft.quantity,
+                    unitPrice = draft.price,
                     netAmount = draft.netAmount,
                     date = resolvedTradeDate.toEpochDay(),
+                    broker = draft.broker,
                 )
 
                 // PRE-CHECK: Explicitly check if it exists
@@ -218,6 +239,7 @@ class DocumentRepositoryImpl @Inject constructor(
                     ?: database.assetDao().getById(assetId)
 
                 if (targetAsset == null) {
+                    val idJson = AssetNameNormalizer.buildIdentifiersJson("{}", isin, ticker)
                     val newAsset = AssetEntity(
                         id = assetId,
                         displayName = draft.assetName.trim(),
@@ -227,16 +249,31 @@ class DocumentRepositoryImpl @Inject constructor(
                         totalInvested = BigDecimal.ZERO,
                         averageCost = BigDecimal.ZERO,
                         realizedPnL = BigDecimal.ZERO,
+                        identifiersJson = idJson,
                         status = AssetStatus.ACTIVE,
                     )
                     database.assetDao().insert(newAsset)
                     existingAssets.add(newAsset)
-                } else if (targetAsset.totalQuantity.compareTo(BigDecimal.ZERO) == 0 && targetAsset.assetClass == AssetClass.STOCK && draftAssetClass != AssetClass.STOCK) {
-                    val updatedAsset = targetAsset.copy(assetClass = draftAssetClass)
-                    database.assetDao().update(updatedAsset)
-                    val idx = existingAssets.indexOfFirst { it.id == targetAsset.id }
-                    if (idx >= 0) {
-                        existingAssets[idx] = updatedAsset
+                } else {
+                    var updatedAsset = targetAsset
+                    var changed = false
+                    if (targetAsset.totalQuantity.compareTo(BigDecimal.ZERO) == 0 && targetAsset.assetClass == AssetClass.STOCK && draftAssetClass != AssetClass.STOCK) {
+                        updatedAsset = updatedAsset.copy(assetClass = draftAssetClass)
+                        changed = true
+                    }
+                    if (isin != null || ticker != null) {
+                        val merged = AssetNameNormalizer.buildIdentifiersJson(updatedAsset.identifiersJson, isin, ticker)
+                        if (merged != updatedAsset.identifiersJson) {
+                            updatedAsset = updatedAsset.copy(identifiersJson = merged)
+                            changed = true
+                        }
+                    }
+                    if (changed) {
+                        database.assetDao().update(updatedAsset)
+                        val idx = existingAssets.indexOfFirst { it.id == targetAsset.id }
+                        if (idx >= 0) {
+                            existingAssets[idx] = updatedAsset
+                        }
                     }
                 }
 
@@ -269,6 +306,7 @@ class DocumentRepositoryImpl @Inject constructor(
                     documentId = document.id,
                     sourcePage = null,
                     confidence = draft.confidence / 100.0,
+                    broker = draft.broker?.trim(),
                 )
                 transactionsToInsert.add(newTransaction)
                 touchedAssetIds.add(assetId)
@@ -335,14 +373,33 @@ class DocumentRepositoryImpl @Inject constructor(
                 LocalDate.ofEpochDay(Math.floorDiv(it, MILLIS_PER_DAY))
             } ?: fallbackDate
 
-            val matchedAsset = AssetNameNormalizer.findMatchingAsset(draft.assetName, existingAssets)
-            val assetId = matchedAsset?.id ?: AssetNameNormalizer.normalize(draft.assetName)
+            val isin = draft.isin?.takeIf(String::isNotBlank)
+                ?: AssetNameNormalizer.extractIsin(draft.assetName)
+            val ticker = draft.ticker?.takeIf(String::isNotBlank)
+
+            val matchedAsset = AssetNameNormalizer.findMatchingAsset(
+                rawName = draft.assetName,
+                existingAssets = existingAssets,
+                identifier = isin ?: ticker,
+                isin = isin,
+                ticker = ticker,
+            )
+            val assetId = matchedAsset?.id ?: when {
+                isin != null -> isin.uppercase()
+                ticker != null -> ticker.uppercase()
+                else -> AssetNameNormalizer.normalize(draft.assetName)
+            }
             val fingerprint = createTransactionFingerprint(
                 assetId = assetId,
+                isin = isin,
+                ticker = ticker,
+                assetName = draft.assetName,
                 transactionType = draft.transactionType,
                 quantity = draft.quantity,
+                unitPrice = draft.price,
                 netAmount = draft.netAmount,
                 date = resolvedTradeDate.toEpochDay(),
+                broker = draft.broker,
             )
 
             // 1. Exact fingerprint match
@@ -372,6 +429,17 @@ class DocumentRepositoryImpl @Inject constructor(
             val contentMatch = candidates.firstOrNull { ex ->
                 val typeMatches = ex.type.name.equals(draft.transactionType, ignoreCase = true)
                 if (!typeMatches) return@firstOrNull false
+
+                // Broker check: must match if present on either
+                val brokerMatches = if (draft.broker.isNullOrBlank() && ex.broker.isNullOrBlank()) {
+                    true
+                } else {
+                    ex.broker?.trim().equals(draft.broker?.trim(), ignoreCase = true)
+                }
+                if (!brokerMatches) return@firstOrNull false
+
+                val dateMatches = ex.tradeDate == resolvedTradeDate
+                if (!dateMatches) return@firstOrNull false
 
                 val qtyMatches = draftQty != null && ex.quantity != null &&
                     ex.quantity.compareTo(draftQty) == 0
@@ -431,6 +499,7 @@ class DocumentRepositoryImpl @Inject constructor(
             require(textChunks.isNotEmpty()) { "No extracted text is available to process." }
 
             val aggregatedDrafts = mutableListOf<DraftTransactionEntity>()
+            val seenDraftSignatures = mutableSetOf<String>()
             for (chunk in textChunks) {
                 val drafts = try {
                     val result = aiProvider.extractTransactions(
@@ -454,7 +523,21 @@ class DocumentRepositoryImpl @Inject constructor(
                     }
                     throw AiExtractionException(e.localizedMessage ?: "Unknown AI error", e)
                 }
-                aggregatedDrafts.addAll(drafts)
+                for (draft in drafts) {
+                    // Deduplicate drafts that appear across overlapping chunks
+                    val sig = listOf(
+                        AssetNameNormalizer.normalize(draft.assetName),
+                        draft.transactionType.trim().uppercase(),
+                        draft.tradeDate?.toString().orEmpty(),
+                        draft.quantity.replace(",", "").trim(),
+                        draft.netAmount.replace(",", "").trim(),
+                        draft.broker?.trim()?.uppercase().orEmpty(),
+                        draft.isin?.trim()?.uppercase().orEmpty(),
+                    ).joinToString("|")
+                    if (seenDraftSignatures.add(sig)) {
+                        aggregatedDrafts.add(draft)
+                    }
+                }
             }
 
             val adjustedDrafts = aggregatedDrafts.map { draft ->
@@ -731,6 +814,8 @@ class DocumentRepositoryImpl @Inject constructor(
                     parseMappedDate(row.getOrNull(index).orEmpty())
                 },
                 assetClass = document.assetClass,
+                broker = mapping.brokerName.trim().takeIf(String::isNotBlank),
+                isin = AssetNameNormalizer.extractIsin(assetName),
             )
         }
     }
@@ -816,26 +901,9 @@ class DocumentRepositoryImpl @Inject constructor(
 
     private fun parseMappedDate(value: String): Long? {
         val date = value.trim().takeIf(String::isNotEmpty) ?: return null
-        val formats = listOf(
-            DateTimeFormatter.ISO_LOCAL_DATE,
-            DateTimeFormatter.ofPattern("d/M/uuuu"),
-            DateTimeFormatter.ofPattern("d-M-uuuu"),
-            DateTimeFormatter.ofPattern("M/d/uuuu"),
-        )
-        formats.forEach { format ->
-            try {
-                return LocalDate.parse(date, format).atStartOfDay()
-                    .toInstant(java.time.ZoneOffset.UTC).toEpochMilli()
-            } catch (_: DateTimeParseException) {
-                Unit
-            }
+        return DateParser.parseToEpochMilli(date) ?: run {
+            throw IllegalArgumentException("A transaction row has an invalid date value: $value")
         }
-        val excelSerial = date.toBigDecimalOrNull()?.toLong()
-        require(excelSerial != null && excelSerial in 1..100_000) {
-            "A transaction row has an invalid date value."
-        }
-        return LocalDate.of(1899, 12, 30).plusDays(excelSerial).atStartOfDay()
-            .toInstant(java.time.ZoneOffset.UTC).toEpochMilli()
     }
 
     private data class FileMetadata(
@@ -843,30 +911,38 @@ class DocumentRepositoryImpl @Inject constructor(
         val fileSize: Long?,
     )
 
-    internal fun splitIntoSemanticChunks(text: String, maxChunkSize: Int = AI_CHUNK_SIZE): List<String> {
+    internal fun splitIntoSemanticChunks(
+        text: String,
+        maxChunkSize: Int = AI_CHUNK_SIZE,
+        overlapSize: Int = AI_CHUNK_OVERLAP,
+    ): List<String> {
         if (text.length <= maxChunkSize) return listOf(text)
 
         val chunks = mutableListOf<String>()
         var startIndex = 0
 
         while (startIndex < text.length) {
-            val endIndex = minOf(startIndex + maxChunkSize, text.length)
-            if (endIndex == text.length) {
-                chunks.add(text.substring(startIndex))
+            val remaining = text.length - startIndex
+            if (remaining <= maxChunkSize) {
+                val lastChunk = text.substring(startIndex).trim()
+                if (lastChunk.isNotBlank()) chunks.add(lastChunk)
                 break
             }
 
+            val targetEnd = startIndex + maxChunkSize
+            val minSplitPoint = startIndex + (maxChunkSize / 3)
+
             val pageDelimiter = "--- PAGE "
-            val pageIndex = text.lastIndexOf(pageDelimiter, endIndex)
+            val pageIndex = text.lastIndexOf(pageDelimiter, targetEnd)
             val chosenSplit = when {
-                pageIndex > startIndex + (maxChunkSize / 3) -> pageIndex
+                pageIndex > minSplitPoint -> pageIndex
                 else -> {
-                    val doubleNewline = text.lastIndexOf("\n\n", endIndex)
-                    if (doubleNewline > startIndex + (maxChunkSize / 3)) {
+                    val doubleNewline = text.lastIndexOf("\n\n", targetEnd)
+                    if (doubleNewline > minSplitPoint) {
                         doubleNewline + 2
                     } else {
-                        val singleNewline = text.lastIndexOf('\n', endIndex)
-                        if (singleNewline > startIndex + (maxChunkSize / 3)) singleNewline + 1 else endIndex
+                        val singleNewline = text.lastIndexOf('\n', targetEnd)
+                        if (singleNewline > minSplitPoint) singleNewline + 1 else targetEnd
                     }
                 }
             }
@@ -875,7 +951,24 @@ class DocumentRepositoryImpl @Inject constructor(
             if (chunk.isNotBlank()) {
                 chunks.add(chunk)
             }
-            startIndex = chosenSplit
+
+            // Calculate next start index with overlap
+            val nextStart = chosenSplit - overlapSize
+            if (nextStart <= startIndex) {
+                startIndex = chosenSplit
+            } else {
+                val overlapPage = text.indexOf(pageDelimiter, nextStart)
+                if (overlapPage in nextStart until chosenSplit) {
+                    startIndex = overlapPage
+                } else {
+                    val lineStart = text.indexOf('\n', nextStart)
+                    if (lineStart in nextStart until chosenSplit) {
+                        startIndex = lineStart + 1
+                    } else {
+                        startIndex = nextStart
+                    }
+                }
+            }
         }
 
         return chunks.ifEmpty { listOf(text) }
@@ -884,7 +977,8 @@ class DocumentRepositoryImpl @Inject constructor(
     private companion object {
         const val DOCUMENTS_DIRECTORY = "documents"
         const val UNKNOWN_FILE_NAME = "unknown_file"
-        const val AI_CHUNK_SIZE = 30_000
+        const val AI_CHUNK_SIZE = 120_000
+        const val AI_CHUNK_OVERLAP = 6_000
         const val MILLIS_PER_DAY = 86_400_000L
         val SUPPORTED_EXTENSIONS = setOf("pdf", "csv", "xlsx", "png", "jpg", "jpeg")
         val STRUCTURED_EXTENSIONS = setOf("csv", "xlsx")
@@ -910,12 +1004,25 @@ internal fun createTransactionFingerprint(
     netAmount: String,
     date: Long,
     assetId: String = "",
+    isin: String? = null,
+    ticker: String? = null,
+    unitPrice: String? = null,
+    broker: String? = null,
 ): String {
+    val cleanIsin = isin?.trim()?.uppercase()?.takeIf(String::isNotBlank)
+        ?: AssetNameNormalizer.extractIsin(assetName)
+        ?: AssetNameNormalizer.extractIsin(assetId)
+
+    val cleanTicker = ticker?.trim()?.uppercase()?.takeIf(String::isNotBlank)
+
     val identifier = when {
+        cleanIsin != null -> cleanIsin
+        cleanTicker != null -> cleanTicker
         assetId.isNotBlank() -> AssetNameNormalizer.normalize(assetId)
         assetName.isNotBlank() -> AssetNameNormalizer.normalize(assetName)
         else -> ""
     }
+
     val cleanQty = quantity.replace(",", "").replace("₹", "").trim()
     val normQty = runCatching {
         BigDecimal(cleanQty).stripTrailingZeros().toPlainString()
@@ -926,13 +1033,33 @@ internal fun createTransactionFingerprint(
         BigDecimal(cleanAmount).setScale(2, RoundingMode.HALF_UP).toPlainString()
     }.getOrDefault(cleanAmount)
 
+    val cleanPrice = unitPrice?.replace(",", "")?.replace("₹", "")?.trim()?.takeIf(String::isNotBlank)
+    val normPrice = if (cleanPrice != null) {
+        runCatching {
+            BigDecimal(cleanPrice).setScale(2, RoundingMode.HALF_UP).toPlainString()
+        }.getOrDefault(cleanPrice)
+    } else {
+        val q = runCatching { BigDecimal(cleanQty) }.getOrNull()
+        val a = runCatching { BigDecimal(cleanAmount) }.getOrNull()
+        if (q != null && a != null && q.compareTo(BigDecimal.ZERO) != 0) {
+            a.divide(q, 2, RoundingMode.HALF_UP).toPlainString()
+        } else {
+            ""
+        }
+    }
+
+    val normBroker = broker?.trim()?.uppercase().orEmpty()
+
     val normalized = listOf(
         identifier,
         transactionType.trim().uppercase(),
         normQty,
+        normPrice,
         normAmount,
         date.toString(),
+        normBroker,
     ).joinToString("|")
+
     return MessageDigest.getInstance("SHA-256")
         .digest(normalized.toByteArray(Charsets.UTF_8))
         .toLowerHex()

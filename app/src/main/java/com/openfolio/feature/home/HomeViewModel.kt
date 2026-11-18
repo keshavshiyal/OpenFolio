@@ -154,6 +154,8 @@ class HomeViewModel @Inject constructor(
         fees: BigDecimal = BigDecimal.ZERO,
         taxes: BigDecimal = BigDecimal.ZERO,
         notes: String? = null,
+        broker: String? = null,
+        tickerOrIsin: String? = null,
     ) {
         viewModelScope.launch {
             _ingestionState.value = IngestionState.Loading
@@ -169,6 +171,8 @@ class HomeViewModel @Inject constructor(
                     fees = fees,
                     taxes = taxes,
                     notes = notes,
+                    broker = broker,
+                    tickerOrIsin = tickerOrIsin,
                 )
                 _ingestionState.value = IngestionState.Success("Manual: $assetName")
             } catch (t: Throwable) {

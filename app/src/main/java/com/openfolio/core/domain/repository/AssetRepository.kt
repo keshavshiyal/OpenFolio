@@ -21,6 +21,7 @@ interface AssetRepository {
     suspend fun deleteAsset(assetId: String)
     suspend fun saveAsset(asset: AssetEntity) {}
     suspend fun updateAsset(asset: AssetEntity) {}
+    suspend fun updateAssetDisplayName(assetId: String, newDisplayName: String) {}
     suspend fun recordManualTransaction(
         assetName: String,
         assetClass: AssetClass,
@@ -32,6 +33,8 @@ interface AssetRepository {
         fees: BigDecimal = BigDecimal.ZERO,
         taxes: BigDecimal = BigDecimal.ZERO,
         notes: String? = null,
+        broker: String? = null,
+        tickerOrIsin: String? = null,
     ): TransactionEntity {
         throw UnsupportedOperationException("Manual transaction not implemented in this repository.")
     }

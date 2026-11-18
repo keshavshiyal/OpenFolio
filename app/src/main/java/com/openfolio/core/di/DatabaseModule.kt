@@ -45,6 +45,7 @@ object DatabaseModule {
             .addMigrations(
                 OpenFolioDatabase.MIGRATION_11_12,
                 OpenFolioDatabase.MIGRATION_12_13,
+                OpenFolioDatabase.MIGRATION_13_14,
             )
             .fallbackToDestructiveMigration()
             .openHelperFactory(SupportFactory(passphraseProvider.getPassphrase()))

@@ -242,6 +242,25 @@ class AssetDetailViewModel @Inject constructor(
         }
     }
 
+    fun updateDisplayName(newDisplayName: String) {
+        val trimmed = newDisplayName.trim()
+        if (trimmed.isBlank()) {
+            _errorMessage.value = "Asset name cannot be blank."
+            return
+        }
+        val currentAsset = uiState.value.asset ?: return
+        viewModelScope.launch {
+            _isSaving.value = true
+            try {
+                assetRepository.updateAssetDisplayName(currentAsset.id, trimmed)
+            } catch (e: Exception) {
+                _errorMessage.value = e.message ?: "Failed to update asset name"
+            } finally {
+                _isSaving.value = false
+            }
+        }
+    }
+
     fun updateAssetMetadata(identifiersJson: String, detailsJson: String) {
         val currentAsset = uiState.value.asset ?: return
         viewModelScope.launch {

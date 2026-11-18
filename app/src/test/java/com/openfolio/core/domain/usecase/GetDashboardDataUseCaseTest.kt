@@ -259,6 +259,7 @@ class GetDashboardDataUseCaseTest {
             realizedPnL: BigDecimal,
             timestamp: Long,
         ) = Unit
+        override suspend fun updateDisplayName(id: String, displayName: String, updatedAt: Long) = Unit
         override fun getTotalPortfolioValueFlow(): Flow<BigDecimal?> = flowOf(
             portfolioValue ?: assets.filter { it.status == com.openfolio.core.data.local.entity.AssetStatus.ACTIVE }
                 .map { it.totalInvested }

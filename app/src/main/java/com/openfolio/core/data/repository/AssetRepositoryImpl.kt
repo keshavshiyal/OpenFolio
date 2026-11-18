@@ -16,6 +16,7 @@ import com.openfolio.core.data.local.entity.TransactionType
 import com.openfolio.core.domain.calculator.FifoCostBasisCalculator
 import com.openfolio.core.domain.calculator.RecalculationResult
 import com.openfolio.core.domain.repository.AssetRepository
+import com.openfolio.core.domain.repository.DuplicateTransactionException
 import com.openfolio.core.utils.AssetNameNormalizer
 import java.math.BigDecimal
 import java.time.LocalDate
@@ -104,6 +105,14 @@ class AssetRepositoryImpl(
         }
     }
 
+    override suspend fun updateAssetDisplayName(assetId: String, newDisplayName: String): Unit = withContext(Dispatchers.IO) {
+        val trimmed = newDisplayName.trim()
+        require(trimmed.isNotBlank()) { "Display name must not be blank" }
+        runTransaction {
+            assetDao.updateDisplayName(assetId, trimmed)
+        }
+    }
+
     override suspend fun recordManualTransaction(
         assetName: String,
         assetClass: AssetClass,
@@ -115,23 +124,45 @@ class AssetRepositoryImpl(
         fees: BigDecimal,
         taxes: BigDecimal,
         notes: String?,
+        broker: String?,
+        tickerOrIsin: String?,
     ): TransactionEntity = withContext(Dispatchers.IO) {
         var createdTransaction: TransactionEntity? = null
         runTransaction {
-            val existingAssets = assetDao.getAllOnce()
-            val matched = AssetNameNormalizer.findMatchingAsset(assetName, existingAssets)
-            val assetId = matched?.id ?: AssetNameNormalizer.normalize(assetName).ifBlank { UUID.randomUUID().toString() }
+            val existingAssets = assetDao.getAllOnce().toMutableList()
 
-            database.accountDao().insert(
-                AccountEntity(
-                    id = "default_account",
-                    name = "Default Account",
-                    type = AccountType.BROKER,
-                    currency = "INR",
-                ),
+            val isin = tickerOrIsin?.takeIf { AssetNameNormalizer.extractIsin(it) != null }
+                ?: AssetNameNormalizer.extractIsin(assetName)
+            val ticker = tickerOrIsin?.takeIf { AssetNameNormalizer.extractIsin(it) == null }?.trim()?.uppercase()
+
+            // Deduplicate asset prioritizing ISIN or Ticker as absolute unique identifier
+            val matched = AssetNameNormalizer.findMatchingAsset(
+                rawName = assetName,
+                existingAssets = existingAssets,
+                identifier = tickerOrIsin,
+                isin = isin,
+                ticker = ticker,
             )
 
+            val assetId = matched?.id ?: when {
+                isin != null -> isin.uppercase()
+                ticker != null -> ticker.uppercase()
+                else -> AssetNameNormalizer.normalize(assetName).ifBlank { UUID.randomUUID().toString() }
+            }
+
+            runCatching {
+                database.accountDao()?.insert(
+                    AccountEntity(
+                        id = "default_account",
+                        name = "Default Account",
+                        type = AccountType.BROKER,
+                        currency = "INR",
+                    ),
+                )
+            }
+
             if (matched == null && assetDao.getById(assetId) == null) {
+                val idJson = AssetNameNormalizer.buildIdentifiersJson("{}", isin, ticker)
                 val newAsset = AssetEntity(
                     id = assetId,
                     displayName = assetName.trim(),
@@ -141,12 +172,41 @@ class AssetRepositoryImpl(
                     totalInvested = BigDecimal.ZERO,
                     averageCost = BigDecimal.ZERO,
                     realizedPnL = BigDecimal.ZERO,
+                    identifiersJson = idJson,
                     status = AssetStatus.ACTIVE,
                 )
                 assetDao.insert(newAsset)
+                existingAssets.add(newAsset)
+            } else if (matched != null && (isin != null || ticker != null)) {
+                val curIds = matched.identifiersJson
+                val merged = AssetNameNormalizer.buildIdentifiersJson(curIds, isin, ticker)
+                if (merged != curIds) {
+                    val updated = matched.copy(identifiersJson = merged)
+                    assetDao.update(updated)
+                }
             }
 
-            val fingerprint = "MANUAL_${assetId}_${type.name}_${tradeDate.toEpochDay()}_${System.currentTimeMillis()}"
+            // Fingerprint with ISIN/Ticker and Broker
+            val fingerprint = createTransactionFingerprint(
+                assetId = assetId,
+                isin = isin,
+                ticker = ticker,
+                assetName = assetName,
+                transactionType = type.name,
+                quantity = quantity.toPlainString(),
+                unitPrice = unitPrice.toPlainString(),
+                netAmount = netAmount.toPlainString(),
+                date = tradeDate.toEpochDay(),
+                broker = broker,
+            )
+
+            // Deduplication check: duplicate if asset, type, date, quantity, price, AND broker match
+            if (transactionDao.containsFingerprint(fingerprint)) {
+                throw DuplicateTransactionException(
+                    "A matching transaction already exists for $assetName (${type.name} on $tradeDate via ${broker ?: "Default Broker"})."
+                )
+            }
+
             val transaction = TransactionEntity(
                 id = UUID.randomUUID().toString(),
                 accountId = "default_account",
@@ -161,6 +221,7 @@ class AssetRepositoryImpl(
                 netAmount = netAmount,
                 currency = "INR",
                 notes = notes,
+                broker = broker?.trim(),
                 fingerprint = fingerprint,
                 status = TransactionStatus.CONFIRMED,
                 confidence = 1.0,

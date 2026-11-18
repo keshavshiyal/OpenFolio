@@ -238,4 +238,49 @@ class GeminiAiProviderTest {
         assertEquals("1234.56789012345", results[0].price)
         assertEquals("178765.4321098765", results[0].netAmount)
     }
+
+    @Test
+    fun parseJsonResponseExtractsBrokerIsinAndTicker() {
+        val json = """
+            [
+              {
+                "assetName": "Reliance Industries Limited",
+                "assetClass": "STOCK",
+                "transactionType": "BUY",
+                "quantity": "50",
+                "price": "2450.00",
+                "netAmount": "122500.00",
+                "tradeDate": "2024-05-10 14:30:00",
+                "isin": "INE002A01018",
+                "ticker": "RELIANCE",
+                "broker": "Zerodha",
+                "confidence": 98
+              }
+            ]
+        """.trimIndent()
+
+        val results = provider.parseJsonResponse(json, "doc-broker-isin")
+        assertEquals(1, results.size)
+        val draft = results[0]
+        assertEquals("Reliance Industries Limited", draft.assetName)
+        assertEquals("INE002A01018", draft.isin)
+        assertEquals("RELIANCE", draft.ticker)
+        assertEquals("Zerodha", draft.broker)
+        assertNotNull(draft.tradeDate)
+    }
+
+    @Test
+    fun parseTradeDateGracefullyStripsTimestamps() {
+        val parsed1 = provider.parseTradeDate("2024-05-10 14:30:00")
+        assertNotNull("ISO with time", parsed1)
+
+        val parsed2 = provider.parseTradeDate("12-03-2025 14:30:00")
+        assertNotNull("DD-MM-YYYY with time", parsed2)
+
+        val parsed3 = provider.parseTradeDate("12/03/2025 09:15:30.123")
+        assertNotNull("DD/MM/YYYY with millis", parsed3)
+
+        val parsed4 = provider.parseTradeDate("2024-05-10T14:30:00Z")
+        assertNotNull("ISO with T and Z", parsed4)
+    }
 }

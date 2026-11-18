@@ -87,32 +87,43 @@ object AssetNameNormalizer {
 
     /**
      * Attempts to find an existing AssetEntity in the database matching the given raw name
-     * using exact identifier matching (ISIN, ticker), exact normalized matching, token containment,
-     * and Levenshtein similarity.
+     * prioritizing ISIN and ticker as absolute unique identifiers, then falling back to
+     * exact normalized matching, token containment, and Levenshtein similarity.
      */
     fun findMatchingAsset(
         rawName: String,
         existingAssets: List<AssetEntity>,
         identifier: String? = null,
+        isin: String? = null,
+        ticker: String? = null,
     ): AssetEntity? {
         if (existingAssets.isEmpty()) return null
 
-        // 0. Primary check: ISIN match (100% precision)
-        val queryIsin = identifier?.takeIf(String::isNotBlank)?.let(::extractIsin) ?: extractIsin(rawName)
+        // 0. Primary check: ISIN match (Absolute priority: 100% precision)
+        val queryIsin = isin?.takeIf(String::isNotBlank)?.let(::extractIsin)
+            ?: identifier?.takeIf(String::isNotBlank)?.let(::extractIsin)
+            ?: extractIsin(rawName)
+
         if (queryIsin != null) {
             val isinMatch = existingAssets.firstOrNull { asset ->
-                asset.identifiersJson.contains(queryIsin, ignoreCase = true) ||
-                    asset.id.equals(queryIsin, ignoreCase = true)
+                asset.id.equals(queryIsin, ignoreCase = true) ||
+                    extractIsin(asset.displayName).equals(queryIsin, ignoreCase = true) ||
+                    asset.identifiersJson.contains(queryIsin, ignoreCase = true)
             }
             if (isinMatch != null) return isinMatch
         }
 
-        // Ticker / symbol check
-        val cleanIdentifier = identifier?.trim()?.uppercase()
-        if (!cleanIdentifier.isNullOrBlank()) {
+        // 1. Secondary check: Ticker match (Absolute unique symbol match)
+        val cleanTicker = ticker?.trim()?.uppercase()?.takeIf(String::isNotBlank)
+            ?: identifier?.takeIf { extractIsin(it) == null }?.trim()?.uppercase()?.takeIf(String::isNotBlank)
+
+        if (cleanTicker != null) {
             val tickerMatch = existingAssets.firstOrNull { asset ->
-                asset.identifiersJson.contains("\"ticker\":\"$cleanIdentifier\"", ignoreCase = true) ||
-                    asset.id.equals(cleanIdentifier, ignoreCase = true)
+                asset.id.equals(cleanTicker, ignoreCase = true) ||
+                    asset.displayName.trim().equals(cleanTicker, ignoreCase = true) ||
+                    asset.identifiersJson.contains("\"ticker\":\"$cleanTicker\"", ignoreCase = true) ||
+                    asset.identifiersJson.contains("\"ticker\": \"$cleanTicker\"", ignoreCase = true) ||
+                    asset.identifiersJson.contains("\"tokenSymbol\":\"$cleanTicker\"", ignoreCase = true)
             }
             if (tickerMatch != null) return tickerMatch
         }
@@ -120,18 +131,49 @@ object AssetNameNormalizer {
         val normalized = normalize(rawName)
         if (normalized.isBlank()) return null
 
-        // 1. Exact match on id or normalized displayName
-        val exactMatch = existingAssets.firstOrNull { asset ->
+        // Filter out assets that have conflicting ISIN or Ticker identifiers
+        val candidates = existingAssets.filterNot { asset ->
+            if (queryIsin != null) {
+                val existingIsin = extractIsin(asset.id)
+                    ?: extractIsin(asset.displayName)
+                    ?: extractIsin(asset.identifiersJson)
+                if (existingIsin != null && !existingIsin.equals(queryIsin, ignoreCase = true)) {
+                    return@filterNot true
+                }
+            }
+            if (cleanTicker != null) {
+                val existingTicker = runCatching {
+                    val obj = org.json.JSONObject(asset.identifiersJson)
+                    obj.optString("ticker").takeIf(String::isNotBlank)
+                }.getOrNull()
+                if (existingTicker != null && !existingTicker.equals(cleanTicker, ignoreCase = true)) {
+                    return@filterNot true
+                }
+            }
+            false
+        }
+        if (candidates.isEmpty()) return null
+
+        // 2. Exact match on id or normalized displayName
+        val exactMatch = candidates.firstOrNull { asset ->
             asset.id.equals(normalized, ignoreCase = true) ||
                 normalize(asset.displayName).equals(normalized, ignoreCase = true) ||
                 normalize(asset.id).equals(normalized, ignoreCase = true)
         }
         if (exactMatch != null) return exactMatch
 
+        // 3. Fallback to fuzzy name matching ONLY if NO unique identifiers were specified
+        val hasExplicitIdentifier = queryIsin != null || cleanTicker != null
+        if (hasExplicitIdentifier) {
+            // An explicit ISIN or Ticker was specified but did not match existing assets.
+            // Do NOT perform fuzzy matching that could mistakenly conflate different securities.
+            return null
+        }
+
         val inputTokens = normalized.split("_").filter { it.isNotBlank() }.toSet()
 
-        // 2. Token overlap / Jaccard similarity (for cases with reordered or matching word sets)
-        val tokenMatch = existingAssets.firstOrNull { asset ->
+        // 4. Token overlap / Jaccard similarity (for cases with reordered or matching word sets)
+        val tokenMatch = candidates.firstOrNull { asset ->
             val assetTokens = normalize(asset.displayName).split("_").filter { it.isNotBlank() }.toSet()
             if (assetTokens.isEmpty()) return@firstOrNull false
             if (assetTokens == inputTokens) return@firstOrNull true
@@ -142,8 +184,8 @@ object AssetNameNormalizer {
         }
         if (tokenMatch != null) return tokenMatch
 
-        // 3. Levenshtein edit distance similarity for minor typo tolerance
-        return existingAssets.firstOrNull { asset ->
+        // 5. Levenshtein edit distance similarity for minor typo tolerance
+        return candidates.firstOrNull { asset ->
             val assetNorm = normalize(asset.displayName)
             if (assetNorm.length >= 4 && normalized.length >= 4) {
                 val dist = levenshteinDistance(normalized, assetNorm)
@@ -154,6 +196,24 @@ object AssetNameNormalizer {
                 false
             }
         }
+    }
+
+    /**
+     * Builds or merges identifiers into JSON string.
+     */
+    fun buildIdentifiersJson(
+        existingJson: String? = "{}",
+        isin: String? = null,
+        ticker: String? = null,
+    ): String {
+        val obj = runCatching { org.json.JSONObject(existingJson ?: "{}") }.getOrDefault(org.json.JSONObject())
+        isin?.trim()?.uppercase()?.takeIf(String::isNotBlank)?.let {
+            obj.put("isin", it)
+        }
+        ticker?.trim()?.uppercase()?.takeIf(String::isNotBlank)?.let {
+            obj.put("ticker", it)
+        }
+        return obj.toString()
     }
 
     internal fun levenshteinSimilarity(s1: String, s2: String): Double {

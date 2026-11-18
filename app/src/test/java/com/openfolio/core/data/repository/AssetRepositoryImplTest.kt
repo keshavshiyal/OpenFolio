@@ -12,14 +12,17 @@ import com.openfolio.core.data.local.entity.LotEntity
 import com.openfolio.core.data.local.entity.TransactionEntity
 import com.openfolio.core.data.local.entity.TransactionStatus
 import com.openfolio.core.data.local.entity.TransactionType
+import com.openfolio.core.domain.repository.DuplicateTransactionException
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertThrows
 import org.junit.Before
 import org.junit.Test
 import org.mockito.kotlin.any
 import org.mockito.kotlin.argumentCaptor
 import org.mockito.kotlin.doAnswer
+import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
 import org.mockito.kotlin.verify
@@ -33,6 +36,7 @@ class AssetRepositoryImplTest {
     private val assetDao = mock<AssetDao>()
     private val transactionDao = mock<TransactionDao>()
     private val lotDao = mock<LotDao>()
+    private val accountDao = mock<com.openfolio.core.data.local.dao.AccountDao>()
 
     private lateinit var repository: AssetRepositoryImpl
 
@@ -64,9 +68,11 @@ class AssetRepositoryImplTest {
 
     @Before
     fun setUp() = runTest {
+        whenever(database.accountDao()).thenReturn(accountDao)
         whenever(assetDao.getById("asset_rel")).thenReturn(sampleAsset)
         whenever(transactionDao.getByAssetIdOnce("asset_rel")).thenReturn(listOf(sampleTxn))
         whenever(transactionDao.getById("txn_1")).thenReturn(sampleTxn)
+        whenever(transactionDao.containsFingerprint(any())).thenReturn(false)
 
         repository = AssetRepositoryImpl(
             database = database,
@@ -123,5 +129,61 @@ class AssetRepositoryImplTest {
         assertEquals(0, BigDecimal.ZERO.compareTo(savedAsset.totalInvested))
         assertEquals(0, BigDecimal.ZERO.compareTo(savedAsset.averageCost))
         assertEquals(AssetStatus.CLOSED, savedAsset.status)
+    }
+
+    @Test
+    fun updateAssetDisplayNameCallsDao() = runTest {
+        repository.updateAssetDisplayName("asset_rel", "Reliance Industries Limited")
+        verify(assetDao).updateDisplayName(
+            eq("asset_rel"),
+            eq("Reliance Industries Limited"),
+            any(),
+        )
+    }
+
+    @Test
+    fun recordManualTransactionThrowsDuplicateTransactionExceptionWhenFingerprintMatches() = runTest {
+        whenever(assetDao.getAllOnce()).thenReturn(listOf(sampleAsset))
+        whenever(transactionDao.containsFingerprint(any())).thenReturn(true)
+
+        assertThrows(DuplicateTransactionException::class.java) {
+            kotlinx.coroutines.runBlocking {
+                repository.recordManualTransaction(
+                    assetName = "Reliance Industries",
+                    assetClass = AssetClass.STOCK,
+                    type = TransactionType.BUY,
+                    tradeDate = LocalDate.of(2024, 1, 1),
+                    quantity = BigDecimal("100"),
+                    unitPrice = BigDecimal("2500"),
+                    netAmount = BigDecimal("250000"),
+                    broker = "Zerodha",
+                )
+            }
+        }
+    }
+
+    @Test
+    fun recordManualTransactionSucceedsAndStoresBrokerWhenNotDuplicate() = runTest {
+        whenever(assetDao.getAllOnce()).thenReturn(listOf(sampleAsset))
+        whenever(transactionDao.containsFingerprint(any())).thenReturn(false)
+        whenever(assetDao.getById("asset_rel")).thenReturn(sampleAsset)
+        whenever(transactionDao.getByAssetIdOnce("asset_rel")).thenReturn(listOf(sampleTxn))
+
+        val createdTxn = repository.recordManualTransaction(
+            assetName = "Reliance Industries",
+            assetClass = AssetClass.STOCK,
+            type = TransactionType.BUY,
+            tradeDate = LocalDate.of(2024, 2, 1),
+            quantity = BigDecimal("50"),
+            unitPrice = BigDecimal("2600"),
+            netAmount = BigDecimal("130000"),
+            broker = "Groww",
+            tickerOrIsin = "INE002A01018",
+        )
+
+        assertNotNull(createdTxn)
+        assertEquals("Groww", createdTxn.broker)
+        assertEquals("asset_rel", createdTxn.assetId)
+        verify(transactionDao).insert(createdTxn)
     }
 }

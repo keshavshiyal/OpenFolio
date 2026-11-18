@@ -61,6 +61,7 @@ data class TransactionEntity(
     val documentId: String? = null,
     val sourcePage: Int? = null,
     val confidence: Double? = null,
+    val broker: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
 )

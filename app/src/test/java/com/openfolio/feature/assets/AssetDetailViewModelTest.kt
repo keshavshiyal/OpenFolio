@@ -70,6 +70,8 @@ class AssetDetailViewModelTest {
     private var updatedAsset: AssetEntity? = null
     private var deletedTxnId: String? = null
     private var deletedAssetId: String? = null
+    private var updatedDisplayNameId: String? = null
+    private var updatedDisplayNameValue: String? = null
     private var shouldFailUpdate = false
 
     private val fakeRepository = object : AssetRepository {
@@ -95,6 +97,12 @@ class AssetDetailViewModelTest {
         override suspend fun updateAsset(asset: AssetEntity) {
             updatedAsset = asset
         }
+        override suspend fun updateAssetDisplayName(assetId: String, newDisplayName: String) {
+            if (shouldFailUpdate) throw RuntimeException("Database error updating display name")
+            updatedDisplayNameId = assetId
+            updatedDisplayNameValue = newDisplayName
+            assetFlow.value = assetFlow.value?.copy(displayName = newDisplayName)
+        }
     }
 
     @Before
@@ -105,6 +113,8 @@ class AssetDetailViewModelTest {
         updatedTxn = null
         deletedTxnId = null
         deletedAssetId = null
+        updatedDisplayNameId = null
+        updatedDisplayNameValue = null
         shouldFailUpdate = false
     }
 
@@ -284,5 +294,34 @@ class AssetDetailViewModelTest {
 
         assertNotNull(updatedAsset)
         assertEquals(AssetClass.MUTUAL_FUND, updatedAsset?.assetClass)
+    }
+
+    @Test
+    fun updateDisplayNameSuccessfullyUpdatesRepositoryAndState() = runTest {
+        val viewModel = createViewModel()
+        viewModel.loadAsset("asset_rel")
+        advanceUntilIdle()
+
+        viewModel.updateDisplayName("Reliance Industries Limited (RIL)")
+        advanceUntilIdle()
+
+        assertEquals("asset_rel", updatedDisplayNameId)
+        assertEquals("Reliance Industries Limited (RIL)", updatedDisplayNameValue)
+        assertEquals("Reliance Industries Limited (RIL)", viewModel.uiState.value.asset?.displayName)
+        assertNull(viewModel.uiState.value.errorMessage)
+    }
+
+    @Test
+    fun updateDisplayNameWithBlankNameShowsErrorWithoutCallingRepository() = runTest {
+        val viewModel = createViewModel()
+        viewModel.loadAsset("asset_rel")
+        advanceUntilIdle()
+
+        viewModel.updateDisplayName("   ")
+        advanceUntilIdle()
+
+        assertNull(updatedDisplayNameId)
+        assertNotNull(viewModel.uiState.value.errorMessage)
+        assertEquals("Asset name cannot be blank.", viewModel.uiState.value.errorMessage)
     }
 }

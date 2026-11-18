@@ -53,6 +53,9 @@ interface AssetDao {
         timestamp: Long,
     )
 
+    @Query("UPDATE asset SET displayName = :displayName, updatedAt = :updatedAt WHERE id = :id")
+    suspend fun updateDisplayName(id: String, displayName: String, updatedAt: Long = System.currentTimeMillis())
+
     @Query("SELECT SUM(totalInvested) FROM asset WHERE status = 'ACTIVE'")
     fun getTotalPortfolioValueFlow(): Flow<BigDecimal?>
 }

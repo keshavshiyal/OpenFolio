@@ -135,6 +135,109 @@ class DocumentRepositoryImplTest {
     }
 
     @Test
+    fun transactionFingerprintIncludesBrokerAndDistinguishesBrokers() {
+        val fpZerodha = createTransactionFingerprint(
+            assetName = "Reliance",
+            transactionType = "BUY",
+            quantity = "10",
+            unitPrice = "2500.00",
+            netAmount = "25000.00",
+            date = 20_000L,
+            broker = "Zerodha",
+        )
+        val fpGroww = createTransactionFingerprint(
+            assetName = "Reliance",
+            transactionType = "BUY",
+            quantity = "10",
+            unitPrice = "2500.00",
+            netAmount = "25000.00",
+            date = 20_000L,
+            broker = "Groww",
+        )
+        val fpNoBroker = createTransactionFingerprint(
+            assetName = "Reliance",
+            transactionType = "BUY",
+            quantity = "10",
+            unitPrice = "2500.00",
+            netAmount = "25000.00",
+            date = 20_000L,
+            broker = null,
+        )
+
+        // Same asset, type, date, quantity, price, but DIFFERENT broker -> DIFFERENT fingerprint
+        assertTrue(fpZerodha != fpGroww)
+        assertTrue(fpZerodha != fpNoBroker)
+
+        // Matching broker produces identical fingerprint
+        val fpZerodhaMatch = createTransactionFingerprint(
+            assetName = "reliance",
+            transactionType = "buy",
+            quantity = "10.00",
+            unitPrice = "2500",
+            netAmount = "25000",
+            date = 20_000L,
+            broker = "zerodha",
+        )
+        assertEquals(fpZerodha, fpZerodhaMatch)
+    }
+
+    @Test
+    fun transactionFingerprintDifferentiatesByIsinAndTicker() {
+        val fpWithIsin1 = createTransactionFingerprint(
+            assetName = "Company A",
+            transactionType = "BUY",
+            quantity = "10",
+            unitPrice = "100.00",
+            netAmount = "1000.00",
+            date = 20_000L,
+            isin = "INE001A01010",
+        )
+        val fpWithIsin2 = createTransactionFingerprint(
+            assetName = "Company A",
+            transactionType = "BUY",
+            quantity = "10",
+            unitPrice = "100.00",
+            netAmount = "1000.00",
+            date = 20_000L,
+            isin = "INE002A01018",
+        )
+
+        assertTrue(fpWithIsin1 != fpWithIsin2)
+    }
+
+    @Test
+    fun splitIntoSemanticChunksProducesOverlappingChunksForLargeStatements() {
+        val repository = DocumentRepositoryImpl(
+            documentDao = mock(),
+            columnMappingDao = mock(),
+            draftTransactionDao = mock(),
+            transactionDao = mock(),
+            database = mock(),
+            documentTextExtractor = mock(),
+            structuredFileParser = mock(),
+            settingsRepository = mock(),
+            aiProvider = mock(),
+            applicationScope = mock(),
+        )
+
+        val page1 = "--- PAGE 1 ---\nTransaction 1: Bought 10 units at 500\n"
+        val page2 = "--- PAGE 2 ---\nTransaction 2: Bought 20 units at 600\n"
+        val page3 = "--- PAGE 3 ---\nTransaction 3: Sold 5 units at 700\n"
+        val fullText = page1 + page2 + page3
+
+        val chunks = repository.splitIntoSemanticChunks(
+            text = fullText,
+            maxChunkSize = 55,
+            overlapSize = 15,
+        )
+
+        assertTrue("Should split into multiple chunks", chunks.size > 1)
+        assertTrue("Chunk 1 should contain page 1 info", chunks.any { it.contains("Transaction 1") })
+        assertTrue("Chunk should contain page 2 info", chunks.any { it.contains("Transaction 2") })
+        assertTrue("Chunk should contain page 3 info", chunks.any { it.contains("Transaction 3") })
+    }
+
+    @Test
     fun ingestFileThrowsWhenHashAlreadyExists() {
         val dao = mock<DocumentDao>()
         val context = mock<Context>()
@@ -790,7 +893,7 @@ class DocumentRepositoryImplTest {
         val fileBytes = "cams statement".toByteArray()
 
         whenever(context.contentResolver).thenReturn(resolver)
-        whenever(context.filesDir).thenReturn(java.io.File(System.getProperty("java.io.tmpdir")))
+        whenever(context.filesDir).thenReturn(java.io.File(System.getProperty("java.io.tmpdir") ?: "."))
         whenever(
             resolver.query(
                 eq(uri),

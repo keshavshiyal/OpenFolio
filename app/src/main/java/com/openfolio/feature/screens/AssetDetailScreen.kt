@@ -75,6 +75,7 @@ import com.openfolio.core.data.local.entity.TransactionType
 import com.openfolio.core.ui.components.MoneyText
 import com.openfolio.core.ui.components.MoneyTextStyle
 import com.openfolio.core.ui.theme.LocalOpenFolioColors
+import com.openfolio.core.utils.DateParser
 import com.openfolio.feature.assets.AssetDetailUiState
 import com.openfolio.feature.assets.AssetDetailViewModel
 import com.openfolio.feature.assets.toDisplayTitle
@@ -98,6 +99,7 @@ fun AssetDetailScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     var showMenu by remember { mutableStateOf(false) }
     var showDeleteAssetConfirm by remember { mutableStateOf(false) }
+    var showRenameDialog by remember { mutableStateOf(false) }
     var showSellDialog by remember { mutableStateOf(false) }
     var showChangeAssetClassDialog by remember { mutableStateOf(false) }
 
@@ -148,6 +150,13 @@ fun AssetDetailScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = { showRenameDialog = true }) {
+                        Icon(
+                            imageVector = Icons.Filled.Edit,
+                            contentDescription = "Rename Asset",
+                            tint = colors.content,
+                        )
+                    }
                     IconButton(onClick = viewModel::toggleValuesVisibility) {
                         Icon(
                             imageVector = if (uiState.showValues) Icons.Filled.Visibility else Icons.Filled.VisibilityOff,
@@ -168,6 +177,18 @@ fun AssetDetailScreen(
                             onDismissRequest = { showMenu = false },
                             modifier = Modifier.background(colors.surface),
                         ) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = "Rename Asset",
+                                        color = colors.content,
+                                    )
+                                },
+                                onClick = {
+                                    showMenu = false
+                                    showRenameDialog = true
+                                },
+                            )
                             DropdownMenuItem(
                                 text = {
                                     Text(
@@ -256,6 +277,18 @@ fun AssetDetailScreen(
                 onDismiss = { showChangeAssetClassDialog = false },
                 onConfirm = { newClass ->
                     viewModel.updateAssetClass(newClass)
+                },
+            )
+        }
+
+        // Rename Asset Dialog
+        if (showRenameDialog && uiState.asset != null) {
+            RenameAssetDialog(
+                currentName = uiState.asset!!.displayName,
+                onDismiss = { showRenameDialog = false },
+                onConfirm = { newName ->
+                    showRenameDialog = false
+                    viewModel.updateDisplayName(newName)
                 },
             )
         }
@@ -822,8 +855,9 @@ private fun TransactionLedgerRow(
                 } else {
                     "Manual"
                 }
+                val brokerSuffix = transaction.broker?.let { " • $it" } ?: ""
                 Text(
-                    text = provenanceText,
+                    text = "$provenanceText$brokerSuffix",
                     style = typography.labelSmall,
                     color = colors.muted,
                 )
@@ -939,6 +973,7 @@ private fun EditTransactionDialog(
     var netAmountText by remember { mutableStateOf(transaction.netAmount.stripTrailingZeros().toPlainString()) }
     var feesText by remember { mutableStateOf(transaction.fees?.stripTrailingZeros()?.toPlainString() ?: "0") }
     var taxesText by remember { mutableStateOf(transaction.taxes?.stripTrailingZeros()?.toPlainString() ?: "0") }
+    var brokerText by remember { mutableStateOf(transaction.broker.orEmpty()) }
     var notesText by remember { mutableStateOf(transaction.notes ?: "") }
 
     var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -1147,6 +1182,24 @@ private fun EditTransactionDialog(
                     ),
                 )
 
+                // Broker
+                OutlinedTextField(
+                    value = brokerText,
+                    onValueChange = { brokerText = it },
+                    label = { Text("Broker / Institution (Optional)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = colors.surface,
+                        unfocusedContainerColor = colors.surface,
+                        focusedBorderColor = colors.brand,
+                        unfocusedBorderColor = colors.border,
+                        focusedTextColor = colors.content,
+                        unfocusedTextColor = colors.content,
+                    ),
+                )
+
                 // Notes
                 OutlinedTextField(
                     value = notesText,
@@ -1170,10 +1223,9 @@ private fun EditTransactionDialog(
         confirmButton = {
             Button(
                 onClick = {
-                    val parsedDate = try {
-                        LocalDate.parse(tradeDateText.trim())
-                    } catch (e: DateTimeParseException) {
-                        errorMessage = "Invalid date format. Use YYYY-MM-DD."
+                    val parsedDate = DateParser.parseToLocalDate(tradeDateText.trim())
+                    if (parsedDate == null) {
+                        errorMessage = "Invalid date format. Use YYYY-MM-DD or DD-MM-YYYY."
                         return@Button
                     }
 
@@ -1202,6 +1254,7 @@ private fun EditTransactionDialog(
                         fees = cleanFees,
                         taxes = cleanTaxes,
                         netAmount = cleanNetAmount,
+                        broker = brokerText.trim().ifEmpty { null },
                         notes = notesText.trim().ifEmpty { null },
                         updatedAt = System.currentTimeMillis(),
                     )
@@ -1272,6 +1325,85 @@ private fun DeleteTransactionConfirmDialog(
                 ),
             ) {
                 Text("Delete")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = colors.muted)
+            }
+        },
+        containerColor = colors.surface,
+    )
+}
+
+@Composable
+private fun RenameAssetDialog(
+    currentName: String,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    val colors = LocalOpenFolioColors.current
+    var nameText by remember { mutableStateOf(currentName) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "Rename Asset",
+                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                color = colors.content,
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                errorMessage?.let { error ->
+                    Text(
+                        text = error,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.lossGlyph,
+                    )
+                }
+                OutlinedTextField(
+                    value = nameText,
+                    onValueChange = {
+                        nameText = it
+                        if (it.isNotBlank()) errorMessage = null
+                    },
+                    label = { Text("Display Name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = colors.surface,
+                        unfocusedContainerColor = colors.surface,
+                        focusedBorderColor = colors.brand,
+                        unfocusedBorderColor = colors.border,
+                        focusedTextColor = colors.content,
+                        unfocusedTextColor = colors.content,
+                    ),
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val trimmed = nameText.trim()
+                    if (trimmed.isEmpty()) {
+                        errorMessage = "Asset name cannot be empty."
+                        return@Button
+                    }
+                    onConfirm(trimmed)
+                },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = colors.brand,
+                    contentColor = colors.onAccent,
+                ),
+            ) {
+                Text("Save")
             }
         },
         dismissButton = {

@@ -5,6 +5,8 @@ import com.google.ai.client.generativeai.GenerativeModel
 import com.google.ai.client.generativeai.type.content
 import com.google.ai.client.generativeai.type.generationConfig
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
+import com.openfolio.core.utils.AssetNameNormalizer
+import com.openfolio.core.utils.DateParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -82,6 +84,11 @@ class GeminiAiProvider @Inject constructor() : AiProvider {
             val tradeDateStr = obj.optString("tradeDate", "").trim()
             val confidence = obj.optInt("confidence", 85).coerceIn(0, 100)
 
+            val broker = obj.optString("broker", "").trim().takeIf(String::isNotBlank)
+            val rawIsin = obj.optString("isin", "").trim().takeIf(String::isNotBlank)
+            val ticker = obj.optString("ticker", "").trim().uppercase().takeIf(String::isNotBlank)
+            val isin = rawIsin?.let(AssetNameNormalizer::extractIsin) ?: AssetNameNormalizer.extractIsin(assetName)
+
             val tradeDateMillis = parseTradeDate(tradeDateStr)
 
             transactions.add(
@@ -98,6 +105,9 @@ class GeminiAiProvider @Inject constructor() : AiProvider {
                     isManual = false,
                     tradeDate = tradeDateMillis,
                     assetClass = assetClass,
+                    broker = broker,
+                    isin = isin,
+                    ticker = ticker,
                 ),
             )
         }
@@ -119,29 +129,13 @@ class GeminiAiProvider @Inject constructor() : AiProvider {
         }.getOrDefault(stringValue)
     }
 
-    internal fun parseTradeDate(tradeDateStr: String): Long? {
-        val date = tradeDateStr.trim().takeIf(String::isNotEmpty) ?: return null
-        val formatters = listOf(
-            DateTimeFormatter.ISO_LOCAL_DATE,
-            DateTimeFormatter.ofPattern("d/M/uuuu"),
-            DateTimeFormatter.ofPattern("d-M-uuuu"),
-            DateTimeFormatter.ofPattern("M/d/uuuu"),
-        )
-        for (formatter in formatters) {
-            try {
-                val localDate = LocalDate.parse(date, formatter)
-                return localDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
-            } catch (_: Exception) {
-                // try next format
-            }
-        }
-        return null
-    }
+    internal fun parseTradeDate(tradeDateStr: String): Long? =
+        DateParser.parseToEpochMilli(tradeDateStr)
 
     companion object {
         fun buildSystemPrompt(today: String = LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE)): String =
             """
-            You are an expert financial parser. Extract all transactions and holdings from the provided text. Return ONLY a valid JSON array of objects without markdown formatting like ```json.
+            You are an expert financial parser. Extract all transactions and holdings from the provided text exhaustively. Return ONLY a valid JSON array of objects without markdown formatting like ```json.
 
             CRITICAL: If the provided text does not contain financial transactions, stock holdings, or bank statements (e.g., it is a random letter, invoice, or unrelated document), you MUST return an empty JSON array: [].
 
@@ -152,7 +146,10 @@ class GeminiAiProvider @Inject constructor() : AiProvider {
             - quantity (string): Numeric quantity of shares/units as a string (e.g., "10", "144.8"). Never output floating point approximations or scientific notation.
             - price (string): Price per share/unit or average cost basis as a string.
             - netAmount (string): Total transaction amount or current/invested value as a string.
-            - tradeDate (string): Transaction date in YYYY-MM-DD format. The tradeDate field is mandatory in the JSON schema. If you are processing a Holdings Statement (which lacks transaction dates), you must use the current date ($today) in YYYY-MM-DD format.
+            - tradeDate (string): Transaction date in YYYY-MM-DD format. The tradeDate field is mandatory in the JSON schema. You MUST gracefully strip any time component (e.g., "12-03-2025 14:30:00" -> "2025-03-12"). If you are processing a Holdings Statement (which lacks transaction dates), you must use the current date ($today) in YYYY-MM-DD format.
+            - isin (string, optional): 12-character International Securities Identification Number starting with two letters (e.g., "INE002A01018", "INF209K01157"). Extract aggressively wherever present in the text, scheme name, or security details.
+            - ticker (string, optional): Trading symbol or ticker (e.g., "RELIANCE", "INFY", "HDFCBANK"). Extract aggressively wherever present.
+            - broker (string, optional): Broker, financial institution, or depository where the transaction was executed (e.g., "Zerodha", "Groww", "HDFC Bank", "CAMS", "KFintech", "ICICI Direct").
             - confidence (integer 0-100): Assign a confidence score of 95-100 if you clearly find the asset name, quantity, and price. Assign 80-94 if one field is missing. Assign below 80 only if the data is ambiguous.
             """.trimIndent()
 
