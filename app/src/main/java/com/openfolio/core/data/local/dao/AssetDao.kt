@@ -28,6 +28,12 @@ interface AssetDao {
     @Query("SELECT * FROM asset WHERE id = :id LIMIT 1")
     suspend fun getById(id: String): AssetEntity?
 
+    @Query("SELECT * FROM asset WHERE id = :id LIMIT 1")
+    fun observeById(id: String): Flow<AssetEntity?>
+
+    @Query("DELETE FROM asset WHERE id = :id")
+    suspend fun deleteById(id: String)
+
     @Query("SELECT * FROM asset ORDER BY displayName ASC")
     fun getAll(): Flow<List<AssetEntity>>
 

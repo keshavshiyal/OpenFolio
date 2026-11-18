@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.openfolio.core.data.local.entity.DocumentEntity
+import com.openfolio.core.data.repository.SettingsRepository
 import com.openfolio.core.domain.model.DashboardData
 import com.openfolio.core.domain.repository.DocumentRepository
 import com.openfolio.core.domain.repository.DuplicateDocumentException
@@ -28,8 +29,9 @@ class HomeViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val documentRepository: DocumentRepository,
     private val getDashboardDataUseCase: GetDashboardDataUseCase,
+    private val settingsRepository: SettingsRepository? = null,
 ) : ViewModel() {
-    private val _showValues = MutableStateFlow(true)
+    private val _localShowValues = MutableStateFlow(true)
     private val _selectedPeriod = MutableStateFlow("1M")
 
     private val _ingestionState = MutableStateFlow<IngestionState>(IngestionState.Idle)
@@ -42,7 +44,7 @@ class HomeViewModel @Inject constructor(
 
     val uiState: StateFlow<HomeUiState> = combine(
         getDashboardDataUseCase(),
-        _showValues,
+        settingsRepository?.showValuesFlow ?: _localShowValues,
         _selectedPeriod,
     ) { data, showValues, period ->
         currentDashboardData = data
@@ -62,7 +64,13 @@ class HomeViewModel @Inject constructor(
     }
 
     fun toggleValuesVisibility() {
-        _showValues.update { !it }
+        if (settingsRepository != null) {
+            viewModelScope.launch {
+                settingsRepository.toggleShowValues()
+            }
+        } else {
+            _localShowValues.update { !it }
+        }
     }
 
     fun selectPeriod(period: String) {

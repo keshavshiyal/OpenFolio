@@ -15,6 +15,7 @@ data class AssetEntity(
     val totalInvested: BigDecimal = BigDecimal.ZERO,
     val averageCost: BigDecimal = BigDecimal.ZERO,
     val realizedPnL: BigDecimal = BigDecimal.ZERO,
+    val currentPrice: BigDecimal? = null,
     val identifiersJson: String = "{}",
     val detailsJson: String = "{}",
     val status: AssetStatus = AssetStatus.ACTIVE,

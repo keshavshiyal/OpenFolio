@@ -31,4 +31,7 @@ interface LotDao {
 
     @Query("SELECT * FROM lot WHERE assetId = :assetId AND remainingQuantity > 0 ORDER BY acquiredDate ASC")
     fun getActiveLotsByAssetId(assetId: String): Flow<List<LotEntity>>
+
+    @Query("DELETE FROM lot WHERE assetId = :assetId")
+    suspend fun deleteByAssetId(assetId: String)
 }

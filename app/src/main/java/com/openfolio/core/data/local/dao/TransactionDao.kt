@@ -34,6 +34,9 @@ interface TransactionDao {
     @Delete
     suspend fun delete(transaction: TransactionEntity)
 
+    @Query("DELETE FROM txn WHERE id = :id")
+    suspend fun deleteById(id: String)
+
     @Query("SELECT * FROM txn WHERE fingerprint = :fingerprint LIMIT 1")
     suspend fun getByFingerprint(fingerprint: String): TransactionEntity?
 

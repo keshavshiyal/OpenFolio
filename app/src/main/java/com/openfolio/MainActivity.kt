@@ -9,6 +9,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.core.view.WindowCompat
 import com.openfolio.core.ui.theme.OpenFolioTheme
+import com.openfolio.feature.assets.AssetDetailViewModel
+import com.openfolio.feature.assets.AssetsViewModel
 import com.openfolio.feature.home.HomeViewModel
 import com.openfolio.feature.inbox.InboxViewModel
 import com.openfolio.feature.navigation.OpenFolioApp
@@ -19,6 +21,8 @@ import dagger.hilt.android.AndroidEntryPoint
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
     private val homeViewModel: HomeViewModel by viewModels()
+    private val assetsViewModel: AssetsViewModel by viewModels()
+    private val assetDetailViewModel: AssetDetailViewModel by viewModels()
     private val inboxViewModel: InboxViewModel by viewModels()
     private val reviewViewModel: ReviewViewModel by viewModels()
     private val settingsViewModel: SettingsViewModel by viewModels()
@@ -31,6 +35,8 @@ class MainActivity : ComponentActivity() {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     OpenFolioApp(
                         homeViewModel = homeViewModel,
+                        assetsViewModel = assetsViewModel,
+                        assetDetailViewModel = assetDetailViewModel,
                         inboxViewModel = inboxViewModel,
                         reviewViewModel = reviewViewModel,
                         settingsViewModel = settingsViewModel,

@@ -25,8 +25,12 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.openfolio.core.ui.theme.LocalOpenFolioColors
+import com.openfolio.feature.assets.AssetDetailViewModel
+import com.openfolio.feature.assets.AssetsViewModel
 import com.openfolio.feature.home.HomeViewModel
 import com.openfolio.feature.inbox.InboxViewModel
+import com.openfolio.feature.screens.AssetDetailScreen
+import com.openfolio.feature.screens.AssetsScreen
 import com.openfolio.feature.screens.EmptyScreen
 import com.openfolio.feature.screens.HomeScreen
 import com.openfolio.feature.screens.InboxScreen
@@ -36,10 +40,13 @@ import com.openfolio.feature.settings.SettingsViewModel
 import com.openfolio.feature.review.ReviewViewModel
 
 private const val REVIEW_ROUTE = "review/{documentId}"
+private const val ASSET_DETAIL_ROUTE = "asset_detail/{assetId}"
 
 @Composable
 fun OpenFolioApp(
     homeViewModel: HomeViewModel,
+    assetsViewModel: AssetsViewModel,
+    assetDetailViewModel: AssetDetailViewModel,
     inboxViewModel: InboxViewModel,
     reviewViewModel: ReviewViewModel,
     settingsViewModel: SettingsViewModel,
@@ -62,7 +69,7 @@ fun OpenFolioApp(
         containerColor = colors.background,
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
-            if (currentRoute != REVIEW_ROUTE) {
+            if (currentRoute != REVIEW_ROUTE && currentRoute?.startsWith("asset_detail") != true) {
                 NavigationBar(
                     modifier = Modifier.drawBehind {
                         val strokeWidth = 1.dp.toPx()
@@ -130,11 +137,27 @@ fun OpenFolioApp(
                 )
             }
             composable(AppDestination.Assets.route) {
-                EmptyScreen(
-                    destination = AppDestination.Assets,
-                    message = "No assets yet. Import a statement or add one manually.",
-                    actionLabel = "Import a statement",
-                    onAction = { navController.navigate(AppDestination.Inbox.route) },
+                AssetsScreen(
+                    viewModel = assetsViewModel,
+                    onAssetClick = { assetId ->
+                        navController.navigate("asset_detail/$assetId")
+                    },
+                    onImportClick = {
+                        navController.navigate(AppDestination.Inbox.route)
+                    },
+                )
+            }
+            composable(
+                route = ASSET_DETAIL_ROUTE,
+                arguments = listOf(navArgument("assetId") { type = NavType.StringType }),
+            ) { entry ->
+                val assetId = entry.arguments?.getString("assetId").orEmpty()
+                LaunchedEffect(assetId) {
+                    assetDetailViewModel.loadAsset(assetId)
+                }
+                AssetDetailScreen(
+                    viewModel = assetDetailViewModel,
+                    onBack = { navController.popBackStack() },
                 )
             }
             composable(AppDestination.Activity.route) {

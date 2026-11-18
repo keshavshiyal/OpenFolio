@@ -156,6 +156,7 @@ class GetDashboardDataUseCaseTest {
         override suspend fun insertAll(transactions: List<TransactionEntity>) = Unit
         override suspend fun update(transaction: TransactionEntity) = Unit
         override suspend fun delete(transaction: TransactionEntity) = Unit
+        override suspend fun deleteById(id: String) = Unit
         override suspend fun getByFingerprint(fingerprint: String): TransactionEntity? = null
         override suspend fun containsFingerprint(fingerprint: String): Boolean = false
         override suspend fun getById(id: String): TransactionEntity? = null
@@ -243,6 +244,9 @@ class GetDashboardDataUseCaseTest {
         override suspend fun delete(asset: com.openfolio.core.data.local.entity.AssetEntity) = Unit
         override suspend fun getById(id: String): com.openfolio.core.data.local.entity.AssetEntity? =
             assets.firstOrNull { it.id == id }
+        override fun observeById(id: String): Flow<com.openfolio.core.data.local.entity.AssetEntity?> =
+            flowOf(assets.firstOrNull { it.id == id })
+        override suspend fun deleteById(id: String) = Unit
         override fun getAll(): Flow<List<com.openfolio.core.data.local.entity.AssetEntity>> = flowOf(assets)
         override suspend fun getAllOnce(): List<com.openfolio.core.data.local.entity.AssetEntity> = assets
         override fun getByAssetClass(assetClass: com.openfolio.core.data.local.entity.AssetClass): Flow<List<com.openfolio.core.data.local.entity.AssetEntity>> =

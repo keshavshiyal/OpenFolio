@@ -16,6 +16,8 @@ import com.openfolio.core.data.local.dao.TransactionDao
 import com.openfolio.core.data.local.dao.ValuationDao
 import com.openfolio.core.data.local.export.DatabaseExporter
 import com.openfolio.core.data.local.export.DatabaseExporterImpl
+import com.openfolio.core.data.repository.AssetRepositoryImpl
+import com.openfolio.core.domain.repository.AssetRepository
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -40,6 +42,7 @@ object DatabaseModule {
             OpenFolioDatabase::class.java,
             "openfolio.db",
         )
+            .addMigrations(OpenFolioDatabase.MIGRATION_11_12)
             .fallbackToDestructiveMigration()
             .openHelperFactory(SupportFactory(passphraseProvider.getPassphrase()))
             .build()
@@ -89,4 +92,14 @@ object DatabaseModule {
     @Singleton
     fun provideDatabaseExporter(database: OpenFolioDatabase): DatabaseExporter =
         DatabaseExporterImpl(database)
+
+    @Provides
+    @Singleton
+    fun provideAssetRepository(
+        database: OpenFolioDatabase,
+        assetDao: AssetDao,
+        transactionDao: TransactionDao,
+        lotDao: LotDao,
+    ): AssetRepository =
+        AssetRepositoryImpl(database, assetDao, transactionDao, lotDao)
 }
