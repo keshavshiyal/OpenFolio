@@ -69,6 +69,8 @@ import com.openfolio.core.data.local.entity.AssetClass
 import com.openfolio.core.data.local.entity.TransactionEntity
 import com.openfolio.core.data.local.entity.TransactionType
 import com.openfolio.core.ui.components.AssetTypeSelectionBottomSheet
+import com.openfolio.core.ui.components.ImportOptionsBottomSheet
+import com.openfolio.core.ui.components.ManualTransactionDialog
 import com.openfolio.core.ui.components.MoneyText
 import com.openfolio.core.ui.components.MoneyTextStyle
 import com.openfolio.core.ui.theme.LocalOpenFolioColors
@@ -79,6 +81,7 @@ import com.openfolio.feature.home.HomeViewModel
 import com.openfolio.feature.home.IngestionState
 import com.openfolio.feature.navigation.AppDestination
 import java.math.BigDecimal
+import java.time.LocalDate
 
 @Composable
 fun HomeScreen(
@@ -100,6 +103,7 @@ fun HomeScreen(
         onIngestionHandled = viewModel::clearIngestionState,
         onSettings = onSettings,
         onAddManually = onAddManually,
+        onSaveManualTransaction = viewModel::recordManualTransaction,
     )
 }
 
@@ -114,6 +118,7 @@ fun HomeScreen(
     onIngestionHandled: () -> Unit,
     onSettings: () -> Unit,
     onAddManually: () -> Unit = {},
+    onSaveManualTransaction: ((String, AssetClass, TransactionType, LocalDate, BigDecimal, BigDecimal, BigDecimal, BigDecimal, BigDecimal, String?) -> Unit)? = null,
 ) {
     HomeScreen(
         uiState = uiState,
@@ -125,6 +130,7 @@ fun HomeScreen(
         onIngestionHandled = onIngestionHandled,
         onSettings = onSettings,
         onAddManually = onAddManually,
+        onSaveManualTransaction = onSaveManualTransaction,
     )
 }
 
@@ -140,10 +146,13 @@ fun HomeScreen(
     onIngestionHandled: () -> Unit,
     onSettings: () -> Unit,
     onAddManually: () -> Unit = {},
+    onSaveManualTransaction: ((String, AssetClass, TransactionType, LocalDate, BigDecimal, BigDecimal, BigDecimal, BigDecimal, BigDecimal, String?) -> Unit)? = null,
 ) {
     val colors = LocalOpenFolioColors.current
     val snackbarHostState = remember { SnackbarHostState() }
+    var showImportOptionsSheet by remember { mutableStateOf(false) }
     var showAssetTypeSheet by remember { mutableStateOf(false) }
+    var showManualTransactionDialog by remember { mutableStateOf(false) }
     var pendingAssetClass by remember { mutableStateOf(AssetClass.STOCK) }
 
     val documentPicker = rememberLauncherForActivityResult(
@@ -201,7 +210,7 @@ fun HomeScreen(
                 ExtendedFloatingActionButton(
                     onClick = {
                         if (ingestionState != IngestionState.Loading) {
-                            showAssetTypeSheet = true
+                            showImportOptionsSheet = true
                         }
                     },
                     icon = {
@@ -249,11 +258,11 @@ fun HomeScreen(
                         actionLabel = "Import",
                         onAction = {
                             if (ingestionState != IngestionState.Loading) {
-                                showAssetTypeSheet = true
+                                showImportOptionsSheet = true
                             }
                         },
                         secondaryActionLabel = "Add Manually",
-                        onSecondaryAction = onAddManually,
+                        onSecondaryAction = { showManualTransactionDialog = true },
                         showTitle = false,
                     )
                 }
@@ -337,6 +346,20 @@ fun HomeScreen(
         }
     }
 
+    if (showImportOptionsSheet) {
+        ImportOptionsBottomSheet(
+            onDismissRequest = { showImportOptionsSheet = false },
+            onSelectImportStatements = {
+                showImportOptionsSheet = false
+                showAssetTypeSheet = true
+            },
+            onSelectManualEntry = {
+                showImportOptionsSheet = false
+                showManualTransactionDialog = true
+            },
+        )
+    }
+
     if (showAssetTypeSheet) {
         AssetTypeSelectionBottomSheet(
             onDismissRequest = { showAssetTypeSheet = false },
@@ -344,6 +367,16 @@ fun HomeScreen(
                 pendingAssetClass = selectedClass
                 showAssetTypeSheet = false
                 documentPicker.launch(DOCUMENT_MIME_TYPES)
+            },
+        )
+    }
+
+    if (showManualTransactionDialog) {
+        ManualTransactionDialog(
+            onDismiss = { showManualTransactionDialog = false },
+            onSave = { name, cls, type, date, qty, price, netAmt, fees, taxes, notes ->
+                onSaveManualTransaction?.invoke(name, cls, type, date, qty, price, netAmt, fees, taxes, notes)
+                    ?: onAddManually()
             },
         )
     }

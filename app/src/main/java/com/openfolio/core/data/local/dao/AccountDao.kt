@@ -28,4 +28,7 @@ interface AccountDao {
 
     @Query("SELECT * FROM account ORDER BY name ASC")
     fun getAll(): Flow<List<AccountEntity>>
+
+    @Query("SELECT * FROM account ORDER BY name ASC")
+    suspend fun getAllOnce(): List<AccountEntity>
 }

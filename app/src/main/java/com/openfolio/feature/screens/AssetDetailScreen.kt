@@ -98,6 +98,8 @@ fun AssetDetailScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     var showMenu by remember { mutableStateOf(false) }
     var showDeleteAssetConfirm by remember { mutableStateOf(false) }
+    var showSellDialog by remember { mutableStateOf(false) }
+    var showChangeAssetClassDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(uiState.isDeleted) {
         if (uiState.isDeleted) {
@@ -169,6 +171,32 @@ fun AssetDetailScreen(
                             DropdownMenuItem(
                                 text = {
                                     Text(
+                                        text = "Change Asset Class",
+                                        color = colors.content,
+                                    )
+                                },
+                                onClick = {
+                                    showMenu = false
+                                    showChangeAssetClassDialog = true
+                                },
+                            )
+                            if (uiState.asset != null && uiState.asset!!.totalQuantity > BigDecimal.ZERO) {
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = "Record Sale / Exit",
+                                            color = colors.brand,
+                                        )
+                                    },
+                                    onClick = {
+                                        showMenu = false
+                                        showSellDialog = true
+                                    },
+                                )
+                            }
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
                                         text = "Delete Asset",
                                         color = colors.lossGlyph,
                                     )
@@ -202,10 +230,33 @@ fun AssetDetailScreen(
                 onEditTransaction = viewModel::startEditTransaction,
                 onDeleteTransaction = viewModel::startDeleteTransaction,
                 onDeleteAsset = { showDeleteAssetConfirm = true },
+                onSellClick = { showSellDialog = true },
                 onBack = onBack,
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding),
+            )
+        }
+
+        // Sell Asset Dialog
+        if (showSellDialog && uiState.asset != null) {
+            SellAssetDialog(
+                asset = uiState.asset!!,
+                onDismiss = { showSellDialog = false },
+                onConfirmSell = { qty, price, proceeds, date, fees, taxes ->
+                    viewModel.recordSell(qty, price, proceeds, date, fees, taxes)
+                },
+            )
+        }
+
+        // Change Asset Class Dialog
+        if (showChangeAssetClassDialog && uiState.asset != null) {
+            ChangeAssetClassDialog(
+                currentClass = uiState.asset!!.assetClass,
+                onDismiss = { showChangeAssetClassDialog = false },
+                onConfirm = { newClass ->
+                    viewModel.updateAssetClass(newClass)
+                },
             )
         }
 
@@ -276,6 +327,7 @@ private fun AssetDetailContent(
     onEditTransaction: (TransactionEntity) -> Unit,
     onDeleteTransaction: (TransactionEntity) -> Unit,
     onDeleteAsset: () -> Unit,
+    onSellClick: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -295,6 +347,7 @@ private fun AssetDetailContent(
                     currentValue = uiState.currentValue,
                     unrealizedPnL = uiState.unrealizedPnL,
                     showValues = uiState.showValues,
+                    onSellClick = onSellClick,
                 )
             }
         }
@@ -432,6 +485,7 @@ private fun AssetSummaryCard(
     currentValue: BigDecimal?,
     unrealizedPnL: BigDecimal?,
     showValues: Boolean,
+    onSellClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalOpenFolioColors.current
@@ -640,6 +694,37 @@ private fun AssetSummaryCard(
                             )
                         }
                     }
+                }
+            }
+
+            // Identifiers Summary (ISIN, Ticker, Folio, Certificate)
+            val idSummary = remember(asset.identifiersJson) {
+                runCatching {
+                    val obj = org.json.JSONObject(asset.identifiersJson)
+                    val keys = obj.keys()
+                    keys.asSequence().map { "$it: ${obj.getString(it)}" }.joinToString(" • ")
+                }.getOrNull().orEmpty()
+            }
+            if (idSummary.isNotBlank()) {
+                Text(
+                    text = idSummary,
+                    style = typography.bodySmall,
+                    color = colors.muted,
+                )
+            }
+
+            // Sell / Exit Asset Button
+            if (asset.totalQuantity > BigDecimal.ZERO) {
+                Button(
+                    onClick = onSellClick,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = colors.brand,
+                        contentColor = colors.onAccent,
+                    ),
+                    shape = RoundedCornerShape(10.dp),
+                ) {
+                    Text("Sell / Exit Asset")
                 }
             }
         }

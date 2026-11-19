@@ -1,6 +1,7 @@
 package com.openfolio.feature.screens
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,12 +28,15 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -57,7 +61,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.openfolio.core.data.local.entity.AssetClass
 import com.openfolio.core.data.local.entity.DocumentStatus
+import com.openfolio.feature.assets.toDisplayTitle
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
 import com.openfolio.core.ui.theme.LocalOpenFolioColors
 import com.openfolio.feature.review.DocumentPreview
@@ -96,6 +102,7 @@ fun ReviewScreen(
     onConfirmSkipDuplicatesAndSave: () -> Unit = {},
     onConfirmSaveAllAnyway: () -> Unit = {},
     onDismissDuplicatePrompt: () -> Unit = {},
+    onUpdateAllAssetClass: (AssetClass) -> Unit = {},
 ) {
     val colors = LocalOpenFolioColors.current
     val document = (uiState as? ReviewUiState.Loaded)?.document
@@ -359,6 +366,39 @@ fun ReviewScreen(
                             modifier = Modifier.weight(1f),
                         )
                     } else if (drafts.isEmpty()) {
+                        var batchClassExpanded by remember { mutableStateOf(false) }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "Category: ${document?.getAssetClassEnum()?.toDisplayTitle() ?: "Mixed"}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colors.muted,
+                            )
+                            Box {
+                                TextButton(onClick = { batchClassExpanded = true }) {
+                                    Text("Change Category (All)", color = colors.brand)
+                                }
+                                DropdownMenu(
+                                    expanded = batchClassExpanded,
+                                    onDismissRequest = { batchClassExpanded = false },
+                                    modifier = Modifier.background(colors.surface),
+                                ) {
+                                    AssetClass.entries.forEach { cls ->
+                                        DropdownMenuItem(
+                                            text = { Text(cls.toDisplayTitle(), color = colors.content) },
+                                            onClick = {
+                                                batchClassExpanded = false
+                                                onUpdateAllAssetClass(cls)
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
                         Button(
                             onClick = {
                                 editingDraft = null
@@ -455,6 +495,39 @@ fun ReviewScreen(
                                         ) {
                                             Text("Select All", style = MaterialTheme.typography.labelMedium)
                                         }
+                                    }
+                                }
+                            }
+                        }
+
+                        var batchClassExpanded by remember { mutableStateOf(false) }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "Category: ${document?.getAssetClassEnum()?.toDisplayTitle() ?: "Mixed"}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colors.muted,
+                            )
+                            Box {
+                                TextButton(onClick = { batchClassExpanded = true }) {
+                                    Text("Change Category (All)", color = colors.brand)
+                                }
+                                DropdownMenu(
+                                    expanded = batchClassExpanded,
+                                    onDismissRequest = { batchClassExpanded = false },
+                                    modifier = Modifier.background(colors.surface),
+                                ) {
+                                    AssetClass.entries.forEach { cls ->
+                                        DropdownMenuItem(
+                                            text = { Text(cls.toDisplayTitle(), color = colors.content) },
+                                            onClick = {
+                                                batchClassExpanded = false
+                                                onUpdateAllAssetClass(cls)
+                                            },
+                                        )
                                     }
                                 }
                             }
@@ -1067,13 +1140,38 @@ private fun ManualDraftForm(
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
         )
-        OutlinedTextField(
-            value = assetClass,
-            onValueChange = { assetClass = it.uppercase() },
-            label = { Text("Asset Class (STOCK, MUTUAL_FUND, etc.)") },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-        )
+        var classDropdownExpanded by remember { mutableStateOf(false) }
+        ExposedDropdownMenuBox(
+            expanded = classDropdownExpanded,
+            onExpandedChange = { classDropdownExpanded = it },
+        ) {
+            val resolvedClass = runCatching { AssetClass.valueOf(assetClass) }.getOrDefault(AssetClass.STOCK)
+            OutlinedTextField(
+                value = resolvedClass.toDisplayTitle(),
+                onValueChange = {},
+                readOnly = true,
+                label = { Text("Asset Class") },
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = classDropdownExpanded) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .menuAnchor(MenuAnchorType.PrimaryNotEditable),
+            )
+            ExposedDropdownMenu(
+                expanded = classDropdownExpanded,
+                onDismissRequest = { classDropdownExpanded = false },
+                modifier = Modifier.background(colors.surface),
+            ) {
+                AssetClass.entries.forEach { cls ->
+                    DropdownMenuItem(
+                        text = { Text(cls.toDisplayTitle(), color = colors.content) },
+                        onClick = {
+                            assetClass = cls.name
+                            classDropdownExpanded = false
+                        },
+                    )
+                }
+            }
+        }
         OutlinedTextField(
             value = type,
             onValueChange = { type = it.uppercase() },

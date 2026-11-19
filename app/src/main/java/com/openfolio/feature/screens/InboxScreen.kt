@@ -42,9 +42,14 @@ import androidx.compose.ui.unit.dp
 import com.openfolio.core.data.local.entity.AssetClass
 import com.openfolio.core.data.local.entity.DocumentEntity
 import com.openfolio.core.data.local.entity.DocumentStatus
+import com.openfolio.core.data.local.entity.TransactionType
 import com.openfolio.core.ui.components.AssetTypeSelectionBottomSheet
+import com.openfolio.core.ui.components.ImportOptionsBottomSheet
+import com.openfolio.core.ui.components.ManualTransactionDialog
 import com.openfolio.core.ui.theme.LocalOpenFolioColors
 import com.openfolio.feature.assets.toDisplayTitle
+import java.math.BigDecimal
+import java.time.LocalDate
 import java.util.Locale
 
 private val DOCUMENT_MIME_TYPES = arrayOf(
@@ -63,10 +68,13 @@ fun InboxScreen(
     onDocumentClick: (String) -> Unit,
     onProcessWithAiClick: ((String) -> Unit)? = null,
     onImport: ((Uri, AssetClass) -> Unit)? = null,
+    onSaveManualTransaction: ((String, AssetClass, TransactionType, LocalDate, BigDecimal, BigDecimal, BigDecimal, BigDecimal, BigDecimal, String?) -> Unit)? = null,
 ) {
     val colors = LocalOpenFolioColors.current
     val awaitingReview = documents.count { it.status != DocumentStatus.COMPLETED.name }
+    var showImportOptionsSheet by remember { mutableStateOf(false) }
     var showAssetTypeSheet by remember { mutableStateOf(false) }
+    var showManualTransactionDialog by remember { mutableStateOf(false) }
     var pendingAssetClass by remember { mutableStateOf(AssetClass.STOCK) }
 
     val documentPicker = rememberLauncherForActivityResult(
@@ -79,9 +87,9 @@ fun InboxScreen(
     Scaffold(
         containerColor = colors.background,
         floatingActionButton = {
-            if (onImport != null) {
+            if (onImport != null || onSaveManualTransaction != null) {
                 ExtendedFloatingActionButton(
-                    onClick = { showAssetTypeSheet = true },
+                    onClick = { showImportOptionsSheet = true },
                     icon = { Icon(Icons.Filled.Add, contentDescription = null) },
                     text = { Text("Import") },
                     containerColor = colors.brand,
@@ -143,6 +151,20 @@ fun InboxScreen(
         }
     }
 
+    if (showImportOptionsSheet) {
+        ImportOptionsBottomSheet(
+            onDismissRequest = { showImportOptionsSheet = false },
+            onSelectImportStatements = {
+                showImportOptionsSheet = false
+                showAssetTypeSheet = true
+            },
+            onSelectManualEntry = {
+                showImportOptionsSheet = false
+                showManualTransactionDialog = true
+            },
+        )
+    }
+
     if (showAssetTypeSheet) {
         AssetTypeSelectionBottomSheet(
             onDismissRequest = { showAssetTypeSheet = false },
@@ -150,6 +172,15 @@ fun InboxScreen(
                 pendingAssetClass = selectedClass
                 showAssetTypeSheet = false
                 documentPicker.launch(DOCUMENT_MIME_TYPES)
+            },
+        )
+    }
+
+    if (showManualTransactionDialog) {
+        ManualTransactionDialog(
+            onDismiss = { showManualTransactionDialog = false },
+            onSave = { name, cls, type, date, qty, price, netAmt, fees, taxes, notes ->
+                onSaveManualTransaction?.invoke(name, cls, type, date, qty, price, netAmt, fees, taxes, notes)
             },
         )
     }

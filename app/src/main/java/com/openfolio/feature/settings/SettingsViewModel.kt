@@ -6,6 +6,7 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.openfolio.core.data.local.export.DatabaseExporter
+import com.openfolio.core.data.local.export.LegalDossierGenerator
 import com.openfolio.core.data.repository.SettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -29,6 +30,7 @@ data class SettingsUiState(
     val isKeyVisible: Boolean = false,
     val isSaving: Boolean = false,
     val isExporting: Boolean = false,
+    val isExportingDossier: Boolean = false,
     val databaseVersion: Int? = null,
     val tableCount: Int? = null,
     val totalRowCount: Long? = null,
@@ -46,6 +48,7 @@ class SettingsViewModel @Inject constructor(
     private val databaseExporter: DatabaseExporter,
     @ApplicationContext private val context: Context,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val legalDossierGenerator: LegalDossierGenerator? = null,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(SettingsUiState())
@@ -180,6 +183,66 @@ class SettingsViewModel @Inject constructor(
                 )
             } finally {
                 _uiState.value = _uiState.value.copy(isExporting = false)
+            }
+        }
+    }
+
+    fun getDefaultDossierFileName(): String {
+        val timestamp = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")
+            .withZone(ZoneOffset.UTC)
+            .format(Instant.now())
+        return "openfolio_succession_manifest_${timestamp}.md"
+    }
+
+    fun exportDossierToUri(uri: Uri) {
+        val generator = legalDossierGenerator ?: return
+        viewModelScope.launch(ioDispatcher) {
+            _uiState.value = _uiState.value.copy(isExportingDossier = true)
+            try {
+                val outputStream = context.contentResolver.openOutputStream(uri)
+                    ?: throw IllegalStateException("Could not open destination file for writing.")
+                outputStream.use { stream ->
+                    generator.writeDossierToStream(stream)
+                }
+                _events.emit(SettingsEvent.ShowSnackbar("Succession & Legal Dossier exported successfully."))
+            } catch (t: Throwable) {
+                _events.emit(
+                    SettingsEvent.ShowSnackbar(
+                        "Failed to export dossier: ${t.localizedMessage ?: t.message ?: "Unknown error"}"
+                    )
+                )
+            } finally {
+                _uiState.value = _uiState.value.copy(isExportingDossier = false)
+            }
+        }
+    }
+
+    fun exportAndShareDossier() {
+        val generator = legalDossierGenerator ?: return
+        viewModelScope.launch(ioDispatcher) {
+            _uiState.value = _uiState.value.copy(isExportingDossier = true)
+            try {
+                val exportDir = File(context.cacheDir, "exports").apply { mkdirs() }
+                val fileName = getDefaultDossierFileName()
+                val targetFile = File(exportDir, fileName)
+                targetFile.outputStream().use { stream ->
+                    generator.writeDossierToStream(stream)
+                }
+                val shareUri = FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.fileprovider",
+                    targetFile,
+                )
+                _events.emit(SettingsEvent.ShareExportFile(shareUri, fileName))
+                _events.emit(SettingsEvent.ShowSnackbar("Succession Dossier ready to share."))
+            } catch (t: Throwable) {
+                _events.emit(
+                    SettingsEvent.ShowSnackbar(
+                        "Failed to share dossier: ${t.localizedMessage ?: t.message ?: "Unknown error"}"
+                    )
+                )
+            } finally {
+                _uiState.value = _uiState.value.copy(isExportingDossier = false)
             }
         }
     }

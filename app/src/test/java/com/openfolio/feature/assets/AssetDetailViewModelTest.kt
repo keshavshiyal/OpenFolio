@@ -66,6 +66,8 @@ class AssetDetailViewModelTest {
     )
 
     private var updatedTxn: TransactionEntity? = null
+    private var savedTxn: TransactionEntity? = null
+    private var updatedAsset: AssetEntity? = null
     private var deletedTxnId: String? = null
     private var deletedAssetId: String? = null
     private var shouldFailUpdate = false
@@ -76,7 +78,9 @@ class AssetDetailViewModelTest {
         override suspend fun getAssetByIdOnce(id: String): AssetEntity? = assetFlow.value
         override fun getTransactionsForAsset(assetId: String): Flow<List<TransactionEntity>> = transactionsFlow
         override suspend fun getTransactionsForAssetOnce(assetId: String): List<TransactionEntity> = transactionsFlow.value
-        override suspend fun saveTransaction(transaction: TransactionEntity) {}
+        override suspend fun saveTransaction(transaction: TransactionEntity) {
+            savedTxn = transaction
+        }
         override suspend fun updateTransaction(transaction: TransactionEntity) {
             if (shouldFailUpdate) throw RuntimeException("Database error updating transaction")
             updatedTxn = transaction
@@ -87,6 +91,9 @@ class AssetDetailViewModelTest {
         override suspend fun recalculateAsset(assetId: String) {}
         override suspend fun deleteAsset(assetId: String) {
             deletedAssetId = assetId
+        }
+        override suspend fun updateAsset(asset: AssetEntity) {
+            updatedAsset = asset
         }
     }
 
@@ -212,5 +219,70 @@ class AssetDetailViewModelTest {
         viewModel.clearErrorMessage()
         advanceUntilIdle()
         assertNull(viewModel.uiState.value.errorMessage)
+    }
+
+    @Test
+    fun recordSellRejectsInvalidQuantities() = runTest {
+        val viewModel = createViewModel()
+        viewModel.loadAsset("asset_rel")
+        advanceUntilIdle()
+
+        // Zero quantity
+        viewModel.recordSell(
+            quantity = BigDecimal.ZERO,
+            unitPrice = BigDecimal("2500"),
+            netAmount = BigDecimal.ZERO,
+            tradeDate = LocalDate.now(),
+        )
+        advanceUntilIdle()
+        assertEquals("Sell quantity must be greater than zero.", viewModel.uiState.value.errorMessage)
+
+        // Exceeds available quantity (sampleAsset has 100)
+        viewModel.recordSell(
+            quantity = BigDecimal("150"),
+            unitPrice = BigDecimal("2500"),
+            netAmount = BigDecimal("375000"),
+            tradeDate = LocalDate.now(),
+        )
+        advanceUntilIdle()
+        assertTrue(viewModel.uiState.value.errorMessage?.contains("Cannot sell more than available") == true)
+    }
+
+    @Test
+    fun recordSellSavesSellTransaction() = runTest {
+        val viewModel = createViewModel()
+        viewModel.loadAsset("asset_rel")
+        advanceUntilIdle()
+
+        viewModel.recordSell(
+            quantity = BigDecimal("40"),
+            unitPrice = BigDecimal("2800"),
+            netAmount = BigDecimal("112000"),
+            tradeDate = LocalDate.of(2024, 6, 1),
+            fees = BigDecimal("50"),
+            taxes = BigDecimal("25"),
+        )
+        advanceUntilIdle()
+
+        assertNotNull(savedTxn)
+        assertEquals(TransactionType.SELL, savedTxn?.type)
+        assertEquals(BigDecimal("40"), savedTxn?.quantity)
+        assertEquals(BigDecimal("2800"), savedTxn?.unitPrice)
+        assertEquals(BigDecimal("112000"), savedTxn?.netAmount)
+        assertEquals(BigDecimal("50"), savedTxn?.fees)
+        assertEquals(BigDecimal("25"), savedTxn?.taxes)
+    }
+
+    @Test
+    fun updateAssetClassInvokesRepositoryUpdateAsset() = runTest {
+        val viewModel = createViewModel()
+        viewModel.loadAsset("asset_rel")
+        advanceUntilIdle()
+
+        viewModel.updateAssetClass(AssetClass.MUTUAL_FUND)
+        advanceUntilIdle()
+
+        assertNotNull(updatedAsset)
+        assertEquals(AssetClass.MUTUAL_FUND, updatedAsset?.assetClass)
     }
 }

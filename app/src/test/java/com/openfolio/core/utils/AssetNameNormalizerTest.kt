@@ -100,4 +100,30 @@ class AssetNameNormalizerTest {
         assertNotNull(match)
         assertEquals("apple", match?.id)
     }
+
+    @Test
+    fun matchesByIsinAndIdentifier() {
+        val infyAsset = AssetEntity(
+            id = "infy",
+            displayName = "Infosys Limited",
+            assetClass = AssetClass.STOCK,
+            identifiersJson = """{"isin":"INE009A01021","ticker":"INFY"}""",
+        )
+        val assets = listOf(infyAsset)
+
+        // Matching by raw text containing ISIN
+        val match1 = AssetNameNormalizer.findMatchingAsset("INFOSYS - INE009A01021", assets)
+        assertNotNull(match1)
+        assertEquals("infy", match1?.id)
+
+        // Matching by identifier argument
+        val match2 = AssetNameNormalizer.findMatchingAsset("Infosys", assets, identifier = "INE009A01021")
+        assertNotNull(match2)
+        assertEquals("infy", match2?.id)
+
+        // Matching by ticker
+        val match3 = AssetNameNormalizer.findMatchingAsset("Unknown Description", assets, identifier = "INFY")
+        assertNotNull(match3)
+        assertEquals("infy", match3?.id)
+    }
 }

@@ -186,6 +186,7 @@ fun OpenFolioApp(
                         navController.navigate("review/$documentId")
                     },
                     onImport = homeViewModel::ingestFile,
+                    onSaveManualTransaction = homeViewModel::recordManualTransaction,
                 )
             }
             composable(
@@ -222,6 +223,7 @@ fun OpenFolioApp(
                     onConfirmSkipDuplicatesAndSave = reviewViewModel::confirmSkipDuplicatesAndSave,
                     onConfirmSaveAllAnyway = reviewViewModel::confirmSaveAllAnyway,
                     onDismissDuplicatePrompt = reviewViewModel::dismissDuplicatePrompt,
+                    onUpdateAllAssetClass = reviewViewModel::updateAllDraftsAssetClass,
                 )
             }
             composable(AppDestination.Settings.route) {

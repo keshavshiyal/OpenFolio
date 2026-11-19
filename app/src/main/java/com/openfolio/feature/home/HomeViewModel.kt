@@ -6,14 +6,17 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.openfolio.core.data.local.entity.AssetClass
 import com.openfolio.core.data.local.entity.DocumentEntity
+import com.openfolio.core.data.local.entity.TransactionType
 import com.openfolio.core.data.repository.SettingsRepository
 import com.openfolio.core.domain.model.DashboardData
+import com.openfolio.core.domain.repository.AssetRepository
 import com.openfolio.core.domain.repository.DocumentRepository
 import com.openfolio.core.domain.repository.DuplicateDocumentException
 import com.openfolio.core.domain.usecase.GetDashboardDataUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.math.BigDecimal
+import java.time.LocalDate
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,6 +34,7 @@ class HomeViewModel @Inject constructor(
     private val documentRepository: DocumentRepository,
     private val getDashboardDataUseCase: GetDashboardDataUseCase,
     private val settingsRepository: SettingsRepository? = null,
+    private val assetRepository: AssetRepository? = null,
 ) : ViewModel() {
     private val _localShowValues = MutableStateFlow(true)
     private val _selectedPeriod = MutableStateFlow("1M")
@@ -135,6 +139,40 @@ class HomeViewModel @Inject constructor(
                 _ingestionState.value = IngestionState.Error(
                     throwable.message ?: "Failed to read file",
                 )
+            }
+        }
+    }
+
+    fun recordManualTransaction(
+        assetName: String,
+        assetClass: AssetClass,
+        type: TransactionType,
+        tradeDate: LocalDate,
+        quantity: BigDecimal,
+        unitPrice: BigDecimal,
+        netAmount: BigDecimal,
+        fees: BigDecimal = BigDecimal.ZERO,
+        taxes: BigDecimal = BigDecimal.ZERO,
+        notes: String? = null,
+    ) {
+        viewModelScope.launch {
+            _ingestionState.value = IngestionState.Loading
+            try {
+                assetRepository?.recordManualTransaction(
+                    assetName = assetName,
+                    assetClass = assetClass,
+                    type = type,
+                    tradeDate = tradeDate,
+                    quantity = quantity,
+                    unitPrice = unitPrice,
+                    netAmount = netAmount,
+                    fees = fees,
+                    taxes = taxes,
+                    notes = notes,
+                )
+                _ingestionState.value = IngestionState.Success("Manual: $assetName")
+            } catch (t: Throwable) {
+                _ingestionState.value = IngestionState.Error(t.message ?: "Failed to save manual transaction")
             }
         }
     }

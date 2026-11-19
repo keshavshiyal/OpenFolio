@@ -231,7 +231,7 @@ class DocumentRepositoryImpl @Inject constructor(
                     )
                     database.assetDao().insert(newAsset)
                     existingAssets.add(newAsset)
-                } else if (targetAsset.assetClass == AssetClass.STOCK && draftAssetClass != AssetClass.STOCK) {
+                } else if (targetAsset.totalQuantity.compareTo(BigDecimal.ZERO) == 0 && targetAsset.assetClass == AssetClass.STOCK && draftAssetClass != AssetClass.STOCK) {
                     val updatedAsset = targetAsset.copy(assetClass = draftAssetClass)
                     database.assetDao().update(updatedAsset)
                     val idx = existingAssets.indexOfFirst { it.id == targetAsset.id }
@@ -427,7 +427,7 @@ class DocumentRepositoryImpl @Inject constructor(
                 throw MissingApiKeyException()
             }
 
-            val textChunks = rawText.chunked(AI_CHUNK_SIZE)
+            val textChunks = splitIntoSemanticChunks(rawText, AI_CHUNK_SIZE)
             require(textChunks.isNotEmpty()) { "No extracted text is available to process." }
 
             val aggregatedDrafts = mutableListOf<DraftTransactionEntity>()
@@ -486,7 +486,7 @@ class DocumentRepositoryImpl @Inject constructor(
                 "No extracted text is available to process."
             }
             documentDao.updateStatus(documentId, DocumentStatus.AI_COMPLETE.name)
-            val textChunks = document.extractedText.chunked(AI_CHUNK_SIZE)
+            val textChunks = splitIntoSemanticChunks(document.extractedText.orEmpty(), AI_CHUNK_SIZE)
             require(textChunks.isNotEmpty()) { "No extracted text is available to process." }
             textChunks.forEach { kotlinx.coroutines.yield() }
             insertDraftTransactionsIfEmpty(documentId, mockAiDraftTransactions(document))
@@ -843,10 +843,48 @@ class DocumentRepositoryImpl @Inject constructor(
         val fileSize: Long?,
     )
 
+    internal fun splitIntoSemanticChunks(text: String, maxChunkSize: Int = AI_CHUNK_SIZE): List<String> {
+        if (text.length <= maxChunkSize) return listOf(text)
+
+        val chunks = mutableListOf<String>()
+        var startIndex = 0
+
+        while (startIndex < text.length) {
+            val endIndex = minOf(startIndex + maxChunkSize, text.length)
+            if (endIndex == text.length) {
+                chunks.add(text.substring(startIndex))
+                break
+            }
+
+            val pageDelimiter = "--- PAGE "
+            val pageIndex = text.lastIndexOf(pageDelimiter, endIndex)
+            val chosenSplit = when {
+                pageIndex > startIndex + (maxChunkSize / 3) -> pageIndex
+                else -> {
+                    val doubleNewline = text.lastIndexOf("\n\n", endIndex)
+                    if (doubleNewline > startIndex + (maxChunkSize / 3)) {
+                        doubleNewline + 2
+                    } else {
+                        val singleNewline = text.lastIndexOf('\n', endIndex)
+                        if (singleNewline > startIndex + (maxChunkSize / 3)) singleNewline + 1 else endIndex
+                    }
+                }
+            }
+
+            val chunk = text.substring(startIndex, chosenSplit).trim()
+            if (chunk.isNotBlank()) {
+                chunks.add(chunk)
+            }
+            startIndex = chosenSplit
+        }
+
+        return chunks.ifEmpty { listOf(text) }
+    }
+
     private companion object {
         const val DOCUMENTS_DIRECTORY = "documents"
         const val UNKNOWN_FILE_NAME = "unknown_file"
-        const val AI_CHUNK_SIZE = 3_000
+        const val AI_CHUNK_SIZE = 30_000
         const val MILLIS_PER_DAY = 86_400_000L
         val SUPPORTED_EXTENSIONS = setOf("pdf", "csv", "xlsx", "png", "jpg", "jpeg")
         val STRUCTURED_EXTENSIONS = setOf("csv", "xlsx")

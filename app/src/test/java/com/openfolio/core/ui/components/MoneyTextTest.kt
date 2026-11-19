@@ -6,26 +6,38 @@ import org.junit.Test
 
 class MoneyTextTest {
     @Test
-    fun formatsRupeesUsingIndianDigitGrouping() {
+    fun formatsRupeesUsingIndianDigitGroupingWithTwoDecimals() {
         assertEquals(
-            "₹ 24,58,300",
+            "₹ 24,58,300.00",
             formatIndianRupees(BigDecimal("2458300")),
         )
     }
 
     @Test
-    fun formatsFractionalAmountsAsWholeRupees() {
+    fun formatsFractionalAmountsRoundedToTwoDecimals() {
         assertEquals(
-            "₹ 1,235",
+            "₹ 1,234.56",
             formatIndianRupees(BigDecimal("1234.56")),
+        )
+        assertEquals(
+            "₹ 1,234.57",
+            formatIndianRupees(BigDecimal("1234.567")),
+        )
+        assertEquals(
+            "₹ 1,234.50",
+            formatIndianRupees(BigDecimal("1234.5")),
         )
     }
 
     @Test
-    fun formatsNegativeAmountsWithIndianGrouping() {
+    fun formatsNegativeAmountsWithIndianGroupingAndTwoDecimals() {
         assertEquals(
-            "₹ -1,23,456",
+            "₹ -1,23,456.00",
             formatIndianRupees(BigDecimal("-123456")),
+        )
+        assertEquals(
+            "₹ -1,23,456.78",
+            formatIndianRupees(BigDecimal("-123456.78")),
         )
     }
 }

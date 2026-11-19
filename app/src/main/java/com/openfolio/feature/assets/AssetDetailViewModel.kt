@@ -2,13 +2,17 @@ package com.openfolio.feature.assets
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.openfolio.core.data.local.entity.AssetClass
 import com.openfolio.core.data.local.entity.AssetEntity
 import com.openfolio.core.data.local.entity.TransactionEntity
+import com.openfolio.core.data.local.entity.TransactionStatus
+import com.openfolio.core.data.local.entity.TransactionType
 import com.openfolio.core.data.repository.SettingsRepository
 import com.openfolio.core.domain.repository.AssetRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.math.BigDecimal
 import java.math.RoundingMode
+import java.time.LocalDate
 import javax.inject.Inject
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -172,6 +176,85 @@ class AssetDetailViewModel @Inject constructor(
                 _isDeleted.value = true
             } catch (e: Exception) {
                 _errorMessage.value = e.message ?: "Failed to delete asset"
+            } finally {
+                _isSaving.value = false
+            }
+        }
+    }
+
+    fun recordSell(
+        quantity: BigDecimal,
+        unitPrice: BigDecimal,
+        netAmount: BigDecimal,
+        tradeDate: LocalDate,
+        fees: BigDecimal = BigDecimal.ZERO,
+        taxes: BigDecimal = BigDecimal.ZERO,
+    ) {
+        val currentAsset = uiState.value.asset ?: return
+        if (quantity <= BigDecimal.ZERO) {
+            _errorMessage.value = "Sell quantity must be greater than zero."
+            return
+        }
+        if (quantity > currentAsset.totalQuantity) {
+            _errorMessage.value = "Cannot sell more than available quantity (${currentAsset.totalQuantity})."
+            return
+        }
+
+        viewModelScope.launch {
+            _isSaving.value = true
+            try {
+                val sellTransaction = TransactionEntity(
+                    accountId = "default_account",
+                    assetId = currentAsset.id,
+                    type = TransactionType.SELL,
+                    tradeDate = tradeDate,
+                    quantity = quantity,
+                    unitPrice = unitPrice,
+                    grossAmount = quantity.multiply(unitPrice),
+                    fees = fees,
+                    taxes = taxes,
+                    netAmount = netAmount,
+                    currency = currentAsset.currency,
+                    fingerprint = "SELL_${currentAsset.id}_${tradeDate}_${System.currentTimeMillis()}",
+                    status = TransactionStatus.CONFIRMED,
+                    confidence = 1.0,
+                )
+                assetRepository.saveTransaction(sellTransaction)
+            } catch (e: Exception) {
+                _errorMessage.value = e.message ?: "Failed to record sell transaction"
+            } finally {
+                _isSaving.value = false
+            }
+        }
+    }
+
+    fun updateAssetClass(newClass: AssetClass) {
+        val currentAsset = uiState.value.asset ?: return
+        viewModelScope.launch {
+            _isSaving.value = true
+            try {
+                assetRepository.updateAsset(currentAsset.copy(assetClass = newClass))
+            } catch (e: Exception) {
+                _errorMessage.value = e.message ?: "Failed to update asset class"
+            } finally {
+                _isSaving.value = false
+            }
+        }
+    }
+
+    fun updateAssetMetadata(identifiersJson: String, detailsJson: String) {
+        val currentAsset = uiState.value.asset ?: return
+        viewModelScope.launch {
+            _isSaving.value = true
+            try {
+                assetRepository.updateAsset(
+                    currentAsset.copy(
+                        identifiersJson = identifiersJson,
+                        detailsJson = detailsJson,
+                    ),
+                )
+            } catch (e: Exception) {
+                _errorMessage.value = e.message ?: "Failed to update asset metadata"
             } finally {
                 _isSaving.value = false
             }

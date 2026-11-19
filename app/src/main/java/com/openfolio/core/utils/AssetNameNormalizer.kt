@@ -43,6 +43,14 @@ object AssetNameNormalizer {
 
     private val NON_ALPHANUMERIC_REGEX = Regex("[^a-z0-9\\s]")
     private val WHITESPACE_REGEX = Regex("\\s+")
+    private val ISIN_REGEX = Regex("\\b[A-Z]{2}[A-Z0-9]{9}[0-9]\\b")
+
+    /**
+     * Extracts an ISIN (12 alphanumeric characters starting with 2 letters and ending with a digit)
+     * from a text string if present.
+     */
+    fun extractIsin(text: String): String? =
+        ISIN_REGEX.find(text.uppercase())?.value
 
     /**
      * Normalizes a company or asset name by:
@@ -79,14 +87,38 @@ object AssetNameNormalizer {
 
     /**
      * Attempts to find an existing AssetEntity in the database matching the given raw name
-     * using exact normalized matching, token containment, and Levenshtein similarity.
+     * using exact identifier matching (ISIN, ticker), exact normalized matching, token containment,
+     * and Levenshtein similarity.
      */
     fun findMatchingAsset(
         rawName: String,
         existingAssets: List<AssetEntity>,
+        identifier: String? = null,
     ): AssetEntity? {
+        if (existingAssets.isEmpty()) return null
+
+        // 0. Primary check: ISIN match (100% precision)
+        val queryIsin = identifier?.takeIf(String::isNotBlank)?.let(::extractIsin) ?: extractIsin(rawName)
+        if (queryIsin != null) {
+            val isinMatch = existingAssets.firstOrNull { asset ->
+                asset.identifiersJson.contains(queryIsin, ignoreCase = true) ||
+                    asset.id.equals(queryIsin, ignoreCase = true)
+            }
+            if (isinMatch != null) return isinMatch
+        }
+
+        // Ticker / symbol check
+        val cleanIdentifier = identifier?.trim()?.uppercase()
+        if (!cleanIdentifier.isNullOrBlank()) {
+            val tickerMatch = existingAssets.firstOrNull { asset ->
+                asset.identifiersJson.contains("\"ticker\":\"$cleanIdentifier\"", ignoreCase = true) ||
+                    asset.id.equals(cleanIdentifier, ignoreCase = true)
+            }
+            if (tickerMatch != null) return tickerMatch
+        }
+
         val normalized = normalize(rawName)
-        if (normalized.isBlank() || existingAssets.isEmpty()) return null
+        if (normalized.isBlank()) return null
 
         // 1. Exact match on id or normalized displayName
         val exactMatch = existingAssets.firstOrNull { asset ->

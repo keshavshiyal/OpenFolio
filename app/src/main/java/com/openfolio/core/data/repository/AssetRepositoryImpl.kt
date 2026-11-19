@@ -5,11 +5,21 @@ import com.openfolio.core.data.local.OpenFolioDatabase
 import com.openfolio.core.data.local.dao.AssetDao
 import com.openfolio.core.data.local.dao.LotDao
 import com.openfolio.core.data.local.dao.TransactionDao
+import com.openfolio.core.data.local.entity.AccountEntity
+import com.openfolio.core.data.local.entity.AccountType
+import com.openfolio.core.data.local.entity.AssetClass
 import com.openfolio.core.data.local.entity.AssetEntity
+import com.openfolio.core.data.local.entity.AssetStatus
 import com.openfolio.core.data.local.entity.TransactionEntity
+import com.openfolio.core.data.local.entity.TransactionStatus
+import com.openfolio.core.data.local.entity.TransactionType
 import com.openfolio.core.domain.calculator.FifoCostBasisCalculator
 import com.openfolio.core.domain.calculator.RecalculationResult
 import com.openfolio.core.domain.repository.AssetRepository
+import com.openfolio.core.utils.AssetNameNormalizer
+import java.math.BigDecimal
+import java.time.LocalDate
+import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOn
@@ -80,6 +90,87 @@ class AssetRepositoryImpl(
             lotDao.deleteByAssetId(assetId)
             assetDao.deleteById(assetId)
         }
+    }
+
+    override suspend fun saveAsset(asset: AssetEntity): Unit = withContext(Dispatchers.IO) {
+        runTransaction {
+            assetDao.insert(asset)
+        }
+    }
+
+    override suspend fun updateAsset(asset: AssetEntity): Unit = withContext(Dispatchers.IO) {
+        runTransaction {
+            assetDao.update(asset)
+        }
+    }
+
+    override suspend fun recordManualTransaction(
+        assetName: String,
+        assetClass: AssetClass,
+        type: TransactionType,
+        tradeDate: LocalDate,
+        quantity: BigDecimal,
+        unitPrice: BigDecimal,
+        netAmount: BigDecimal,
+        fees: BigDecimal,
+        taxes: BigDecimal,
+        notes: String?,
+    ): TransactionEntity = withContext(Dispatchers.IO) {
+        var createdTransaction: TransactionEntity? = null
+        runTransaction {
+            val existingAssets = assetDao.getAllOnce()
+            val matched = AssetNameNormalizer.findMatchingAsset(assetName, existingAssets)
+            val assetId = matched?.id ?: AssetNameNormalizer.normalize(assetName).ifBlank { UUID.randomUUID().toString() }
+
+            database.accountDao().insert(
+                AccountEntity(
+                    id = "default_account",
+                    name = "Default Account",
+                    type = AccountType.BROKER,
+                    currency = "INR",
+                ),
+            )
+
+            if (matched == null && assetDao.getById(assetId) == null) {
+                val newAsset = AssetEntity(
+                    id = assetId,
+                    displayName = assetName.trim(),
+                    assetClass = assetClass,
+                    currency = "INR",
+                    totalQuantity = BigDecimal.ZERO,
+                    totalInvested = BigDecimal.ZERO,
+                    averageCost = BigDecimal.ZERO,
+                    realizedPnL = BigDecimal.ZERO,
+                    status = AssetStatus.ACTIVE,
+                )
+                assetDao.insert(newAsset)
+            }
+
+            val fingerprint = "MANUAL_${assetId}_${type.name}_${tradeDate.toEpochDay()}_${System.currentTimeMillis()}"
+            val transaction = TransactionEntity(
+                id = UUID.randomUUID().toString(),
+                accountId = "default_account",
+                assetId = assetId,
+                type = type,
+                tradeDate = tradeDate,
+                quantity = quantity,
+                unitPrice = unitPrice,
+                grossAmount = quantity.multiply(unitPrice),
+                fees = fees,
+                taxes = taxes,
+                netAmount = netAmount,
+                currency = "INR",
+                notes = notes,
+                fingerprint = fingerprint,
+                status = TransactionStatus.CONFIRMED,
+                confidence = 1.0,
+            )
+
+            transactionDao.insert(transaction)
+            recalculateInternal(assetId)
+            createdTransaction = transaction
+        }
+        requireNotNull(createdTransaction) { "Failed to record manual transaction" }
     }
 
     private suspend fun recalculateInternal(assetId: String): RecalculationResult {

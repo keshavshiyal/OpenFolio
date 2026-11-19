@@ -2,6 +2,7 @@ package com.openfolio.feature.review
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.openfolio.core.data.local.entity.AssetClass
 import com.openfolio.core.data.local.entity.ColumnMappingEntity
 import com.openfolio.core.data.local.entity.DocumentEntity
 import com.openfolio.core.data.local.entity.DocumentStatus
@@ -281,6 +282,17 @@ class ReviewViewModel @Inject constructor(
                     documentRepository.insertDraftTransaction(draft)
                 } else {
                     documentRepository.updateDraftTransaction(draft)
+                }
+            }
+        }
+    }
+
+    fun updateAllDraftsAssetClass(newAssetClass: AssetClass) {
+        viewModelScope.launch {
+            val currentDrafts = _drafts.value
+            for (draft in currentDrafts) {
+                if (draft.assetClass != newAssetClass.name) {
+                    documentRepository.updateDraftTransaction(draft.copy(assetClass = newAssetClass.name))
                 }
             }
         }

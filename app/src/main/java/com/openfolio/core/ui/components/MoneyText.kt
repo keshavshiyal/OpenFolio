@@ -24,7 +24,6 @@ fun MoneyText(
     style: MoneyTextStyle = MoneyTextStyle.Body,
     showValues: Boolean = true,
 ) {
-    val formatter = remember { createIndianNumberFormatter() }
     val typography = MaterialTheme.typography
     val textStyle = when (style) {
         MoneyTextStyle.Display -> typography.displaySmall
@@ -33,20 +32,25 @@ fun MoneyText(
     }
 
     Text(
-        text = if (showValues) formatIndianRupees(amount, formatter) else "— — —",
+        text = if (showValues) formatIndianRupees(amount) else "— — —",
         modifier = modifier,
         style = textStyle.withTabularFigures(),
     )
 }
 
-internal fun formatIndianRupees(
+fun formatIndianRupees(
     amount: BigDecimal,
-    formatter: NumberFormat = createIndianNumberFormatter(),
+    formatter: NumberFormat? = null,
 ): String {
-    val formattedAmount = formatter.format(amount.abs()).replace(",", "").trim()
-    val groupedAmount = groupIndianDigits(formattedAmount)
+    val rounded = amount.setScale(2, RoundingMode.HALF_UP)
+    val absAmount = rounded.abs()
+    val plainString = absAmount.toPlainString()
+    val parts = plainString.split('.')
+    val integerPart = parts[0]
+    val fractionPart = if (parts.size > 1) parts[1] else "00"
+    val groupedInteger = groupIndianDigits(integerPart)
     val sign = if (amount.signum() < 0) "-" else ""
-    return "₹ $sign$groupedAmount"
+    return "₹ $sign$groupedInteger.$fractionPart"
 }
 
 private fun createIndianNumberFormatter(): NumberFormat =

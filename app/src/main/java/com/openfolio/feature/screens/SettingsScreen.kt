@@ -76,6 +76,14 @@ fun SettingsScreen(
         }
     }
 
+    val dossierLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("text/markdown"),
+    ) { uri ->
+        if (uri != null) {
+            viewModel.exportDossierToUri(uri)
+        }
+    }
+
     LaunchedEffect(viewModel) {
         viewModel.events.collect { event ->
             when (event) {
@@ -418,6 +426,96 @@ fun SettingsScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = colors.content,
                         )
+                    }
+                }
+            }
+
+            // Succession & Legal Claim Dossier Card
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                color = colors.surface,
+                border = BorderStroke(1.dp, colors.border),
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text(
+                        text = "Succession & Legal Claim Dossier",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = colors.content,
+                    )
+                    Text(
+                        text = "Generate a tamper-evident, legal source-of-truth dossier containing Folio numbers, Demat account numbers, Certificate IDs, and source statement SHA-256 hashes for legal heirs and succession claims.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.muted,
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Button(
+                            onClick = {
+                                dossierLauncher.launch(viewModel.getDefaultDossierFileName())
+                            },
+                            enabled = !uiState.isExportingDossier,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = colors.brand,
+                                contentColor = Color.White,
+                            ),
+                            shape = RoundedCornerShape(10.dp),
+                        ) {
+                            if (uiState.isExportingDossier) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    color = Color.White,
+                                    strokeWidth = 2.dp,
+                                )
+                                Spacer(Modifier.width(8.dp))
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Filled.FileDownload,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Spacer(Modifier.width(6.dp))
+                            }
+                            Text(
+                                text = "Export Dossier",
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                        }
+
+                        OutlinedButton(
+                            onClick = viewModel::exportAndShareDossier,
+                            enabled = !uiState.isExportingDossier,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = colors.brand,
+                            ),
+                            border = BorderStroke(1.dp, colors.brand),
+                            shape = RoundedCornerShape(10.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Share,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                                tint = colors.brand,
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = "Share",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = colors.brand,
+                            )
+                        }
                     }
                 }
             }

@@ -26,6 +26,9 @@ interface DocumentDao {
     @Query("SELECT * FROM documents ORDER BY importDate DESC")
     fun getAllDocuments(): Flow<List<DocumentEntity>>
 
+    @Query("SELECT * FROM documents ORDER BY importDate DESC")
+    suspend fun getAllDocumentsOnce(): List<DocumentEntity>
+
     @Query("SELECT * FROM documents WHERE fileHash = :hash LIMIT 1")
     suspend fun getDocumentByHash(hash: String): DocumentEntity?
 
