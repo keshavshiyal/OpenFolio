@@ -9,3 +9,5 @@ captures/
 .idea/
 export_project.py
 project_export.txt
+*.keystore
+*.jks
