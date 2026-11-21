@@ -18,10 +18,14 @@ import kotlinx.coroutines.withContext
 class LocalDocumentTextExtractor @Inject constructor(
     @ApplicationContext private val context: Context,
 ) : DocumentTextExtractor {
-    override suspend fun extractText(file: File, fileName: String): String =
+    override suspend fun extractText(
+        file: File,
+        fileName: String,
+        password: String?,
+    ): String =
         withContext(Dispatchers.IO) {
             when (fileName.substringAfterLast('.', "").lowercase()) {
-                "pdf" -> extractPdfText(file)
+                "pdf" -> extractPdfText(file, password)
                 "png", "jpg", "jpeg" -> extractImageText(file)
                 else -> throw IllegalArgumentException("Unsupported document type: $fileName")
             }
@@ -37,11 +41,19 @@ class LocalDocumentTextExtractor @Inject constructor(
         }
     }
 
-    private fun extractPdfText(file: File): String {
-        PDDocument.load(file).use { document ->
-            val extracted = PDFTextStripper().getText(document)
-            if (extracted.trim().length >= MIN_SEARCHABLE_TEXT_LENGTH) return extracted
-            return extractFirstPagesWithOcr(document, extracted)
+    private fun extractPdfText(file: File, password: String? = null): String {
+        val doc = if (password.isNullOrBlank()) {
+            PDDocument.load(file)
+        } else {
+            PDDocument.load(file, password)
+        }
+        return doc.use { document ->
+            val stripper = PDFTextStripper().apply {
+                sortByPosition = true // Keeps table columns aligned on one line
+            }
+            val extracted = stripper.getText(document)
+            if (extracted.trim().length >= MIN_SEARCHABLE_TEXT_LENGTH) return@use extracted
+            extractFirstPagesWithOcr(document, extracted)
         }
     }
 
@@ -77,7 +89,7 @@ class LocalDocumentTextExtractor @Inject constructor(
 
     private companion object {
         const val MIN_SEARCHABLE_TEXT_LENGTH = 20
-        const val OCR_PAGE_LIMIT = 3
+        const val OCR_PAGE_LIMIT = 30
         const val OCR_DPI = 150f
     }
 }

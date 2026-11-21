@@ -30,6 +30,7 @@ import com.openfolio.core.domain.repository.DuplicateMatchInfo
 import com.openfolio.core.domain.repository.DuplicateTransactionException
 import com.openfolio.core.domain.repository.SaveDraftTransactionsResult
 import com.openfolio.core.utils.AssetNameNormalizer
+import com.openfolio.core.utils.CasStatementParser
 import com.openfolio.core.utils.DateParser
 import com.openfolio.core.utils.DocumentTextExtractor
 import com.openfolio.core.utils.StructuredFileParser
@@ -71,6 +72,7 @@ class DocumentRepositoryImpl @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val aiProvider: AiProvider,
     @ApplicationScope private val applicationScope: CoroutineScope,
+    private val casStatementParser: CasStatementParser = CasStatementParser(),
 ) : DocumentRepository {
     override fun getAllDocuments(): Flow<List<DocumentEntity>> =
         documentDao.getAllDocuments().flowOn(Dispatchers.IO)
@@ -490,6 +492,17 @@ class DocumentRepositoryImpl @Inject constructor(
                 throw EmptyExtractedTextException()
             }
 
+            if (casStatementParser.isCasStatement(rawText)) {
+                val casDrafts = casStatementParser.parse(rawText, documentId)
+                if (casDrafts.isNotEmpty()) {
+                    database.withTransaction {
+                        draftTransactionDao.insertAll(casDrafts)
+                        documentDao.updateStatus(documentId, DocumentStatus.AI_COMPLETE.name)
+                    }
+                    return@withContext
+                }
+            }
+
             val apiKey = settingsRepository.getGeminiApiKey().trim()
             if (apiKey.isBlank()) {
                 throw MissingApiKeyException()
@@ -724,6 +737,22 @@ class DocumentRepositoryImpl @Inject constructor(
                         require(extractedText.isNotBlank()) {
                             "No text could be extracted from this document."
                         }
+
+                        if (casStatementParser.isCasStatement(extractedText)) {
+                            val casDrafts = casStatementParser.parse(extractedText, document.id)
+                            if (casDrafts.isNotEmpty()) {
+                                database.withTransaction {
+                                    documentDao.updateExtractionResult(
+                                        document.id,
+                                        extractedText,
+                                        DocumentStatus.AI_COMPLETE.name,
+                                    )
+                                    draftTransactionDao.insertAll(casDrafts)
+                                }
+                                return@launch
+                            }
+                        }
+
                         documentDao.updateExtractionResult(
                             document.id,
                             extractedText,
