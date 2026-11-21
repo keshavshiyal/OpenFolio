@@ -64,6 +64,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.openfolio.core.tableextraction.CsvTableGenerator
 import com.openfolio.core.tableextraction.ExtractedTable
 import com.openfolio.core.ui.theme.LocalOpenFolioColors
 
@@ -114,19 +115,27 @@ fun OcrTableReviewScreen(
 
     // Editable state for the current table's rows and headers
     val editableHeaders = remember(activeTable) {
-        mutableStateListOf<String>().apply { addAll(activeTable.headers) }
+        mutableStateListOf<String>().apply {
+            activeTable.headers.forEach { add(it.replace(CsvTableGenerator.COMMA_TOKEN, ",")) }
+        }
     }
     val editableRows = remember(activeTable) {
         mutableStateListOf<MutableList<String>>().apply {
             activeTable.rows.forEach { row ->
-                add(row.toMutableList())
+                add(row.map { it.replace(CsvTableGenerator.COMMA_TOKEN, ",") }.toMutableList())
             }
         }
     }
     val selectedRows = remember(activeTable) {
         mutableStateListOf<Int>().apply {
-            // Default: select all rows
-            addAll(0 until activeTable.rows.size)
+            activeTable.rows.forEachIndexed { idx, row ->
+                if (isRowLikelyFinancialData(row)) {
+                    add(idx)
+                }
+            }
+            if (isEmpty() && activeTable.rows.isNotEmpty()) {
+                addAll(0 until activeTable.rows.size)
+            }
         }
     }
 
@@ -469,3 +478,39 @@ private data class CellCoordinates(
     val row: Int,
     val col: Int,
 )
+
+internal fun isRowLikelyFinancialData(row: List<String>): Boolean {
+    val nonBlankCells = row.map { it.trim() }.filter { it.isNotBlank() }
+    if (nonBlankCells.size < 2) return false
+
+    val combined = nonBlankCells.joinToString(" ")
+    val lower = combined.lowercase()
+
+    val noisePhrases = listOf(
+        "stamp duty",
+        "stt paid",
+        "address updated",
+        "updation of kyc",
+        "registration of nominee",
+        "deletion of nominee",
+        "change / regn of nominee",
+        "opening unit balance",
+        "closing unit balance",
+        "***cancelled***",
+    )
+    if (noisePhrases.any { lower.contains(it) }) return false
+    if (lower.contains("page ") && lower.contains(" of ")) return false
+    if (combined.startsWith("***") && combined.endsWith("***")) return false
+
+    val hasNumericField = nonBlankCells.any { cell ->
+        val cleanNum = cell
+            .replace(",", "")
+            .replace("₹", "")
+            .replace("(", "")
+            .replace(")", "")
+            .trim()
+        cleanNum.toBigDecimalOrNull() != null
+    }
+
+    return hasNumericField
+}

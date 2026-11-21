@@ -51,17 +51,27 @@ class CsvTableGenerator @Inject constructor(
 
         // Headers
         if (table.headers.isNotEmpty()) {
-            sb.append(table.headers.joinToString(separator = ",") { escapeCsv(it) }).append("\n")
+            val headerLine = if (table.headers.size == 1) {
+                escapeCsv(table.headers[0]) + ","
+            } else {
+                table.headers.joinToString(separator = ",") { escapeCsv(it) }
+            }
+            sb.append(headerLine).append("\n")
         }
 
         // Data Rows
         for (row in table.rows) {
-            val paddedRow = if (row.size < table.headers.size) {
+            val paddedRow = if (table.headers.isNotEmpty() && row.size < table.headers.size) {
                 row + List(table.headers.size - row.size) { "" }
             } else {
-                row.take(maxOf(table.headers.size, row.size))
+                row
             }
-            sb.append(paddedRow.joinToString(separator = ",") { escapeCsv(it) }).append("\n")
+            val rowLine = if (paddedRow.size == 1) {
+                escapeCsv(paddedRow[0]) + ","
+            } else {
+                paddedRow.joinToString(separator = ",") { escapeCsv(it) }
+            }
+            sb.append(rowLine).append("\n")
         }
 
         return sb.toString()
@@ -69,11 +79,17 @@ class CsvTableGenerator @Inject constructor(
 
     internal fun escapeCsv(value: String): String {
         val clean = value.trim()
-        val needsQuotes = clean.contains(',') || clean.contains('"') || clean.contains('\n') || clean.contains('\r')
-        return if (needsQuotes) {
+            .replace("\r", " ")
+            .replace("\n", " ")
+            .replace(",", COMMA_TOKEN)
+        return if (clean.contains('"')) {
             "\"" + clean.replace("\"", "\"\"") + "\""
         } else {
             clean
         }
+    }
+
+    companion object {
+        const val COMMA_TOKEN = "&COMMA;"
     }
 }

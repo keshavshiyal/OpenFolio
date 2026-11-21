@@ -89,7 +89,7 @@ class LocalDocumentTextExtractor @Inject constructor(
 
     private companion object {
         const val MIN_SEARCHABLE_TEXT_LENGTH = 20
-        const val OCR_PAGE_LIMIT = 30
+        const val OCR_PAGE_LIMIT = 50
         const val OCR_DPI = 150f
     }
 }

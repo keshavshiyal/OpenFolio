@@ -19,14 +19,12 @@ class LocalTableExtractionPipeline @Inject constructor(
             val words = geometryTextExtractor.extractWords(file, fileName)
             if (words.isEmpty()) return@withContext emptyList()
 
-            // 2. Heuristic clustering engine: rows and columns detection
-            val detected = tableDetectionEngine.detectTables(words, fileName)
-            if (detected.isEmpty()) return@withContext emptyList()
+            // 2. Lossless line-by-line table construction (no rows dropped)
+            val table = tableDetectionEngine.extractAllLinesAsTable(words, fileName)
+            if (table.rows.isEmpty()) return@withContext emptyList()
 
-            // 3. Generate CSV files with prepended metadata
-            detected.map { table ->
-                val csvFile = csvTableGenerator.generateCsvFile(table)
-                table.copy(csvFile = csvFile)
-            }
+            // 3. Generate CSV file with &COMMA; escaping and prepended metadata
+            val csvFile = csvTableGenerator.generateCsvFile(table)
+            listOf(table.copy(csvFile = csvFile))
         }
 }

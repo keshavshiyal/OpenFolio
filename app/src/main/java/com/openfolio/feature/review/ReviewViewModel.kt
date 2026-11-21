@@ -277,7 +277,7 @@ class ReviewViewModel @Inject constructor(
             runAction(ReviewActionState.ProcessingMapping) {
                 try {
                     val generator = csvTableGenerator ?: return@runAction
-                    val filteredTable = if (selectedRowIndices.isNotEmpty()) {
+                    val filteredTable = if (table.rows.size > selectedRowIndices.size && selectedRowIndices.isNotEmpty()) {
                         table.copy(
                             rows = table.rows.filterIndexed { index, _ -> selectedRowIndices.contains(index) }
                         )

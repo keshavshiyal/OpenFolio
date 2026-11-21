@@ -183,4 +183,100 @@ class TableDetectionEngineTest {
         assertEquals(listOf("2024-01-03", "HDFC", "30"), stitched.rows[2])
         assertEquals(listOf("2024-01-04", "SBIN", "40"), stitched.rows[3])
     }
+
+    @Test
+    fun extractAllLinesAsTablePreservesInterleavedNoiseAndSentencesWithoutDroppingTransactions() {
+        val words = listOf(
+            // Scheme Header / sentence in Column 1
+            ExtractedWord("HDFC Top 100 Fund - Growth Option", BoundingBox(50f, 50f, 300f, 65f), 1),
+
+            // Txn 1: 6 columns
+            ExtractedWord("01-Jan-2024", BoundingBox(50f, 80f, 110f, 95f), 1),
+            ExtractedWord("SIP Purchase", BoundingBox(150f, 80f, 220f, 95f), 1),
+            ExtractedWord("5,000.00", BoundingBox(260f, 80f, 310f, 95f), 1),
+            ExtractedWord("50.123", BoundingBox(350f, 80f, 390f, 95f), 1),
+            ExtractedWord("99.7540", BoundingBox(430f, 80f, 480f, 95f), 1),
+            ExtractedWord("50.123", BoundingBox(520f, 80f, 560f, 95f), 1),
+
+            // Interleaved noise: Stamp duty (1 cell)
+            ExtractedWord("*** Stamp Duty ***", BoundingBox(50f, 110f, 180f, 125f), 1),
+
+            // Txn 2: 6 columns
+            ExtractedWord("15-Jan-2024", BoundingBox(50f, 140f, 110f, 155f), 1),
+            ExtractedWord("SIP Purchase", BoundingBox(150f, 140f, 220f, 155f), 1),
+            ExtractedWord("5,000.00", BoundingBox(260f, 140f, 310f, 155f), 1),
+            ExtractedWord("49.500", BoundingBox(350f, 140f, 390f, 155f), 1),
+            ExtractedWord("101.0100", BoundingBox(430f, 140f, 480f, 155f), 1),
+            ExtractedWord("99.623", BoundingBox(520f, 140f, 560f, 155f), 1),
+
+            // Interleaved noise: Address updated (1 cell)
+            ExtractedWord("***Address Updated***", BoundingBox(50f, 170f, 200f, 185f), 1),
+
+            // Txn 3: 6 columns
+            ExtractedWord("05-Feb-2024", BoundingBox(50f, 200f, 110f, 215f), 1),
+            ExtractedWord("Redemption", BoundingBox(150f, 200f, 220f, 215f), 1),
+            ExtractedWord("(4,000.00)", BoundingBox(260f, 200f, 320f, 215f), 1),
+            ExtractedWord("(38.000)", BoundingBox(350f, 200f, 400f, 215f), 1),
+            ExtractedWord("105.2630", BoundingBox(430f, 200f, 480f, 215f), 1),
+            ExtractedWord("61.623", BoundingBox(520f, 200f, 560f, 215f), 1),
+        )
+
+        val table = engine.extractAllLinesAsTable(words, "cas_sample.pdf")
+
+        // All 6 rows preserved (1 header + 3 txns + 2 noise)
+        assertEquals(6, table.rows.size)
+        assertEquals(6, table.headers.size)
+
+        // Sentence row is placed in Column 1 and padded to 6 columns
+        assertEquals("HDFC Top 100 Fund - Growth Option", table.rows[0][0])
+        assertEquals("", table.rows[0][1])
+
+        // Txn 1 preserved in full
+        assertEquals("01-Jan-2024", table.rows[1][0])
+        assertEquals("SIP Purchase", table.rows[1][1])
+        assertEquals("5,000.00", table.rows[1][2])
+        assertEquals("50.123", table.rows[1][3])
+        assertEquals("99.7540", table.rows[1][4])
+        assertEquals("50.123", table.rows[1][5])
+
+        // Noise rows preserved without breaking subsequent rows
+        assertEquals("*** Stamp Duty ***", table.rows[2][0])
+        assertEquals("15-Jan-2024", table.rows[3][0])
+        assertEquals("***Address Updated***", table.rows[4][0])
+        assertEquals("05-Feb-2024", table.rows[5][0])
+    }
+
+    @Test
+    fun extractAllLinesAsTablePreservesStockTradebook() {
+        val words = listOf(
+            // Header row
+            ExtractedWord("Trade Date", BoundingBox(50f, 50f, 120f, 65f), 1),
+            ExtractedWord("Symbol", BoundingBox(180f, 50f, 230f, 65f), 1),
+            ExtractedWord("Type", BoundingBox(280f, 50f, 310f, 65f), 1),
+            ExtractedWord("Qty", BoundingBox(360f, 50f, 390f, 65f), 1),
+            ExtractedWord("Price", BoundingBox(440f, 50f, 480f, 65f), 1),
+
+            // Row 1
+            ExtractedWord("2024-03-01", BoundingBox(50f, 80f, 120f, 95f), 1),
+            ExtractedWord("TCS", BoundingBox(180f, 80f, 210f, 95f), 1),
+            ExtractedWord("BUY", BoundingBox(280f, 80f, 310f, 95f), 1),
+            ExtractedWord("10", BoundingBox(360f, 80f, 380f, 95f), 1),
+            ExtractedWord("3800.00", BoundingBox(440f, 80f, 490f, 95f), 1),
+
+            // Row 2
+            ExtractedWord("2024-03-02", BoundingBox(50f, 110f, 120f, 125f), 1),
+            ExtractedWord("INFY", BoundingBox(180f, 110f, 215f, 125f), 1),
+            ExtractedWord("SELL", BoundingBox(280f, 110f, 315f, 125f), 1),
+            ExtractedWord("50", BoundingBox(360f, 110f, 380f, 125f), 1),
+            ExtractedWord("1600.00", BoundingBox(440f, 110f, 490f, 125f), 1),
+        )
+
+        val table = engine.extractAllLinesAsTable(words, "tradebook.pdf")
+
+        assertEquals(3, table.rows.size)
+        assertEquals(5, table.headers.size)
+        assertEquals(listOf("Trade Date", "Symbol", "Type", "Qty", "Price"), table.rows[0])
+        assertEquals(listOf("2024-03-01", "TCS", "BUY", "10", "3800.00"), table.rows[1])
+        assertEquals(listOf("2024-03-02", "INFY", "SELL", "50", "1600.00"), table.rows[2])
+    }
 }

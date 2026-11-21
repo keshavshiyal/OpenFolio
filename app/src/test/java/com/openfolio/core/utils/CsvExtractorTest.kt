@@ -126,4 +126,61 @@ class CsvExtractorTest {
             file.delete()
         }
     }
+
+    @Test
+    fun decodesCommaTokenAndSkipsHashCommentsInExtract() {
+        val file = File.createTempFile("openfolio-csv-comma-token", ".csv")
+        try {
+            file.writeText(
+                """
+                # Source: statement.pdf
+                # Pages: 1
+                # Table Index: 1
+                # Columns: 4
+                # Rows: 2
+                Date,Description,Amount,Units
+                2024-01-01,Purchase&COMMA; Normal,4&COMMA;999.75,1&COMMA;242.616
+                2024-01-15,Entry Load - NIL&COMMA; Exit Load - NIL,500.00,10.000
+                """.trimIndent(),
+            )
+
+            val table = CsvExtractor().extract(file, headerRowIndex = 0)
+
+            assertEquals(listOf("Date", "Description", "Amount", "Units"), table.headers)
+            assertEquals(2, table.rows.size)
+            assertEquals(
+                listOf("2024-01-01", "Purchase, Normal", "4,999.75", "1,242.616"),
+                table.rows[0],
+            )
+            assertEquals(
+                listOf("2024-01-15", "Entry Load - NIL, Exit Load - NIL", "500.00", "10.000"),
+                table.rows[1],
+            )
+        } finally {
+            file.delete()
+        }
+    }
+
+    @Test
+    fun decodesCommaTokenAndSkipsHashCommentsInPreviewRows() {
+        val file = File.createTempFile("openfolio-csv-comma-preview", ".csv")
+        try {
+            file.writeText(
+                """
+                # Source: test.pdf
+                # Pages: 1
+                Col1,Col2
+                Val1&COMMA; A,Val2&COMMA; B
+                """.trimIndent(),
+            )
+
+            val preview = CsvExtractor().readPreviewRows(file, limit = 10)
+
+            assertEquals(2, preview.size)
+            assertEquals(listOf("Col1", "Col2"), preview[0])
+            assertEquals(listOf("Val1, A", "Val2, B"), preview[1])
+        } finally {
+            file.delete()
+        }
+    }
 }

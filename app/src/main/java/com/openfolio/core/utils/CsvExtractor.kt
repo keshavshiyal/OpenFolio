@@ -2,6 +2,7 @@ package com.openfolio.core.utils
 
 import com.opencsv.CSVReader
 import com.opencsv.CSVReaderBuilder
+import com.openfolio.core.tableextraction.CsvTableGenerator
 import java.io.File
 import java.io.FileInputStream
 import java.io.InputStreamReader
@@ -16,7 +17,11 @@ class CsvExtractor @Inject constructor() {
                 var currentRowIndex = 0
                 var rawHeaders: List<String>? = null
                 while (true) {
-                    val row = reader.readNext()?.toList() ?: break
+                    val rawRow = reader.readNext()?.toList() ?: break
+                    if (rawRow.firstOrNull()?.trimStart()?.startsWith("#") == true) {
+                        continue
+                    }
+                    val row = rawRow.map { it.replace(CsvTableGenerator.COMMA_TOKEN, ",") }
                     if (currentRowIndex == headerRowIndex) {
                         rawHeaders = row
                         break
@@ -29,7 +34,11 @@ class CsvExtractor @Inject constructor() {
                 val headers = uniqueHeaders(rawHeaders)
                 val rows = mutableListOf<List<String>>()
                 while (true) {
-                    val cells = reader.readNext()?.toList() ?: break
+                    val rawCells = reader.readNext()?.toList() ?: break
+                    if (rawCells.firstOrNull()?.trimStart()?.startsWith("#") == true) {
+                        continue
+                    }
+                    val cells = rawCells.map { it.replace(CsvTableGenerator.COMMA_TOKEN, ",") }
                     rows += headers.indices.map { index -> cells.getOrNull(index).orEmpty().trim() }
                 }
                 StructuredTable(headers, rows)
@@ -45,7 +54,11 @@ class CsvExtractor @Inject constructor() {
             CSVReaderBuilder(input).build().use { reader ->
                 val rows = mutableListOf<List<String>>()
                 while (rows.size < limit) {
-                    val row = reader.readNext()?.toList() ?: break
+                    val rawRow = reader.readNext()?.toList() ?: break
+                    if (rawRow.firstOrNull()?.trimStart()?.startsWith("#") == true) {
+                        continue
+                    }
+                    val row = rawRow.map { it.replace(CsvTableGenerator.COMMA_TOKEN, ",") }
                     rows += row
                 }
                 rows

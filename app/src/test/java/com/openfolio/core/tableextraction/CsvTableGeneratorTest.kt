@@ -19,11 +19,13 @@ class CsvTableGeneratorTest {
     }
 
     @Test
-    fun escapeCsvHandlesSpecialCharacters() {
+    fun escapeCsvEncodesCommasAndReplacesNewlines() {
         assertEquals("SimpleText", generator.escapeCsv("SimpleText"))
-        assertEquals("\"Text, with comma\"", generator.escapeCsv("Text, with comma"))
+        assertEquals("Text&COMMA; with comma", generator.escapeCsv("Text, with comma"))
+        assertEquals("4&COMMA;999.75", generator.escapeCsv("4,999.75"))
+        assertEquals("Entry Load - NIL&COMMA; Exit Load - NIL", generator.escapeCsv("Entry Load - NIL, Exit Load - NIL"))
         assertEquals("\"Text with \"\"quotes\"\"\"", generator.escapeCsv("Text with \"quotes\""))
-        assertEquals("\"Line1\nLine2\"", generator.escapeCsv("Line1\nLine2"))
+        assertEquals("Line1 Line2", generator.escapeCsv("Line1\nLine2"))
     }
 
     @Test
@@ -33,7 +35,7 @@ class CsvTableGeneratorTest {
             pageIndices = listOf(1, 2),
             headers = listOf("Date", "Description", "Amount, INR"),
             rows = listOf(
-                listOf("2024-01-10", "Dividend from Reliance", "1500.00"),
+                listOf("2024-01-10", "Dividend from Reliance", "1,500.00"),
                 listOf("2024-01-12", "Purchase \"TCS\"", "3500.50"),
             ),
             sourceFileName = "account_statement.pdf",
@@ -50,10 +52,10 @@ class CsvTableGeneratorTest {
         assertTrue(lines.any { it == "# Rows: 2" })
 
         // Check headers with comma escaping
-        assertTrue(lines.any { it == "Date,Description,\"Amount, INR\"" })
+        assertTrue(lines.any { it == "Date,Description,Amount&COMMA; INR" })
 
         // Check rows
-        assertTrue(lines.any { it == "2024-01-10,Dividend from Reliance,1500.00" })
+        assertTrue(lines.any { it == "2024-01-10,Dividend from Reliance,1&COMMA;500.00" })
         assertTrue(lines.any { it == "2024-01-12,\"Purchase \"\"TCS\"\"\",3500.50" })
     }
 

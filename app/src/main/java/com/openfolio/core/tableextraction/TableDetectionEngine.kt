@@ -7,6 +7,80 @@ import kotlin.math.abs
 @Singleton
 class TableDetectionEngine @Inject constructor() {
 
+    /**
+     * Lossless, line-by-line table builder that extracts every page line-by-line without
+     * dropping rows due to column structure changes or interleaved noise/sentence lines.
+     */
+    fun extractAllLinesAsTable(
+        words: List<ExtractedWord>,
+        sourceFileName: String,
+    ): ExtractedTable {
+        if (words.isEmpty()) {
+            return ExtractedTable(
+                tableIndex = 1,
+                pageIndices = listOf(1),
+                headers = listOf("Column 1", "Column 2"),
+                rows = emptyList(),
+                sourceFileName = sourceFileName,
+            )
+        }
+
+        // 1. Group words by page in sorted order
+        val pages = words.groupBy { it.pageIndex }.toSortedMap()
+
+        // 2. For each page, cluster words into rows and sort top-to-bottom
+        val allRows = mutableListOf<List<String>>()
+        val pageIndices = pages.keys.toList()
+
+        for ((pageIndex, pageWords) in pages) {
+            val pageRows = clusterWordsIntoRows(pageWords, pageIndex).sortedBy { it.top }
+            for (row in pageRows) {
+                val cells = mergeWordsIntoRowCells(row)
+                if (cells.isEmpty()) continue
+
+                if (cells.size == 1) {
+                    allRows.add(listOf(cells[0].text))
+                } else {
+                    allRows.add(cells.map { it.text })
+                }
+            }
+        }
+
+        if (allRows.isEmpty()) {
+            return ExtractedTable(
+                tableIndex = 1,
+                pageIndices = pageIndices.ifEmpty { listOf(1) },
+                headers = listOf("Column 1", "Column 2"),
+                rows = emptyList(),
+                sourceFileName = sourceFileName,
+            )
+        }
+
+        // 4. Compute maxCols
+        val maxCols = maxOf(2, allRows.maxOfOrNull { it.size } ?: 1)
+
+        // 5. Generate generic headers
+        val headers = (1..maxCols).map { "Column $it" }
+
+        // 6. Pad every row to maxCols with empty strings
+        val paddedRows = allRows.map { row ->
+            if (row.size < maxCols) {
+                row + List(maxCols - row.size) { "" }
+            } else {
+                row
+            }
+        }
+
+        // 7. Return single unified ExtractedTable
+        return ExtractedTable(
+            tableIndex = 1,
+            pageIndices = pageIndices,
+            headers = headers,
+            rows = paddedRows,
+            sourceFileName = sourceFileName,
+        )
+    }
+
     fun detectTables(
         words: List<ExtractedWord>,
         sourceFileName: String,
@@ -172,8 +246,8 @@ class TableDetectionEngine @Inject constructor() {
             val gap = word.bbox.left - right
             val avgCharWidth = (word.bbox.width / word.text.length.coerceAtLeast(1)).coerceAtLeast(4f)
 
-            // If gap is small (less than 2-3 character widths), treat as same cell
-            if (gap < avgCharWidth * 3.5f && gap >= -2f) {
+            // If gap is small (less than 2 character widths), treat as same cell
+            if (gap < avgCharWidth * 2.4f && gap >= -2f) {
                 currentText.append(" ").append(word.text)
                 right = maxOf(right, word.bbox.right)
             } else {

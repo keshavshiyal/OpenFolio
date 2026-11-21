@@ -48,6 +48,10 @@ class GeometryTextExtractor @Inject constructor(
                 private var maxHeight = 0f
                 var pageIdx = 0
 
+                init {
+                    sortByPosition = true
+                }
+
                 override fun processTextPosition(text: TextPosition) {
                     val unicode = text.unicode
                     if (unicode.isNullOrBlank()) {
@@ -202,6 +206,6 @@ class GeometryTextExtractor @Inject constructor(
 
     private companion object {
         const val OCR_DPI = 150f
-        const val MAX_OCR_PAGES = 10
+        const val MAX_OCR_PAGES = 50
     }
 }
