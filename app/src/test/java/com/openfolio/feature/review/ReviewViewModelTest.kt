@@ -15,6 +15,8 @@ import com.openfolio.core.domain.repository.DuplicateMatchInfo
 import com.openfolio.core.domain.repository.SaveDraftTransactionsResult
 import com.openfolio.feature.screens.autoMapHeaders
 import com.openfolio.feature.screens.formatEpochMillisToDate
+import java.io.File
+import com.openfolio.core.tableextraction.ExtractedTable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -513,5 +515,19 @@ class ReviewViewModelTest {
 
         override suspend fun ingestFile(uri: Uri, context: Context): DocumentEntity =
             error("Not used in this test")
+
+        var attachedCsvDocumentId: String? = null
+        var attachedCsvFile: File? = null
+
+        override suspend fun attachExtractedCsv(documentId: String, csvFile: File) {
+            attachedCsvDocumentId = documentId
+            attachedCsvFile = csvFile
+        }
+    }
+
+    @Test
+    fun dismissTableReviewHidesDialog() {
+        viewModel.dismissTableReview()
+        assertEquals(false, viewModel.showTableReview.value)
     }
 }

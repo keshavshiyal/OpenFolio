@@ -60,6 +60,11 @@ interface DocumentRepository {
         headerRowNumber: Int = 1,
     ): List<String>
 
+    suspend fun attachExtractedCsv(
+        documentId: String,
+        csvFile: java.io.File,
+    )
+
     suspend fun processStructuredDocument(
         documentId: String,
         mapping: ColumnMappingEntity,

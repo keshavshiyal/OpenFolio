@@ -23,12 +23,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountBalanceWallet
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -36,6 +38,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -63,6 +66,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.openfolio.core.data.local.entity.AssetClass
 import com.openfolio.core.data.local.entity.AssetStatus
+import com.openfolio.core.data.local.entity.TransactionType
+import com.openfolio.core.ui.components.ManualTransactionDialog
 import com.openfolio.core.ui.components.MoneyText
 import com.openfolio.core.ui.components.MoneyTextStyle
 import com.openfolio.core.ui.theme.LocalOpenFolioColors
@@ -73,6 +78,7 @@ import com.openfolio.feature.assets.AssetsUiState
 import com.openfolio.feature.assets.AssetsViewModel
 import com.openfolio.feature.assets.toDisplayTitle
 import java.math.BigDecimal
+import java.time.LocalDate
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -80,14 +86,27 @@ fun AssetsScreen(
     viewModel: AssetsViewModel,
     onAssetClick: (String) -> Unit,
     onImportClick: () -> Unit,
+    onSaveManualTransaction: ((String, AssetClass, TransactionType, LocalDate, BigDecimal, BigDecimal, BigDecimal, BigDecimal, BigDecimal, String?, String?, String?) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val colors = LocalOpenFolioColors.current
+    var showManualTransactionDialog by remember { mutableStateOf(false) }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
         containerColor = colors.background,
+        floatingActionButton = {
+            if (onSaveManualTransaction != null) {
+                FloatingActionButton(
+                    onClick = { showManualTransactionDialog = true },
+                    containerColor = colors.brand,
+                    contentColor = colors.onAccent,
+                ) {
+                    Icon(Icons.Filled.Add, contentDescription = "Add Transaction / Asset")
+                }
+            }
+        },
         topBar = {
             TopAppBar(
                 title = {
@@ -135,6 +154,7 @@ fun AssetsScreen(
         } else if (uiState.isEmpty) {
             EmptyAssetsView(
                 onImportClick = onImportClick,
+                onAddManually = { showManualTransactionDialog = true },
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding),
@@ -149,6 +169,17 @@ fun AssetsScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding),
+            )
+        }
+
+        if (showManualTransactionDialog) {
+            ManualTransactionDialog(
+                onDismiss = { showManualTransactionDialog = false },
+                onSave = { name, cls, type, date, qty, price, netAmt, fees, taxes, notes, broker, tickerOrIsin ->
+                    onSaveManualTransaction?.invoke(
+                        name, cls, type, date, qty, price, netAmt, fees, taxes, notes, broker, tickerOrIsin,
+                    )
+                },
             )
         }
     }
@@ -676,6 +707,7 @@ fun RealizedPnLDisplay(
 @Composable
 private fun EmptyAssetsView(
     onImportClick: () -> Unit,
+    onAddManually: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalOpenFolioColors.current
@@ -720,17 +752,34 @@ private fun EmptyAssetsView(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            OutlinedButton(
-                onClick = onImportClick,
-                shape = RoundedCornerShape(8.dp),
-                border = ButtonDefaults.outlinedButtonBorder.copy(
-                    brush = androidx.compose.ui.graphics.SolidColor(colors.brand),
-                ),
-                colors = ButtonDefaults.outlinedButtonColors(
-                    contentColor = colors.brand,
-                ),
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("Import a statement")
+                if (onAddManually != null) {
+                    Button(
+                        onClick = onAddManually,
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = colors.brand,
+                            contentColor = colors.onAccent,
+                        ),
+                    ) {
+                        Text("Add Manually")
+                    }
+                }
+                OutlinedButton(
+                    onClick = onImportClick,
+                    shape = RoundedCornerShape(8.dp),
+                    border = ButtonDefaults.outlinedButtonBorder.copy(
+                        brush = androidx.compose.ui.graphics.SolidColor(colors.brand),
+                    ),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = colors.brand,
+                    ),
+                ) {
+                    Text("Import a statement")
+                }
             }
         }
     }

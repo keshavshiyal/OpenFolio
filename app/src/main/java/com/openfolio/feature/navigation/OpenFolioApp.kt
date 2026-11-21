@@ -65,6 +65,8 @@ fun OpenFolioApp(
     val structuredHeaders by reviewViewModel.structuredHeaders.collectAsStateWithLifecycle()
     val reviewActionState by reviewViewModel.actionState.collectAsStateWithLifecycle()
     val reviewErrorMessage by reviewViewModel.errorMessage.collectAsStateWithLifecycle()
+    val extractedTables by reviewViewModel.extractedTables.collectAsStateWithLifecycle()
+    val showTableReview by reviewViewModel.showTableReview.collectAsStateWithLifecycle()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
 
@@ -90,12 +92,17 @@ fun OpenFolioApp(
                         NavigationBarItem(
                             selected = currentRoute == destination.route,
                             onClick = {
-                                navController.navigate(destination.route) {
-                                    popUpTo(navController.graph.findStartDestination().id) {
-                                        saveState = true
+                                if (currentRoute != destination.route) {
+                                    navController.navigate(destination.route) {
+                                        popUpTo(navController.graph.findStartDestination().id) {
+                                            inclusive = (destination.route == navController.graph.findStartDestination().route)
+                                            saveState = false
+                                        }
+                                        launchSingleTop = true
+                                        restoreState = false
                                     }
-                                    launchSingleTop = true
-                                    restoreState = true
+                                } else {
+                                    navController.popBackStack(destination.route, inclusive = false)
                                 }
                             },
                             colors = NavigationBarItemDefaults.colors(
@@ -132,7 +139,11 @@ fun OpenFolioApp(
                     onImport = homeViewModel::ingestFile,
                     onImportSuccess = {
                         navController.navigate(AppDestination.Inbox.route) {
+                            popUpTo(navController.graph.findStartDestination().id) {
+                                saveState = false
+                            }
                             launchSingleTop = true
+                            restoreState = false
                         }
                     },
                     onIngestionHandled = homeViewModel::clearIngestionState,
@@ -146,8 +157,15 @@ fun OpenFolioApp(
                         navController.navigate("asset_detail/$assetId")
                     },
                     onImportClick = {
-                        navController.navigate(AppDestination.Inbox.route)
+                        navController.navigate(AppDestination.Inbox.route) {
+                            popUpTo(navController.graph.findStartDestination().id) {
+                                saveState = false
+                            }
+                            launchSingleTop = true
+                            restoreState = false
+                        }
                     },
+                    onSaveManualTransaction = homeViewModel::recordManualTransaction,
                 )
             }
             composable(
@@ -168,7 +186,11 @@ fun OpenFolioApp(
                     viewModel = activityViewModel,
                     onNavigateToInbox = {
                         navController.navigate(AppDestination.Inbox.route) {
+                            popUpTo(navController.graph.findStartDestination().id) {
+                                saveState = false
+                            }
                             launchSingleTop = true
+                            restoreState = false
                         }
                     },
                     onNavigateToAsset = { assetId ->
@@ -224,6 +246,11 @@ fun OpenFolioApp(
                     onConfirmSaveAllAnyway = reviewViewModel::confirmSaveAllAnyway,
                     onDismissDuplicatePrompt = reviewViewModel::dismissDuplicatePrompt,
                     onUpdateAllAssetClass = reviewViewModel::updateAllDraftsAssetClass,
+                    extractedTables = extractedTables,
+                    showTableReview = showTableReview,
+                    onExtractTablesLocally = reviewViewModel::extractTablesLocally,
+                    onDismissTableReview = reviewViewModel::dismissTableReview,
+                    onApproveExtractedTable = reviewViewModel::approveExtractedTable,
                 )
             }
             composable(AppDestination.Settings.route) {

@@ -13,7 +13,11 @@ import com.openfolio.core.domain.repository.EmptyExtractedTextException
 import com.openfolio.core.domain.repository.MissingApiKeyException
 import com.openfolio.core.domain.repository.NoFinancialDataException
 import com.openfolio.core.domain.repository.SaveDraftTransactionsResult
+import com.openfolio.core.tableextraction.CsvTableGenerator
+import com.openfolio.core.tableextraction.ExtractedTable
+import com.openfolio.core.tableextraction.LocalTableExtractionPipeline
 import dagger.hilt.android.lifecycle.HiltViewModel
+import java.io.File
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -26,6 +30,8 @@ import kotlinx.coroutines.launch
 @HiltViewModel
 class ReviewViewModel @Inject constructor(
     private val documentRepository: DocumentRepository,
+    private val localTableExtractionPipeline: LocalTableExtractionPipeline? = null,
+    private val csvTableGenerator: CsvTableGenerator? = null,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow<ReviewUiState>(ReviewUiState.Loading)
     val uiState: StateFlow<ReviewUiState> = _uiState.asStateFlow()
@@ -43,6 +49,12 @@ class ReviewViewModel @Inject constructor(
 
     private val _structuredHeaders = MutableStateFlow<List<String>>(emptyList())
     val structuredHeaders: StateFlow<List<String>> = _structuredHeaders.asStateFlow()
+
+    private val _extractedTables = MutableStateFlow<List<ExtractedTable>>(emptyList())
+    val extractedTables: StateFlow<List<ExtractedTable>> = _extractedTables.asStateFlow()
+
+    private val _showTableReview = MutableStateFlow(false)
+    val showTableReview: StateFlow<Boolean> = _showTableReview.asStateFlow()
 
     private val _actionState = MutableStateFlow<ReviewActionState>(ReviewActionState.Idle)
     val actionState: StateFlow<ReviewActionState> = _actionState.asStateFlow()
@@ -62,6 +74,8 @@ class ReviewViewModel @Inject constructor(
         _selectedDraftIds.value = emptySet()
         _hasExplicitUserSelection.value = false
         _structuredHeaders.value = emptyList()
+        _extractedTables.value = emptyList()
+        _showTableReview.value = false
         _actionState.value = ReviewActionState.Idle
         _errorMessage.value = null
         viewModelScope.launch {
@@ -228,6 +242,55 @@ class ReviewViewModel @Inject constructor(
                         headerRowNumber = headerRowNumber,
                     ),
                 )
+            }
+        }
+    }
+
+    fun extractTablesLocally() {
+        val document = (uiState.value as? ReviewUiState.Loaded)?.document ?: return
+        viewModelScope.launch {
+            runAction(ReviewActionState.ProcessingMapping) {
+                try {
+                    val pipeline = localTableExtractionPipeline ?: return@runAction
+                    val file = File(document.localPath)
+                    val tables = pipeline.extractTablesFromDocument(file, document.fileName)
+                    if (tables.isEmpty()) {
+                        _errorMessage.value = "No structured tables detected in this document."
+                    } else {
+                        _extractedTables.value = tables
+                        _showTableReview.value = true
+                    }
+                } catch (e: Exception) {
+                    _errorMessage.value = e.message ?: "Failed to extract tables locally."
+                }
+            }
+        }
+    }
+
+    fun dismissTableReview() {
+        _showTableReview.value = false
+    }
+
+    fun approveExtractedTable(table: ExtractedTable, selectedRowIndices: Set<Int>) {
+        val document = (uiState.value as? ReviewUiState.Loaded)?.document ?: return
+        viewModelScope.launch {
+            runAction(ReviewActionState.ProcessingMapping) {
+                try {
+                    val generator = csvTableGenerator ?: return@runAction
+                    val filteredTable = if (selectedRowIndices.isNotEmpty()) {
+                        table.copy(
+                            rows = table.rows.filterIndexed { index, _ -> selectedRowIndices.contains(index) }
+                        )
+                    } else {
+                        table
+                    }
+                    val csvFile = generator.generateCsvFile(filteredTable)
+                    documentRepository.attachExtractedCsv(document.id, csvFile)
+                    _showTableReview.value = false
+                    _structuredHeaders.value = documentRepository.getStructuredFileHeaders(document.id, 1)
+                } catch (e: Exception) {
+                    _errorMessage.value = e.message ?: "Failed to approve extracted table."
+                }
             }
         }
     }

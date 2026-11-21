@@ -324,4 +324,51 @@ class AssetDetailViewModelTest {
         assertNotNull(viewModel.uiState.value.errorMessage)
         assertEquals("Asset name cannot be blank.", viewModel.uiState.value.errorMessage)
     }
+
+    @Test
+    fun updateAssetDetailsSuccessfullyUpdatesRepositoryAndPreservesBalances() = runTest {
+        val viewModel = createViewModel()
+        viewModel.loadAsset("asset_rel")
+        advanceUntilIdle()
+
+        viewModel.updateAssetDetails(
+            displayName = "Reliance Industries Ltd",
+            ticker = "RELIANCE.NS",
+            isin = "INE002A01018",
+            assetClass = AssetClass.STOCK,
+        )
+        advanceUntilIdle()
+
+        assertNotNull(updatedAsset)
+        assertEquals("asset_rel", updatedAsset?.id)
+        assertEquals("Reliance Industries Ltd", updatedAsset?.displayName)
+        assertEquals(AssetClass.STOCK, updatedAsset?.assetClass)
+        // Ensure balances and cost basis are preserved
+        assertEquals(BigDecimal("100"), updatedAsset?.totalQuantity)
+        assertEquals(BigDecimal("250000.00"), updatedAsset?.totalInvested)
+        assertEquals(BigDecimal("2500.00"), updatedAsset?.averageCost)
+        assertEquals(BigDecimal("15000.00"), updatedAsset?.realizedPnL)
+        assertTrue(updatedAsset?.identifiersJson?.contains("INE002A01018") == true)
+        assertTrue(updatedAsset?.identifiersJson?.contains("RELIANCE.NS") == true)
+        assertNull(viewModel.uiState.value.errorMessage)
+    }
+
+    @Test
+    fun updateAssetDetailsWithBlankNameSetsErrorWithoutUpdatingRepository() = runTest {
+        val viewModel = createViewModel()
+        viewModel.loadAsset("asset_rel")
+        advanceUntilIdle()
+
+        viewModel.updateAssetDetails(
+            displayName = "   ",
+            ticker = "RELIANCE.NS",
+            isin = "INE002A01018",
+            assetClass = AssetClass.STOCK,
+        )
+        advanceUntilIdle()
+
+        assertNull(updatedAsset)
+        assertNotNull(viewModel.uiState.value.errorMessage)
+        assertEquals("Asset name cannot be blank.", viewModel.uiState.value.errorMessage)
+    }
 }

@@ -11,7 +11,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -22,9 +25,11 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.TableChart
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -56,6 +61,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -65,6 +71,7 @@ import com.openfolio.core.data.local.entity.AssetClass
 import com.openfolio.core.data.local.entity.DocumentStatus
 import com.openfolio.feature.assets.toDisplayTitle
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
+import com.openfolio.core.tableextraction.ExtractedTable
 import com.openfolio.core.ui.theme.LocalOpenFolioColors
 import com.openfolio.feature.review.DocumentPreview
 import com.openfolio.feature.review.DraftReviewItem
@@ -103,6 +110,11 @@ fun ReviewScreen(
     onConfirmSaveAllAnyway: () -> Unit = {},
     onDismissDuplicatePrompt: () -> Unit = {},
     onUpdateAllAssetClass: (AssetClass) -> Unit = {},
+    extractedTables: List<ExtractedTable> = emptyList(),
+    showTableReview: Boolean = false,
+    onExtractTablesLocally: () -> Unit = {},
+    onDismissTableReview: () -> Unit = {},
+    onApproveExtractedTable: (ExtractedTable, Set<Int>) -> Unit = { _, _ -> },
 ) {
     val colors = LocalOpenFolioColors.current
     val document = (uiState as? ReviewUiState.Loaded)?.document
@@ -111,6 +123,15 @@ fun ReviewScreen(
     var editingDraft by remember { mutableStateOf<DraftTransactionEntity?>(null) }
     var headerRowText by remember { mutableStateOf("1") }
     val headerRowNumber = headerRowText.toIntOrNull() ?: 1
+
+    if (showTableReview && extractedTables.isNotEmpty()) {
+        OcrTableReviewScreen(
+            tables = extractedTables,
+            onBack = onDismissTableReview,
+            onApproveTable = onApproveExtractedTable,
+        )
+        return
+    }
 
     LaunchedEffect(errorMessage) {
         if (!errorMessage.isNullOrBlank() && actionState !is ReviewActionState.NoFinancialData) {
@@ -141,7 +162,7 @@ fun ReviewScreen(
         }
     }
 
-    if (actionState == ReviewActionState.ProcessingAi) {
+    if (actionState == ReviewActionState.ProcessingAi || (actionState == ReviewActionState.ProcessingMapping && !showTableReview)) {
         Dialog(
             onDismissRequest = {},
             properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
@@ -161,7 +182,11 @@ fun ReviewScreen(
                         strokeWidth = 3.dp,
                     )
                     Text(
-                        text = "Extracting via Gemini...",
+                        text = if (actionState == ReviewActionState.ProcessingAi) {
+                            "Extracting via Gemini..."
+                        } else {
+                            "Extracting tables locally (OCR)..."
+                        },
                         style = MaterialTheme.typography.bodyLarge,
                         color = colors.content,
                     )
@@ -277,49 +302,57 @@ fun ReviewScreen(
             )
         },
     ) { innerPadding ->
+        val density = LocalDensity.current
+        val isKeyboardVisible = WindowInsets.ime.getBottom(density) > 0
+        val isMapping = document?.status == DocumentStatus.READY_FOR_MAPPING.name && drafts.isEmpty()
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding),
+                .padding(innerPadding)
+                .imePadding()
+                .navigationBarsPadding(),
         ) {
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(0.4f),
-                color = colors.background,
-            ) {
-                if (document != null && document.localPath.isNotBlank()) {
-                    val fileExtension = document.fileName.substringAfterLast('.', "")
-                        .ifBlank { document.localPath.substringAfterLast('.', "") }
-                    DocumentPreview(
-                        filePath = document.localPath,
-                        fileExtension = fileExtension,
-                        headerRowIndex = headerRowNumber,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                } else {
-                    Column(
-                        modifier = Modifier.fillMaxSize(),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center,
-                    ) {
-                        Text(
-                            text = when (uiState) {
-                                is ReviewUiState.Error -> uiState.message
-                                ReviewUiState.NotFound -> "This document is no longer available."
-                                else -> "Loading document…"
-                            },
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = colors.muted,
+            if (!isMapping || !isKeyboardVisible) {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(if (isMapping) 0.35f else 0.4f),
+                    color = colors.background,
+                ) {
+                    if (document != null && document.localPath.isNotBlank()) {
+                        val fileExtension = document.fileName.substringAfterLast('.', "")
+                            .ifBlank { document.localPath.substringAfterLast('.', "") }
+                        DocumentPreview(
+                            filePath = document.localPath,
+                            fileExtension = fileExtension,
+                            headerRowIndex = headerRowNumber,
+                            modifier = Modifier.fillMaxSize(),
                         )
-                        document?.let {
+                    } else {
+                        Column(
+                            modifier = Modifier.fillMaxSize(),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                        ) {
                             Text(
-                                text = it.fileName,
-                                style = MaterialTheme.typography.bodySmall,
+                                text = when (uiState) {
+                                    is ReviewUiState.Error -> uiState.message
+                                    ReviewUiState.NotFound -> "This document is no longer available."
+                                    else -> "Loading document…"
+                                },
+                                style = MaterialTheme.typography.bodyLarge,
                                 color = colors.muted,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
                             )
+                            document?.let {
+                                Text(
+                                    text = it.fileName,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colors.muted,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
                         }
                     }
                 }
@@ -328,7 +361,7 @@ fun ReviewScreen(
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(0.6f),
+                    .weight(if (isMapping && isKeyboardVisible) 1f else if (isMapping) 0.65f else 0.6f),
                 color = colors.surface,
                 shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
             ) {
@@ -429,12 +462,36 @@ fun ReviewScreen(
                             document?.status == DocumentStatus.OCR_COMPLETE.name ||
                             document?.status == DocumentStatus.AI_COMPLETE.name
                         ) {
-                            Button(
-                                onClick = onProcessWithAi,
-                                enabled = actionState != ReviewActionState.ProcessingAi,
+                            Column(
                                 modifier = Modifier.fillMaxWidth(),
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
                             ) {
-                                Text("Process with AI")
+                                Button(
+                                    onClick = onExtractTablesLocally,
+                                    enabled = actionState != ReviewActionState.ProcessingAi &&
+                                        actionState != ReviewActionState.ProcessingMapping,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = colors.brand,
+                                        contentColor = colors.onAccent,
+                                    ),
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.TableChart,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Extract Tables Locally (Offline)")
+                                }
+                                OutlinedButton(
+                                    onClick = onProcessWithAi,
+                                    enabled = actionState != ReviewActionState.ProcessingAi &&
+                                        actionState != ReviewActionState.ProcessingMapping,
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text("Process with Cloud AI")
+                                }
                             }
                         }
                     } else {
@@ -691,9 +748,7 @@ private fun ColumnMappingForm(
         mappedColumns.toSet().size == mappedColumns.size
 
     Column(
-        modifier = modifier
-            .fillMaxSize()
-            .imePadding(),
+        modifier = modifier.fillMaxSize(),
     ) {
         LazyColumn(
             modifier = Modifier

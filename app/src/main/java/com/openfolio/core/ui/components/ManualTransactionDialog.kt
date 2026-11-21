@@ -91,11 +91,32 @@ fun ManualTransactionDialog(
     val priceBigDecimal = unitPriceText.toBigDecimalOrNull()
     val amountBigDecimal = netAmountText.toBigDecimalOrNull()
 
+    val isQuantityRequired = selectedType !in listOf(
+        TransactionType.DIVIDEND,
+        TransactionType.INTEREST,
+        TransactionType.FEE,
+        TransactionType.TAX,
+    )
+
+    val cleanId = tickerOrIsinText.trim().uppercase()
+    val isIsinOrTickerValid = cleanId.isBlank() ||
+        (cleanId.length == 12 && cleanId.take(2).all { it.isLetter() }) ||
+        cleanId.length <= 10
+
+    val isQtyValid = if (isQuantityRequired) {
+        qtyBigDecimal != null && qtyBigDecimal > BigDecimal.ZERO
+    } else {
+        qtyBigDecimal == null || qtyBigDecimal >= BigDecimal.ZERO
+    }
+
+    val isAmountValid = amountBigDecimal != null && amountBigDecimal >= BigDecimal.ZERO
+
     val isFormValid = assetName.isNotBlank() &&
         isDateValid &&
-        qtyBigDecimal != null && qtyBigDecimal > BigDecimal.ZERO &&
-        priceBigDecimal != null && priceBigDecimal >= BigDecimal.ZERO &&
-        amountBigDecimal != null && amountBigDecimal >= BigDecimal.ZERO
+        isQtyValid &&
+        (priceBigDecimal != null && priceBigDecimal >= BigDecimal.ZERO) &&
+        isAmountValid &&
+        isIsinOrTickerValid
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -380,7 +401,7 @@ fun ManualTransactionDialog(
             Button(
                 onClick = {
                     val resolvedDate = parsedDate ?: LocalDate.now()
-                    val cleanQty = qtyBigDecimal ?: BigDecimal.ONE
+                    val cleanQty = qtyBigDecimal ?: if (isQuantityRequired) BigDecimal.ONE else BigDecimal.ZERO
                     val cleanPrice = priceBigDecimal ?: BigDecimal.ZERO
                     val cleanAmount = amountBigDecimal ?: cleanQty.multiply(cleanPrice)
                     val cleanFees = feesText.toBigDecimalOrNull() ?: BigDecimal.ZERO

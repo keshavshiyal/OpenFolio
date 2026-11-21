@@ -389,5 +389,7 @@ class HomeViewModelTest {
             uri: Uri,
             context: Context,
         ): DocumentEntity = ingest()
+
+        override suspend fun attachExtractedCsv(documentId: String, csvFile: java.io.File) = Unit
     }
 }

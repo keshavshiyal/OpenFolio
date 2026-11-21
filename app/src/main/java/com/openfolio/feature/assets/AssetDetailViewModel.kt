@@ -242,6 +242,51 @@ class AssetDetailViewModel @Inject constructor(
         }
     }
 
+    fun updateAssetDetails(
+        displayName: String,
+        ticker: String?,
+        isin: String?,
+        assetClass: AssetClass,
+    ) {
+        val trimmed = displayName.trim()
+        if (trimmed.isBlank()) {
+            _errorMessage.value = "Asset name cannot be blank."
+            return
+        }
+        val currentAsset = uiState.value.asset ?: return
+        viewModelScope.launch {
+            _isSaving.value = true
+            try {
+                val cleanTicker = ticker?.trim()?.uppercase()?.takeIf(String::isNotBlank)
+                val cleanIsin = isin?.trim()?.uppercase()?.takeIf(String::isNotBlank)
+                val idObj = runCatching { org.json.JSONObject(currentAsset.identifiersJson) }
+                    .getOrDefault(org.json.JSONObject())
+                if (cleanTicker != null) {
+                    idObj.put("ticker", cleanTicker)
+                } else {
+                    idObj.remove("ticker")
+                }
+                if (cleanIsin != null) {
+                    idObj.put("isin", cleanIsin)
+                } else {
+                    idObj.remove("isin")
+                }
+
+                val updatedAsset = currentAsset.copy(
+                    displayName = trimmed,
+                    assetClass = assetClass,
+                    identifiersJson = idObj.toString(),
+                    updatedAt = System.currentTimeMillis(),
+                )
+                assetRepository.updateAsset(updatedAsset)
+            } catch (e: Exception) {
+                _errorMessage.value = e.message ?: "Failed to update asset details"
+            } finally {
+                _isSaving.value = false
+            }
+        }
+    }
+
     fun updateDisplayName(newDisplayName: String) {
         val trimmed = newDisplayName.trim()
         if (trimmed.isBlank()) {

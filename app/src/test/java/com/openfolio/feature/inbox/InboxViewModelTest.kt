@@ -105,5 +105,7 @@ class InboxViewModelTest {
 
         override suspend fun ingestFile(uri: Uri, context: Context): DocumentEntity =
             error("Not used in this test")
+
+        override suspend fun attachExtractedCsv(documentId: String, csvFile: java.io.File) = Unit
     }
 }

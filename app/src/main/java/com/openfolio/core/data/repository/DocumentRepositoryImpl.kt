@@ -589,6 +589,20 @@ class DocumentRepositoryImpl @Inject constructor(
             structuredFileParser.read(File(document.localPath), headerRowNumber).headers
         }
 
+    override suspend fun attachExtractedCsv(
+        documentId: String,
+        csvFile: File,
+    ) = withContext(Dispatchers.IO) {
+        val doc = requireNotNull(documentDao.getDocumentById(documentId)) {
+            "Document not found: $documentId"
+        }
+        val updated = doc.copy(
+            localPath = csvFile.absolutePath,
+            status = DocumentStatus.READY_FOR_MAPPING.name,
+        )
+        documentDao.update(updated)
+    }
+
     override suspend fun processStructuredDocument(
         documentId: String,
         mapping: ColumnMappingEntity,

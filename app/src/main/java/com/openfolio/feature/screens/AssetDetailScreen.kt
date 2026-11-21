@@ -68,6 +68,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.openfolio.core.data.local.entity.AssetClass
 import com.openfolio.core.data.local.entity.AssetEntity
 import com.openfolio.core.data.local.entity.AssetStatus
 import com.openfolio.core.data.local.entity.TransactionEntity
@@ -75,6 +76,7 @@ import com.openfolio.core.data.local.entity.TransactionType
 import com.openfolio.core.ui.components.MoneyText
 import com.openfolio.core.ui.components.MoneyTextStyle
 import com.openfolio.core.ui.theme.LocalOpenFolioColors
+import com.openfolio.core.utils.AssetNameNormalizer
 import com.openfolio.core.utils.DateParser
 import com.openfolio.feature.assets.AssetDetailUiState
 import com.openfolio.feature.assets.AssetDetailViewModel
@@ -99,6 +101,7 @@ fun AssetDetailScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     var showMenu by remember { mutableStateOf(false) }
     var showDeleteAssetConfirm by remember { mutableStateOf(false) }
+    var showEditAssetDialog by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
     var showSellDialog by remember { mutableStateOf(false) }
     var showChangeAssetClassDialog by remember { mutableStateOf(false) }
@@ -150,10 +153,10 @@ fun AssetDetailScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = { showRenameDialog = true }) {
+                    IconButton(onClick = { showEditAssetDialog = true }) {
                         Icon(
                             imageVector = Icons.Filled.Edit,
-                            contentDescription = "Rename Asset",
+                            contentDescription = "Edit Asset",
                             tint = colors.content,
                         )
                     }
@@ -177,6 +180,18 @@ fun AssetDetailScreen(
                             onDismissRequest = { showMenu = false },
                             modifier = Modifier.background(colors.surface),
                         ) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = "Edit Details",
+                                        color = colors.content,
+                                    )
+                                },
+                                onClick = {
+                                    showMenu = false
+                                    showEditAssetDialog = true
+                                },
+                            )
                             DropdownMenuItem(
                                 text = {
                                     Text(
@@ -277,6 +292,18 @@ fun AssetDetailScreen(
                 onDismiss = { showChangeAssetClassDialog = false },
                 onConfirm = { newClass ->
                     viewModel.updateAssetClass(newClass)
+                },
+            )
+        }
+
+        // Edit Asset Details Dialog
+        if (showEditAssetDialog && uiState.asset != null) {
+            EditAssetDetailsDialog(
+                asset = uiState.asset!!,
+                onDismiss = { showEditAssetDialog = false },
+                onSave = { newName, newTicker, newIsin, newClass ->
+                    showEditAssetDialog = false
+                    viewModel.updateAssetDetails(newName, newTicker, newIsin, newClass)
                 },
             )
         }
@@ -1404,6 +1431,195 @@ private fun RenameAssetDialog(
                 ),
             ) {
                 Text("Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = colors.muted)
+            }
+        },
+        containerColor = colors.surface,
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun EditAssetDetailsDialog(
+    asset: AssetEntity,
+    onDismiss: () -> Unit,
+    onSave: (displayName: String, ticker: String?, isin: String?, assetClass: AssetClass) -> Unit,
+) {
+    val colors = LocalOpenFolioColors.current
+    var nameText by remember { mutableStateOf(asset.displayName) }
+
+    val initialTicker = remember(asset.identifiersJson) {
+        runCatching {
+            org.json.JSONObject(asset.identifiersJson).optString("ticker").takeIf(String::isNotBlank)
+        }.getOrNull()
+    }
+    var tickerText by remember { mutableStateOf(initialTicker ?: "") }
+
+    val initialIsin = remember(asset.identifiersJson, asset.displayName) {
+        runCatching {
+            org.json.JSONObject(asset.identifiersJson).optString("isin").takeIf(String::isNotBlank)
+        }.getOrNull() ?: AssetNameNormalizer.extractIsin(asset.displayName)
+    }
+    var isinText by remember { mutableStateOf(initialIsin ?: "") }
+
+    var selectedClass by remember { mutableStateOf(asset.assetClass) }
+    var classDropdownExpanded by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "Edit Asset Details",
+                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                color = colors.content,
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                errorMessage?.let { error ->
+                    Text(
+                        text = error,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.lossGlyph,
+                    )
+                }
+
+                // Display Name
+                OutlinedTextField(
+                    value = nameText,
+                    onValueChange = {
+                        nameText = it
+                        if (it.isNotBlank()) errorMessage = null
+                    },
+                    label = { Text("Asset Name *") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = colors.surface,
+                        unfocusedContainerColor = colors.surface,
+                        focusedBorderColor = colors.brand,
+                        unfocusedBorderColor = colors.border,
+                        focusedTextColor = colors.content,
+                        unfocusedTextColor = colors.content,
+                    ),
+                )
+
+                // Ticker / Symbol
+                OutlinedTextField(
+                    value = tickerText,
+                    onValueChange = { tickerText = it },
+                    label = { Text("Ticker / Symbol (e.g., RELIANCE, TCS)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = colors.surface,
+                        unfocusedContainerColor = colors.surface,
+                        focusedBorderColor = colors.brand,
+                        unfocusedBorderColor = colors.border,
+                        focusedTextColor = colors.content,
+                        unfocusedTextColor = colors.content,
+                    ),
+                )
+
+                // ISIN
+                OutlinedTextField(
+                    value = isinText,
+                    onValueChange = { isinText = it },
+                    label = { Text("ISIN (e.g., INE002A01018)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = colors.surface,
+                        unfocusedContainerColor = colors.surface,
+                        focusedBorderColor = colors.brand,
+                        unfocusedBorderColor = colors.border,
+                        focusedTextColor = colors.content,
+                        unfocusedTextColor = colors.content,
+                    ),
+                )
+
+                // Asset Class Dropdown
+                ExposedDropdownMenuBox(
+                    expanded = classDropdownExpanded,
+                    onExpandedChange = { classDropdownExpanded = it },
+                ) {
+                    OutlinedTextField(
+                        value = selectedClass.toDisplayTitle(),
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Asset Class") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = classDropdownExpanded) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .menuAnchor(MenuAnchorType.PrimaryNotEditable),
+                        shape = RoundedCornerShape(8.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = colors.surface,
+                            unfocusedContainerColor = colors.surface,
+                            focusedBorderColor = colors.brand,
+                            unfocusedBorderColor = colors.border,
+                            focusedTextColor = colors.content,
+                            unfocusedTextColor = colors.content,
+                        ),
+                    )
+                    ExposedDropdownMenu(
+                        expanded = classDropdownExpanded,
+                        onDismissRequest = { classDropdownExpanded = false },
+                        modifier = Modifier.background(colors.surface),
+                    ) {
+                        AssetClass.entries.forEach { assetClass ->
+                            DropdownMenuItem(
+                                text = { Text(assetClass.toDisplayTitle(), color = colors.content) },
+                                onClick = {
+                                    selectedClass = assetClass
+                                    classDropdownExpanded = false
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val trimmed = nameText.trim()
+                    if (trimmed.isEmpty()) {
+                        errorMessage = "Asset name cannot be blank."
+                        return@Button
+                    }
+                    val cleanIsin = isinText.trim().uppercase().takeIf(String::isNotBlank)
+                    if (cleanIsin != null && cleanIsin.length != 12) {
+                        errorMessage = "ISIN must be 12 characters (e.g., INE002A01018)."
+                        return@Button
+                    }
+                    onSave(
+                        trimmed,
+                        tickerText.trim().uppercase().takeIf(String::isNotBlank),
+                        cleanIsin,
+                        selectedClass,
+                    )
+                },
+                enabled = nameText.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = colors.brand,
+                    contentColor = colors.onAccent,
+                ),
+            ) {
+                Text("Save Changes")
             }
         },
         dismissButton = {
