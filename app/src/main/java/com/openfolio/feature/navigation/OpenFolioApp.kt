@@ -65,6 +65,9 @@ fun OpenFolioApp(
     val structuredHeaders by reviewViewModel.structuredHeaders.collectAsStateWithLifecycle()
     val reviewActionState by reviewViewModel.actionState.collectAsStateWithLifecycle()
     val reviewErrorMessage by reviewViewModel.errorMessage.collectAsStateWithLifecycle()
+    val isPasswordProtected by reviewViewModel.isPasswordProtected.collectAsStateWithLifecycle()
+    val passwordError by reviewViewModel.passwordError.collectAsStateWithLifecycle()
+    val unlockedPassword by reviewViewModel.unlockedPassword.collectAsStateWithLifecycle()
     val extractedTables by reviewViewModel.extractedTables.collectAsStateWithLifecycle()
     val showTableReview by reviewViewModel.showTableReview.collectAsStateWithLifecycle()
     val backStackEntry by navController.currentBackStackEntryAsState()
@@ -226,6 +229,10 @@ fun OpenFolioApp(
                     actionState = reviewActionState,
                     errorMessage = reviewErrorMessage,
                     draftReviewItems = reviewDraftReviewItems,
+                    isPasswordProtected = isPasswordProtected,
+                    passwordError = passwordError,
+                    unlockedPassword = unlockedPassword,
+                    onUnlockPdf = reviewViewModel::unlockPdf,
                     onBack = { navController.popBackStack() },
                     onSkip = { navController.popBackStack() },
                     onProcessWithAi = reviewViewModel::onProcessWithAi,

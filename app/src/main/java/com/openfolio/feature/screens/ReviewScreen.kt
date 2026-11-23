@@ -25,7 +25,10 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.TableChart
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -63,6 +66,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -90,6 +95,10 @@ fun ReviewScreen(
     actionState: ReviewActionState,
     errorMessage: String? = null,
     draftReviewItems: List<DraftReviewItem> = emptyList(),
+    isPasswordProtected: Boolean = false,
+    passwordError: String? = null,
+    unlockedPassword: String? = null,
+    onUnlockPdf: (String) -> Unit = {},
     onBack: () -> Unit,
     onSkip: () -> Unit,
     onProcessWithAi: () -> Unit,
@@ -123,6 +132,8 @@ fun ReviewScreen(
     var editingDraft by remember { mutableStateOf<DraftTransactionEntity?>(null) }
     var headerRowText by remember { mutableStateOf("1") }
     val headerRowNumber = headerRowText.toIntOrNull() ?: 1
+    var passwordInput by remember { mutableStateOf("") }
+    var passwordVisible by remember { mutableStateOf(false) }
 
     if (showTableReview && extractedTables.isNotEmpty()) {
         OcrTableReviewScreen(
@@ -327,6 +338,7 @@ fun ReviewScreen(
                             filePath = document.localPath,
                             fileExtension = fileExtension,
                             headerRowIndex = headerRowNumber,
+                            password = unlockedPassword,
                             modifier = Modifier.fillMaxSize(),
                         )
                     } else {
@@ -399,6 +411,76 @@ fun ReviewScreen(
                             modifier = Modifier.weight(1f),
                         )
                     } else if (drafts.isEmpty()) {
+                        val isLocked = isPasswordProtected || document?.extractedText == "[PASSWORD_PROTECTED]"
+                        if (isLocked) {
+                            Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                color = colors.brand.copy(alpha = 0.08f),
+                                border = BorderStroke(1.dp, colors.brand.copy(alpha = 0.25f)),
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(16.dp),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Lock,
+                                            contentDescription = null,
+                                            tint = colors.brand,
+                                            modifier = Modifier.size(20.dp),
+                                        )
+                                        Text(
+                                            text = "Password-Protected PDF",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            color = colors.content,
+                                        )
+                                    }
+                                    Text(
+                                        text = "This statement is encrypted. Common passwords: PAN number (e.g. ABCDE1234F) or Date of Birth (DDMMYYYY).",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = colors.muted,
+                                    )
+                                    OutlinedTextField(
+                                        value = passwordInput,
+                                        onValueChange = { passwordInput = it },
+                                        label = { Text("PDF Password") },
+                                        placeholder = { Text("Enter PAN or DOB") },
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                                        trailingIcon = {
+                                            val image = if (passwordVisible) Icons.Filled.Visibility else Icons.Filled.VisibilityOff
+                                            val description = if (passwordVisible) "Hide password" else "Show password"
+                                            IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                                                Icon(imageVector = image, contentDescription = description)
+                                            }
+                                        },
+                                        isError = !passwordError.isNullOrBlank(),
+                                        supportingText = if (!passwordError.isNullOrBlank()) {
+                                            { Text(passwordError, color = colors.lossGlyph) }
+                                        } else null,
+                                    )
+                                    Button(
+                                        onClick = { onUnlockPdf(passwordInput) },
+                                        enabled = passwordInput.isNotBlank() &&
+                                            actionState != ReviewActionState.ProcessingAi &&
+                                            actionState != ReviewActionState.ProcessingMapping,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = colors.brand,
+                                            contentColor = colors.onAccent,
+                                        ),
+                                    ) {
+                                        Text("Unlock & Extract Offline")
+                                    }
+                                }
+                            }
+                        }
+
                         var batchClassExpanded by remember { mutableStateOf(false) }
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -446,6 +528,7 @@ fun ReviewScreen(
                                 uiState is ReviewUiState.Loading -> "Loading document…"
                                 uiState is ReviewUiState.Error -> uiState.message
                                 uiState == ReviewUiState.NotFound -> "No document found."
+                                isLocked -> "Enter password above to decrypt and parse transactions."
                                 document?.status == DocumentStatus.PENDING_OCR.name ->
                                     "Local text extraction is in progress."
                                 document?.status == DocumentStatus.OCR_FAILED.name ->
@@ -459,8 +542,10 @@ fun ReviewScreen(
                             color = colors.muted,
                         )
                         if (
-                            document?.status == DocumentStatus.OCR_COMPLETE.name ||
-                            document?.status == DocumentStatus.AI_COMPLETE.name
+                            !isLocked && (
+                                document?.status == DocumentStatus.OCR_COMPLETE.name ||
+                                document?.status == DocumentStatus.AI_COMPLETE.name
+                            )
                         ) {
                             Column(
                                 modifier = Modifier.fillMaxWidth(),

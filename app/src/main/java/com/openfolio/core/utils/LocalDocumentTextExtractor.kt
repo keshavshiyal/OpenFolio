@@ -7,6 +7,7 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import com.tom_roush.pdfbox.pdmodel.PDDocument
+import com.tom_roush.pdfbox.pdmodel.encryption.InvalidPasswordException
 import com.tom_roush.pdfbox.rendering.PDFRenderer
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import java.io.File
@@ -42,11 +43,23 @@ class LocalDocumentTextExtractor @Inject constructor(
     }
 
     private fun extractPdfText(file: File, password: String? = null): String {
-        val doc = if (password.isNullOrBlank()) {
-            PDDocument.load(file)
-        } else {
-            PDDocument.load(file, password)
+        val doc = try {
+            if (password.isNullOrBlank()) {
+                PDDocument.load(file)
+            } else {
+                PDDocument.load(file, password)
+            }
+        } catch (e: Exception) {
+            val isPassword = e is InvalidPasswordException ||
+                e.message?.contains("password", ignoreCase = true) == true ||
+                e.cause is InvalidPasswordException
+            if (isPassword) {
+                if (e is InvalidPasswordException) throw e
+                throw java.io.IOException("This PDF is password-protected. Please enter password.", e)
+            }
+            throw e
         }
+
         return doc.use { document ->
             val stripper = PDFTextStripper().apply {
                 sortByPosition = true // Keeps table columns aligned on one line

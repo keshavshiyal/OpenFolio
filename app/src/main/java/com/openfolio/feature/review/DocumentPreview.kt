@@ -15,6 +15,7 @@ fun DocumentPreview(
     filePath: String,
     fileExtension: String,
     headerRowIndex: Int,
+    password: String? = null,
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalOpenFolioColors.current
@@ -40,6 +41,7 @@ fun DocumentPreview(
         "pdf" -> {
             PdfPreview(
                 filePath = filePath,
+                password = password,
                 modifier = modifier,
             )
         }

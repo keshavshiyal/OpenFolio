@@ -13,10 +13,14 @@ class LocalTableExtractionPipeline @Inject constructor(
     private val csvTableGenerator: CsvTableGenerator,
 ) {
 
-    suspend fun extractTablesFromDocument(file: File, fileName: String): List<ExtractedTable> =
+    suspend fun extractTablesFromDocument(
+        file: File,
+        fileName: String,
+        password: String? = null,
+    ): List<ExtractedTable> =
         withContext(Dispatchers.IO) {
             // 1. Extract positioned words with geometric coordinates
-            val words = geometryTextExtractor.extractWords(file, fileName)
+            val words = geometryTextExtractor.extractWords(file, fileName, password)
             if (words.isEmpty()) return@withContext emptyList()
 
             // 2. Lossless line-by-line table construction (no rows dropped)

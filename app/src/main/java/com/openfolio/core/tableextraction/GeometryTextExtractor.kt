@@ -8,6 +8,7 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import com.tom_roush.pdfbox.pdmodel.PDDocument
+import com.tom_roush.pdfbox.pdmodel.encryption.InvalidPasswordException
 import com.tom_roush.pdfbox.rendering.PDFRenderer
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import com.tom_roush.pdfbox.text.TextPosition
@@ -24,18 +25,39 @@ class GeometryTextExtractor @Inject constructor(
     @ApplicationContext private val context: Context,
 ) {
 
-    suspend fun extractWords(file: File, fileName: String): List<ExtractedWord> =
+    suspend fun extractWords(
+        file: File,
+        fileName: String,
+        password: String? = null,
+    ): List<ExtractedWord> =
         withContext(Dispatchers.IO) {
             val extension = fileName.substringAfterLast('.', file.extension).lowercase()
             when (extension) {
-                "pdf" -> extractFromPdf(file)
+                "pdf" -> extractFromPdf(file, password)
                 "png", "jpg", "jpeg" -> extractFromImage(file)
                 else -> throw IllegalArgumentException("Unsupported file type for geometry extraction: $fileName")
             }
         }
 
-    private fun extractFromPdf(file: File): List<ExtractedWord> {
-        return PDDocument.load(file).use { document ->
+    private fun extractFromPdf(file: File, password: String? = null): List<ExtractedWord> {
+        val doc = try {
+            if (password.isNullOrBlank()) {
+                PDDocument.load(file)
+            } else {
+                PDDocument.load(file, password)
+            }
+        } catch (e: Exception) {
+            val isPassword = e is InvalidPasswordException ||
+                e.message?.contains("password", ignoreCase = true) == true ||
+                e.cause is InvalidPasswordException
+            if (isPassword) {
+                if (e is InvalidPasswordException) throw e
+                throw java.io.IOException("This PDF is password-protected. Please enter password.", e)
+            }
+            throw e
+        }
+
+        return doc.use { document ->
             val pageCount = document.numberOfPages
             val digitalWords = mutableListOf<ExtractedWord>()
 

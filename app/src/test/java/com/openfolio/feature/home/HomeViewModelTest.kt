@@ -391,5 +391,10 @@ class HomeViewModelTest {
         ): DocumentEntity = ingest()
 
         override suspend fun attachExtractedCsv(documentId: String, csvFile: java.io.File) = Unit
+
+        override suspend fun unlockAndProcessPdf(
+            documentId: String,
+            password: String,
+        ): Result<Unit> = Result.success(Unit)
     }
 }

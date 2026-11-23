@@ -55,6 +55,11 @@ interface DocumentRepository {
 
     suspend fun processDocumentWithMockAi(documentId: String)
 
+    suspend fun unlockAndProcessPdf(
+        documentId: String,
+        password: String,
+    ): Result<Unit>
+
     suspend fun getStructuredFileHeaders(
         documentId: String,
         headerRowNumber: Int = 1,

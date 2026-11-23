@@ -78,90 +78,105 @@ fun decodeSampledBitmapFromFile(
     return BitmapFactory.decodeFile(filePath, options)
 }
 
+class PdfResourceHolder(
+    val bitmap: Bitmap,
+    val renderer: PdfRenderer? = null,
+    val pfd: ParcelFileDescriptor? = null,
+) {
+    fun close() {
+        if (!bitmap.isRecycled) bitmap.recycle()
+        try { renderer?.close() } catch (_: Exception) {}
+        try { pfd?.close() } catch (_: Exception) {}
+    }
+}
+
 fun renderPdfFirstPage(
     filePath: String,
+    password: String? = null,
     maxWidth: Int = 1440,
     maxHeight: Int = 1920,
-): Triple<Bitmap, PdfRenderer, ParcelFileDescriptor> {
+): PdfResourceHolder {
     val file = File(filePath)
     if (!file.exists() || !file.canRead()) {
         throw IllegalArgumentException("PDF file does not exist or is unreadable: $filePath")
     }
 
-    val pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
-    val renderer = try {
-        PdfRenderer(pfd)
-    } catch (e: Exception) {
-        pfd.close()
-        throw e
+    if (password.isNullOrBlank()) {
+        val pfd = runCatching { ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY) }.getOrNull()
+        if (pfd != null) {
+            try {
+                val renderer = PdfRenderer(pfd)
+                if (renderer.pageCount > 0) {
+                    val page = renderer.openPage(0)
+                    try {
+                        val scale = minOf(
+                            maxWidth.toFloat() / page.width.coerceAtLeast(1),
+                            maxHeight.toFloat() / page.height.coerceAtLeast(1),
+                            2f,
+                        ).coerceAtLeast(1f)
+                        val bitmapWidth = (page.width * scale).toInt().coerceAtLeast(1)
+                        val bitmapHeight = (page.height * scale).toInt().coerceAtLeast(1)
+                        val bitmap = Bitmap.createBitmap(bitmapWidth, bitmapHeight, Bitmap.Config.ARGB_8888)
+                        val canvas = Canvas(bitmap)
+                        canvas.drawColor(Color.WHITE)
+                        page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                        return PdfResourceHolder(bitmap, renderer, pfd)
+                    } finally {
+                        page.close()
+                    }
+                } else {
+                    renderer.close()
+                    pfd.close()
+                }
+            } catch (_: Exception) {
+                try { pfd.close() } catch (_: Exception) {}
+            }
+        }
     }
 
-    try {
-        if (renderer.pageCount == 0) {
-            renderer.close()
-            pfd.close()
+    // PDFBox fallback (handles password-protected PDFs and native renderer failures)
+    val doc = if (password.isNullOrBlank()) {
+        com.tom_roush.pdfbox.pdmodel.PDDocument.load(file)
+    } else {
+        com.tom_roush.pdfbox.pdmodel.PDDocument.load(file, password)
+    }
+    return doc.use { pdDoc ->
+        if (pdDoc.numberOfPages == 0) {
             throw IllegalArgumentException("PDF has no pages: $filePath")
         }
-        val page = renderer.openPage(0)
-        try {
-            val pageWidth = page.width
-            val pageHeight = page.height
-
-            val scale = minOf(
-                maxWidth.toFloat() / pageWidth.coerceAtLeast(1),
-                maxHeight.toFloat() / pageHeight.coerceAtLeast(1),
-                2f,
-            ).coerceAtLeast(1f)
-
-            val bitmapWidth = (pageWidth * scale).toInt().coerceAtLeast(1)
-            val bitmapHeight = (pageHeight * scale).toInt().coerceAtLeast(1)
-
-            val bitmap = Bitmap.createBitmap(bitmapWidth, bitmapHeight, Bitmap.Config.ARGB_8888)
-            val canvas = Canvas(bitmap)
-            canvas.drawColor(Color.WHITE)
-            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-
-            return Triple(bitmap, renderer, pfd)
-        } finally {
-            page.close()
-        }
-    } catch (e: Exception) {
-        renderer.close()
-        pfd.close()
-        throw e
+        val pdfBoxRenderer = com.tom_roush.pdfbox.rendering.PDFRenderer(pdDoc)
+        val bitmap = pdfBoxRenderer.renderImageWithDPI(0, 150f)
+        PdfResourceHolder(bitmap, null, null)
     }
 }
 
 @Composable
 fun PdfPreview(
     filePath: String,
+    password: String? = null,
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalOpenFolioColors.current
-    var isLoading by remember(filePath) { mutableStateOf(true) }
-    var errorMessage by remember(filePath) { mutableStateOf<String?>(null) }
-    var bitmap by remember(filePath) { mutableStateOf<Bitmap?>(null) }
-    var pdfRenderer by remember(filePath) { mutableStateOf<PdfRenderer?>(null) }
-    var parcelFd by remember(filePath) { mutableStateOf<ParcelFileDescriptor?>(null) }
+    var resourceHolder by remember(filePath, password) { mutableStateOf<PdfResourceHolder?>(null) }
+    var isLoading by remember(filePath, password) { mutableStateOf(true) }
+    var errorMessage by remember(filePath, password) { mutableStateOf<String?>(null) }
 
-    DisposableEffect(filePath) {
+    DisposableEffect(filePath, password) {
         onDispose {
-            bitmap?.let { if (!it.isRecycled) it.recycle() }
-            pdfRenderer?.close()
-            parcelFd?.close()
+            resourceHolder?.close()
+            resourceHolder = null
         }
     }
 
-    LaunchedEffect(filePath) {
+    LaunchedEffect(filePath, password) {
         isLoading = true
         errorMessage = null
         try {
-            val (renderedBitmap, renderer, pfd) = withContext(Dispatchers.IO) {
-                renderPdfFirstPage(filePath)
+            val holder = withContext(Dispatchers.IO) {
+                renderPdfFirstPage(filePath, password)
             }
-            bitmap = renderedBitmap
-            pdfRenderer = renderer
-            parcelFd = pfd
+            resourceHolder?.close()
+            resourceHolder = holder
         } catch (_: Exception) {
             errorMessage = "Preview unavailable"
         } finally {
@@ -182,7 +197,7 @@ fun PdfPreview(
                 )
             }
         }
-        errorMessage != null || bitmap == null -> {
+        errorMessage != null || resourceHolder == null -> {
             Box(
                 modifier = modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center,
@@ -196,7 +211,7 @@ fun PdfPreview(
         }
         else -> {
             ZoomableBitmapPreview(
-                bitmap = bitmap!!,
+                bitmap = resourceHolder!!.bitmap,
                 modifier = modifier,
             )
         }

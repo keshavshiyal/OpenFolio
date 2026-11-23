@@ -28,7 +28,9 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -523,6 +525,75 @@ class ReviewViewModelTest {
             attachedCsvDocumentId = documentId
             attachedCsvFile = csvFile
         }
+
+        var unlockCallCount = 0
+        var lastUnlockPassword: String? = null
+        var unlockResult: Result<Unit> = Result.success(Unit)
+
+        override suspend fun unlockAndProcessPdf(
+            documentId: String,
+            password: String,
+        ): Result<Unit> {
+            unlockCallCount++
+            lastUnlockPassword = password
+            if (unlockResult.isSuccess) {
+                document = document?.copy(extractedText = "Unlocked document text")
+            }
+            return unlockResult
+        }
+    }
+
+    @Test
+    fun unlockPdfSuccessClearsPasswordPromptAndStoresPassword() = runTest {
+        val doc = DocumentEntity(
+            id = "doc_locked",
+            fileName = "cams.pdf",
+            localPath = "/data/cams.pdf",
+            fileHash = "hash1",
+            fileSize = 100L,
+            importDate = 1000L,
+            status = DocumentStatus.OCR_FAILED.name,
+            extractedText = "[PASSWORD_PROTECTED]",
+        )
+        repository.document = doc
+        viewModel.loadDocument("doc_locked")
+        testScheduler.advanceUntilIdle()
+
+        assertTrue(viewModel.isPasswordProtected.value)
+
+        viewModel.unlockPdf("ABCDE1234F")
+        testScheduler.advanceUntilIdle()
+
+        assertFalse(viewModel.isPasswordProtected.value)
+        assertEquals("ABCDE1234F", viewModel.unlockedPassword.value)
+        assertNull(viewModel.passwordError.value)
+        assertEquals(1, repository.unlockCallCount)
+        assertEquals("ABCDE1234F", repository.lastUnlockPassword)
+    }
+
+    @Test
+    fun unlockPdfFailureSetsPasswordError() = runTest {
+        val doc = DocumentEntity(
+            id = "doc_locked_2",
+            fileName = "cams.pdf",
+            localPath = "/data/cams.pdf",
+            fileHash = "hash2",
+            fileSize = 100L,
+            importDate = 1000L,
+            status = DocumentStatus.OCR_FAILED.name,
+            extractedText = "[PASSWORD_PROTECTED]",
+        )
+        repository.document = doc
+        repository.unlockResult = Result.failure<Unit>(Exception("Incorrect password"))
+        viewModel.loadDocument("doc_locked_2")
+        testScheduler.advanceUntilIdle()
+
+        viewModel.unlockPdf("WRONG_PASS")
+        testScheduler.advanceUntilIdle()
+
+        assertTrue(viewModel.isPasswordProtected.value)
+        assertEquals("Incorrect password", viewModel.passwordError.value)
+        assertNull(viewModel.unlockedPassword.value)
     }
 
     @Test

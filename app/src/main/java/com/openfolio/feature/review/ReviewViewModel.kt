@@ -56,6 +56,15 @@ class ReviewViewModel @Inject constructor(
     private val _showTableReview = MutableStateFlow(false)
     val showTableReview: StateFlow<Boolean> = _showTableReview.asStateFlow()
 
+    private val _isPasswordProtected = MutableStateFlow(false)
+    val isPasswordProtected: StateFlow<Boolean> = _isPasswordProtected.asStateFlow()
+
+    private val _unlockedPassword = MutableStateFlow<String?>(null)
+    val unlockedPassword: StateFlow<String?> = _unlockedPassword.asStateFlow()
+
+    private val _passwordError = MutableStateFlow<String?>(null)
+    val passwordError: StateFlow<String?> = _passwordError.asStateFlow()
+
     private val _actionState = MutableStateFlow<ReviewActionState>(ReviewActionState.Idle)
     val actionState: StateFlow<ReviewActionState> = _actionState.asStateFlow()
 
@@ -76,6 +85,9 @@ class ReviewViewModel @Inject constructor(
         _structuredHeaders.value = emptyList()
         _extractedTables.value = emptyList()
         _showTableReview.value = false
+        _isPasswordProtected.value = false
+        _unlockedPassword.value = null
+        _passwordError.value = null
         _actionState.value = ReviewActionState.Idle
         _errorMessage.value = null
         viewModelScope.launch {
@@ -86,9 +98,17 @@ class ReviewViewModel @Inject constructor(
                     return@launch
                 }
                 _uiState.value = ReviewUiState.Loaded(document)
+                if (document.extractedText == "[PASSWORD_PROTECTED]") {
+                    _isPasswordProtected.value = true
+                }
                 documentJob = viewModelScope.launch {
                     documentRepository.observeDocumentById(documentId).collect { updated ->
-                        if (updated != null) _uiState.value = ReviewUiState.Loaded(updated)
+                        if (updated != null) {
+                            _uiState.value = ReviewUiState.Loaded(updated)
+                            if (updated.extractedText == "[PASSWORD_PROTECTED]") {
+                                _isPasswordProtected.value = true
+                            }
+                        }
                     }
                 }
                 draftsJob = viewModelScope.launch {
@@ -179,6 +199,32 @@ class ReviewViewModel @Inject constructor(
                 _actionState.value = ReviewActionState.Error(message)
             }
         }
+    }
+
+    fun unlockPdf(password: String) {
+        val document = (uiState.value as? ReviewUiState.Loaded)?.document ?: return
+        if (password.isBlank()) {
+            _passwordError.value = "Enter the PDF password."
+            return
+        }
+        viewModelScope.launch {
+            _actionState.value = ReviewActionState.ProcessingMapping
+            _passwordError.value = null
+            val result = documentRepository.unlockAndProcessPdf(document.id, password.trim())
+            if (result.isSuccess) {
+                _unlockedPassword.value = password.trim()
+                _isPasswordProtected.value = false
+                _actionState.value = ReviewActionState.Idle
+            } else {
+                _actionState.value = ReviewActionState.Idle
+                _passwordError.value = result.exceptionOrNull()?.message?.takeIf { it.isNotBlank() }
+                    ?: "Incorrect password. Please verify and try again."
+            }
+        }
+    }
+
+    fun clearPasswordError() {
+        _passwordError.value = null
     }
 
     fun dismissMissingApiKeyDialog() {

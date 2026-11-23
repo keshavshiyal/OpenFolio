@@ -107,5 +107,10 @@ class InboxViewModelTest {
             error("Not used in this test")
 
         override suspend fun attachExtractedCsv(documentId: String, csvFile: java.io.File) = Unit
+
+        override suspend fun unlockAndProcessPdf(
+            documentId: String,
+            password: String,
+        ): Result<Unit> = Result.success(Unit)
     }
 }

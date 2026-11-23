@@ -55,6 +55,9 @@ import com.openfolio.core.domain.repository.AiExtractionException
 import com.openfolio.core.domain.repository.EmptyExtractedTextException
 import com.openfolio.core.domain.repository.MissingApiKeyException
 import com.openfolio.core.domain.repository.NoFinancialDataException
+import com.openfolio.core.tableextraction.LocalTableExtractionPipeline
+import com.openfolio.core.utils.BrokerStatementParser
+import com.tom_roush.pdfbox.pdmodel.PDDocument
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
@@ -73,6 +76,8 @@ class DocumentRepositoryImpl @Inject constructor(
     private val aiProvider: AiProvider,
     @ApplicationScope private val applicationScope: CoroutineScope,
     private val casStatementParser: CasStatementParser = CasStatementParser(),
+    private val brokerStatementParser: BrokerStatementParser = BrokerStatementParser(),
+    private val localTableExtractionPipeline: LocalTableExtractionPipeline? = null,
 ) : DocumentRepository {
     override fun getAllDocuments(): Flow<List<DocumentEntity>> =
         documentDao.getAllDocuments().flowOn(Dispatchers.IO)
@@ -488,7 +493,7 @@ class DocumentRepositoryImpl @Inject constructor(
                 "Document text is not ready for AI processing."
             }
             val rawText = document.extractedText.orEmpty().trim()
-            if (rawText.isBlank()) {
+            if (rawText.isBlank() || rawText == PASSWORD_PROTECTED_MARKER) {
                 throw EmptyExtractedTextException()
             }
 
@@ -501,6 +506,26 @@ class DocumentRepositoryImpl @Inject constructor(
                     }
                     return@withContext
                 }
+            }
+
+            if (brokerStatementParser.isBrokerStatement(rawText)) {
+                val brokerDrafts = brokerStatementParser.parse(rawText, documentId, document.getAssetClassEnum())
+                if (brokerDrafts.isNotEmpty()) {
+                    database.withTransaction {
+                        draftTransactionDao.insertAll(brokerDrafts)
+                        documentDao.updateStatus(documentId, DocumentStatus.AI_COMPLETE.name)
+                    }
+                    return@withContext
+                }
+            }
+
+            val tableDrafts = extractDraftsFromTablesLocally(File(document.localPath), document, null)
+            if (tableDrafts.isNotEmpty()) {
+                database.withTransaction {
+                    draftTransactionDao.insertAll(tableDrafts)
+                    documentDao.updateStatus(documentId, DocumentStatus.AI_COMPLETE.name)
+                }
+                return@withContext
             }
 
             val apiKey = settingsRepository.getGeminiApiKey().trim()
@@ -732,41 +757,7 @@ class DocumentRepositoryImpl @Inject constructor(
                     return@withContext document
                 }
                 applicationScope.launch {
-                    try {
-                        val extractedText = documentTextExtractor.extractText(destination, document.fileName)
-                        require(extractedText.isNotBlank()) {
-                            "No text could be extracted from this document."
-                        }
-
-                        if (casStatementParser.isCasStatement(extractedText)) {
-                            val casDrafts = casStatementParser.parse(extractedText, document.id)
-                            if (casDrafts.isNotEmpty()) {
-                                database.withTransaction {
-                                    documentDao.updateExtractionResult(
-                                        document.id,
-                                        extractedText,
-                                        DocumentStatus.AI_COMPLETE.name,
-                                    )
-                                    draftTransactionDao.insertAll(casDrafts)
-                                }
-                                return@launch
-                            }
-                        }
-
-                        documentDao.updateExtractionResult(
-                            document.id,
-                            extractedText,
-                            DocumentStatus.OCR_COMPLETE.name,
-                        )
-                    } catch (exception: CancellationException) {
-                        throw exception
-                    } catch (exception: Exception) {
-                        documentDao.updateExtractionResult(
-                            document.id,
-                            null,
-                            DocumentStatus.OCR_FAILED.name,
-                        )
-                    }
+                    processFileLocally(document, destination, password = null)
                 }
                 document
             } catch (exception: Exception) {
@@ -779,6 +770,183 @@ class DocumentRepositoryImpl @Inject constructor(
                 throw exception
             }
         }
+
+    override suspend fun unlockAndProcessPdf(
+        documentId: String,
+        password: String,
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val document = documentDao.getDocumentById(documentId)
+            ?: return@withContext Result.failure(IllegalArgumentException("Document not found: $documentId"))
+        val file = File(document.localPath)
+        if (!file.exists()) {
+            return@withContext Result.failure(IllegalArgumentException("File does not exist: ${document.localPath}"))
+        }
+
+        try {
+            PDDocument.load(file, password.trim()).use { /* test load */ }
+        } catch (e: Exception) {
+            return@withContext Result.failure(e)
+        }
+
+        processFileLocally(document, file, password.trim())
+        Result.success(Unit)
+    }
+
+    internal suspend fun processFileLocally(
+        document: DocumentEntity,
+        file: File,
+        password: String? = null,
+    ) {
+        try {
+            val extractedText = documentTextExtractor.extractText(file, document.fileName, password)
+            require(extractedText.isNotBlank()) {
+                "No text could be extracted from this document."
+            }
+
+            // Tier 1: CAMS / KFintech / MFCentral / AMC Statement of Account Parser
+            if (casStatementParser.isCasStatement(extractedText)) {
+                val casDrafts = casStatementParser.parse(extractedText, document.id)
+                if (casDrafts.isNotEmpty()) {
+                    database.withTransaction {
+                        documentDao.updateExtractionResult(
+                            document.id,
+                            extractedText,
+                            DocumentStatus.AI_COMPLETE.name,
+                        )
+                        draftTransactionDao.insertAll(casDrafts)
+                    }
+                    return
+                }
+            }
+
+            // Tier 2: Broker Tradebook / Contract Note Parser (Zerodha, Groww, Angel One, Upstox, etc.)
+            if (brokerStatementParser.isBrokerStatement(extractedText)) {
+                val brokerDrafts = brokerStatementParser.parse(extractedText, document.id, document.getAssetClassEnum())
+                if (brokerDrafts.isNotEmpty()) {
+                    database.withTransaction {
+                        documentDao.updateExtractionResult(
+                            document.id,
+                            extractedText,
+                            DocumentStatus.AI_COMPLETE.name,
+                        )
+                        draftTransactionDao.insertAll(brokerDrafts)
+                    }
+                    return
+                }
+            }
+
+            // Tier 3: Offline Table Auto-Extraction Pipeline
+            val tableDrafts = extractDraftsFromTablesLocally(file, document, password)
+            if (tableDrafts.isNotEmpty()) {
+                database.withTransaction {
+                    documentDao.updateExtractionResult(
+                        document.id,
+                        extractedText,
+                        DocumentStatus.AI_COMPLETE.name,
+                    )
+                    draftTransactionDao.insertAll(tableDrafts)
+                }
+                return
+            }
+
+            documentDao.updateExtractionResult(
+                document.id,
+                extractedText,
+                DocumentStatus.OCR_COMPLETE.name,
+            )
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: Exception) {
+            val isPassword = exception is com.tom_roush.pdfbox.pdmodel.encryption.InvalidPasswordException ||
+                exception.message?.contains("password", ignoreCase = true) == true ||
+                exception.cause is com.tom_roush.pdfbox.pdmodel.encryption.InvalidPasswordException
+
+            if (isPassword) {
+                documentDao.updateExtractionResult(
+                    document.id,
+                    PASSWORD_PROTECTED_MARKER,
+                    DocumentStatus.OCR_FAILED.name,
+                )
+            } else {
+                documentDao.updateExtractionResult(
+                    document.id,
+                    null,
+                    DocumentStatus.OCR_FAILED.name,
+                )
+            }
+        }
+    }
+
+    private suspend fun extractDraftsFromTablesLocally(
+        file: File,
+        document: DocumentEntity,
+        password: String?,
+    ): List<DraftTransactionEntity> {
+        val pipeline = localTableExtractionPipeline ?: return emptyList()
+        return try {
+            val tables = pipeline.extractTablesFromDocument(file, document.fileName, password)
+            if (tables.isEmpty()) return emptyList()
+
+            val table = tables.first()
+            if (table.rows.size < 2) return emptyList()
+
+            val headerIndex = table.rows.indexOfFirst { row ->
+                val line = row.joinToString(" ").lowercase()
+                (line.contains("date") || line.contains("time")) &&
+                    (line.contains("symbol") || line.contains("scrip") || line.contains("stock") ||
+                        line.contains("security") || line.contains("instrument") || line.contains("asset") ||
+                        line.contains("description")) &&
+                    (line.contains("qty") || line.contains("quantity") || line.contains("shares") ||
+                        line.contains("units") || line.contains("price") || line.contains("rate") ||
+                        line.contains("amount") || line.contains("value"))
+            }
+
+            if (headerIndex >= 0) {
+                val headers = table.rows[headerIndex]
+                val dataRows = table.rows.drop(headerIndex + 1)
+                val structuredTable = StructuredTable(headers, dataRows)
+
+                val dateCol = headers.firstOrNull { it.contains("date", ignoreCase = true) }
+                val assetCol = headers.firstOrNull {
+                    it.contains("symbol", ignoreCase = true) || it.contains("scrip", ignoreCase = true) ||
+                        it.contains("stock", ignoreCase = true) || it.contains("security", ignoreCase = true) ||
+                        it.contains("instrument", ignoreCase = true) || it.contains("description", ignoreCase = true)
+                }
+                val typeCol = headers.firstOrNull {
+                    it.contains("type", ignoreCase = true) || it.contains("action", ignoreCase = true) ||
+                        it.contains("buy/sell", ignoreCase = true) || it.equals("b/s", ignoreCase = true)
+                }
+                val qtyCol = headers.firstOrNull {
+                    it.contains("qty", ignoreCase = true) || it.contains("quantity", ignoreCase = true) ||
+                        it.contains("shares", ignoreCase = true) || it.contains("units", ignoreCase = true)
+                }
+                val priceCol = headers.firstOrNull {
+                    it.contains("price", ignoreCase = true) || it.contains("rate", ignoreCase = true) ||
+                        it.contains("nav", ignoreCase = true)
+                }
+                val amtCol = headers.firstOrNull {
+                    it.contains("amount", ignoreCase = true) || it.contains("value", ignoreCase = true) ||
+                        it.contains("total", ignoreCase = true)
+                }
+
+                if (dateCol != null && assetCol != null && (qtyCol != null || amtCol != null)) {
+                    val mapping = ColumnMappingEntity(
+                        brokerName = document.fileName.substringBeforeLast('.'),
+                        assetColumn = assetCol,
+                        typeColumn = typeCol.orEmpty(),
+                        quantityColumn = qtyCol.orEmpty(),
+                        priceColumn = priceCol.orEmpty(),
+                        amountColumn = amtCol.orEmpty(),
+                        dateColumn = dateCol,
+                        headerRowNumber = headerIndex + 1,
+                    )
+                    createMappedDrafts(document, structuredTable, mapping)
+                } else emptyList()
+            } else emptyList()
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
 
     private suspend fun persistMappedDrafts(
         document: DocumentEntity,
@@ -1017,7 +1185,8 @@ class DocumentRepositoryImpl @Inject constructor(
         return chunks.ifEmpty { listOf(text) }
     }
 
-    private companion object {
+    companion object {
+        const val PASSWORD_PROTECTED_MARKER = "[PASSWORD_PROTECTED]"
         const val DOCUMENTS_DIRECTORY = "documents"
         const val UNKNOWN_FILE_NAME = "unknown_file"
         const val AI_CHUNK_SIZE = 120_000

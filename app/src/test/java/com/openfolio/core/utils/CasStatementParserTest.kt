@@ -163,4 +163,87 @@ class CasStatementParserTest {
         assertEquals("5000.00", drafts[0].netAmount)
         assertEquals("50.000", drafts[0].quantity)
     }
+
+    @Test
+    fun parseHandlesDiverseDateFormatsAndThreeNumericColumns() {
+        val rawText = """
+            Consolidated Account Statement
+            Registrar: Computer Age Management Services
+            Mirae Asset Large Cap Fund - Direct Plan - Growth ISIN: INF769K01134
+            
+            12/03/2024 Purchase - Normal 3,000.00 30.000 100.0000
+            15-04-2024 SIP Purchase 2,500.00 24.510 102.0000 54.510
+            2024-05-18 Redemption (1,500.00) (14.285) 105.0000 40.225
+            01-Jun-24 Systematic Investment 4,000.00 36.363 110.0000
+        """.trimIndent()
+
+        val drafts = parser.parse(rawText, "doc_dates")
+
+        assertEquals(4, drafts.size)
+        assertEquals("BUY", drafts[0].transactionType)
+        assertEquals("3000.00", drafts[0].netAmount)
+        assertEquals("30.000", drafts[0].quantity)
+        assertEquals("100.0000", drafts[0].price)
+
+        assertEquals("BUY", drafts[1].transactionType)
+        assertEquals("2500.00", drafts[1].netAmount)
+        assertEquals("24.510", drafts[1].quantity)
+
+        assertEquals("SELL", drafts[2].transactionType)
+        assertEquals("1500.00", drafts[2].netAmount)
+        assertEquals("14.285", drafts[2].quantity)
+
+        assertEquals("BUY", drafts[3].transactionType)
+        assertEquals("4000.00", drafts[3].netAmount)
+        assertEquals("36.363", drafts[3].quantity)
+    }
+
+    @Test
+    fun parseHandlesDirectAmcStatementOfAccount() {
+        val rawText = """
+            STATEMENT OF ACCOUNT
+            UTI Mutual Fund
+            Folio Number: 50123456789
+            UTI Nifty 50 Index Fund - Direct Plan - Growth Option
+            ISIN: INF789F01AX7
+            
+            Date Transaction Amount Units Price Balance
+            10-Feb-2024 Systematic Investment Plan 5,000.00 35.123 142.3500 35.123
+        """.trimIndent()
+
+        assertTrue(parser.isCasStatement(rawText))
+        val drafts = parser.parse(rawText, "doc_amc_direct")
+
+        assertEquals(1, drafts.size)
+        assertEquals("UTI Nifty 50 Index Fund - Direct Plan - Growth Option", drafts[0].assetName)
+        assertEquals("INF789F01AX7", drafts[0].isin)
+        assertEquals("BUY", drafts[0].transactionType)
+        assertEquals("5000.00", drafts[0].netAmount)
+        assertEquals("35.123", drafts[0].quantity)
+        assertEquals("142.3500", drafts[0].price)
+    }
+
+    @Test
+    fun parseHandlesWrappedMultiLineDescriptions() {
+        val rawText = """
+            Consolidated Account Statement
+            CAMS
+            Folio No: 123456/78
+            Quant Active Fund - Growth Option - Direct Plan (ISIN: INF966L01AA3)
+            
+            15-Jan-2024
+            Systematic Investment Plan (SIP)
+            via Net Banking
+            10,000.00 15.234 656.4264 15.234
+        """.trimIndent()
+
+        val drafts = parser.parse(rawText, "doc_multiline")
+
+        assertEquals(1, drafts.size)
+        assertEquals("Quant Active Fund - Growth Option - Direct Plan", drafts[0].assetName)
+        assertEquals("INF966L01AA3", drafts[0].isin)
+        assertEquals("BUY", drafts[0].transactionType)
+        assertEquals("10000.00", drafts[0].netAmount)
+        assertEquals("15.234", drafts[0].quantity)
+    }
 }
