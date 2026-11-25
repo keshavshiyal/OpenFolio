@@ -53,12 +53,33 @@ interface DocumentRepository {
 
     suspend fun processDocumentWithAi(documentId: String)
 
+    suspend fun processDocumentWithAi(
+        documentId: String,
+        onProgress: (suspend (stage: String, current: Int, total: Int) -> Unit)?,
+    ) {
+        processDocumentWithAi(documentId)
+    }
+
     suspend fun processDocumentWithMockAi(documentId: String)
+
+    suspend fun runLocalExtraction(
+        documentId: String,
+        password: String? = null,
+        onProgress: (suspend (stage: String, current: Int, total: Int) -> Unit)? = null,
+    ): Result<Unit> = Result.success(Unit)
 
     suspend fun unlockAndProcessPdf(
         documentId: String,
         password: String,
     ): Result<Unit>
+
+    suspend fun retryLocalExtraction(documentId: String) {}
+
+    suspend fun enqueueAiExtraction(documentId: String) {}
+
+    suspend fun recoverInterruptedImports() {}
+
+    suspend fun deleteDocument(documentId: String) {}
 
     suspend fun getStructuredFileHeaders(
         documentId: String,

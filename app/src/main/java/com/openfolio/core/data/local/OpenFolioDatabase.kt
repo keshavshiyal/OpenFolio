@@ -37,7 +37,7 @@ import com.openfolio.core.data.local.entity.ValuationEntity
         TransactionEntity::class,
         ValuationEntity::class,
     ],
-    version = 14,
+    version = 15,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -279,6 +279,16 @@ abstract class OpenFolioDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE `draft_transactions` ADD COLUMN `broker` TEXT DEFAULT NULL")
                 db.execSQL("ALTER TABLE `draft_transactions` ADD COLUMN `isin` TEXT DEFAULT NULL")
                 db.execSQL("ALTER TABLE `draft_transactions` ADD COLUMN `ticker` TEXT DEFAULT NULL")
+            }
+        }
+
+        val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `documents` ADD COLUMN `extractedTextPath` TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE `documents` ADD COLUMN `pageCount` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `documents` ADD COLUMN `processedPages` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `documents` ADD COLUMN `extractionError` TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE `draft_transactions` ADD COLUMN `sourcePage` INTEGER DEFAULT NULL")
             }
         }
     }

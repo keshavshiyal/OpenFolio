@@ -1,10 +1,14 @@
 package com.openfolio.core.utils
 
+import com.tom_roush.pdfbox.io.MemoryUsageSetting
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import java.io.File
+import java.util.UUID
 import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 
 class PdfTextExtractor @Inject constructor() : DocumentParser {
@@ -12,29 +16,42 @@ class PdfTextExtractor @Inject constructor() : DocumentParser {
         fileName.substringAfterLast('.', "").equals("pdf", ignoreCase = true)
 
     override suspend fun extractText(file: File): String = withContext(Dispatchers.IO) {
-        PDDocument.load(file).use { document ->
-            val totalPages = document.numberOfPages
-            if (totalPages <= 1) {
-                return@use PDFTextStripper().getText(document)
-            }
-
-            val textBuilder = StringBuilder()
-            val stripper = PDFTextStripper()
-
-            for (pageNum in 1..totalPages) {
-                stripper.startPage = pageNum
-                stripper.endPage = pageNum
-                val pageText = stripper.getText(document)
-
-                if (isRelevantPage(pageText)) {
-                    textBuilder.append("--- PAGE ").append(pageNum).append(" ---\n")
-                    textBuilder.append(pageText.trim())
-                    textBuilder.append("\n\n")
+        val tempRoot = File(System.getProperty("java.io.tmpdir") ?: ".", "pdfbox_scratch").apply { mkdirs() }
+        val jobScratch = File(tempRoot, UUID.randomUUID().toString()).apply { mkdirs() }
+        val memorySetting = MemoryUsageSetting.setupMixed(8L * 1024L * 1024L).setTempDir(jobScratch)
+        try {
+            PDDocument.load(file, memorySetting).use { document ->
+                val totalPages = document.numberOfPages
+                val stripper = PDFTextStripper().apply {
+                    sortByPosition = true
+                    suppressDuplicateOverlappingText = true
                 }
-            }
+                if (totalPages <= 1) {
+                    return@use stripper.getText(document)
+                }
 
-            val result = textBuilder.toString().trim()
-            if (result.isNotBlank()) result else PDFTextStripper().getText(document)
+                val textBuilder = StringBuilder()
+                val fallbackBuilder = StringBuilder()
+                for (pageNum in 1..totalPages) {
+                    currentCoroutineContext().ensureActive()
+                    stripper.startPage = pageNum
+                    stripper.endPage = pageNum
+                    val pageText = stripper.getText(document)
+
+                    if (isRelevantPage(pageText)) {
+                        textBuilder.append("--- PAGE ").append(pageNum).append(" ---\n")
+                        textBuilder.append(pageText.trim())
+                        textBuilder.append("\n\n")
+                    } else if (textBuilder.isEmpty()) {
+                        fallbackBuilder.append(pageText).append('\n')
+                    }
+                }
+
+                val result = textBuilder.toString().trim()
+                if (result.isNotBlank()) result else fallbackBuilder.toString().trim()
+            }
+        } finally {
+            jobScratch.deleteRecursively()
         }
     }
 

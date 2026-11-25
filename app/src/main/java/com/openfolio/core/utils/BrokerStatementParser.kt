@@ -8,44 +8,119 @@ import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
+data class BrokerParseState(
+    var brokerName: String = "Broker",
+    var hasDetectedBroker: Boolean = false,
+    var hasBrokerSignal: Boolean = false,
+) {
+    internal var columnIndices: BrokerColumnPositions? = null
+}
+
+internal data class BrokerColumnPositions(
+    val dateCol: Int,
+    val assetCol: Int,
+    val typeCol: Int,
+    val qtyCol: Int,
+    val priceCol: Int,
+    val amountCol: Int,
+    val isinCol: Int,
+    val delimiter: String,
+)
+
 /**
  * Deterministic offline parser for broker tradebooks, contract notes, and transaction statements
  * (e.g., Zerodha, Groww, Angel One, Upstox, ICICI Direct, HDFC Securities, Kotak Securities, Dhan).
- * Operates on layout-sorted text extracted offline from PDFs without remote AI.
+ * Operates on layout-sorted text extracted offline from PDFs without remote AI, streaming
+ * page-by-page while preserving broker identity and column layouts across page breaks.
  */
 @Singleton
 class BrokerStatementParser @Inject constructor() {
 
+    fun hasBrokerSignal(sampleText: String): Boolean {
+        if (sampleText.isBlank()) return false
+        return sampleText.contains("Zerodha", ignoreCase = true) ||
+            sampleText.contains("Groww", ignoreCase = true) ||
+            sampleText.contains("Angel One", ignoreCase = true) ||
+            sampleText.contains("Angel Broking", ignoreCase = true) ||
+            sampleText.contains("Upstox", ignoreCase = true) ||
+            sampleText.contains("ICICI Direct", ignoreCase = true) ||
+            sampleText.contains("ICICI Securities", ignoreCase = true) ||
+            sampleText.contains("HDFC Securities", ignoreCase = true) ||
+            sampleText.contains("HDFC Sky", ignoreCase = true) ||
+            sampleText.contains("Kotak Securities", ignoreCase = true) ||
+            sampleText.contains("Kotak Neo", ignoreCase = true) ||
+            sampleText.contains("Dhan", ignoreCase = true) ||
+            sampleText.contains("Tradebook", ignoreCase = true) ||
+            sampleText.contains("Trade Book", ignoreCase = true) ||
+            sampleText.contains("Contract Note", ignoreCase = true) ||
+            sampleText.contains("Order History", ignoreCase = true) ||
+            sampleText.contains("Trade Details", ignoreCase = true) ||
+            sampleText.contains("Executed Orders", ignoreCase = true)
+    }
+
     fun isBrokerStatement(rawText: String): Boolean {
         if (rawText.isBlank()) return false
-        val sample = rawText.take(10000)
-        val hasBrokerSignal = sample.contains("Zerodha", ignoreCase = true) ||
-            sample.contains("Groww", ignoreCase = true) ||
-            sample.contains("Angel One", ignoreCase = true) ||
-            sample.contains("Angel Broking", ignoreCase = true) ||
-            sample.contains("Upstox", ignoreCase = true) ||
-            sample.contains("ICICI Direct", ignoreCase = true) ||
-            sample.contains("ICICI Securities", ignoreCase = true) ||
-            sample.contains("HDFC Securities", ignoreCase = true) ||
-            sample.contains("Kotak Securities", ignoreCase = true) ||
-            sample.contains("Dhan", ignoreCase = true) ||
-            sample.contains("Tradebook", ignoreCase = true) ||
-            sample.contains("Trade Book", ignoreCase = true) ||
-            sample.contains("Contract Note", ignoreCase = true) ||
-            sample.contains("Order History", ignoreCase = true) ||
-            sample.contains("Trade Details", ignoreCase = true) ||
-            sample.contains("Executed Orders", ignoreCase = true)
+        val sample = rawText.take(10_000)
+        val brandOrTitleSignal = hasBrokerSignal(sample)
+        val probeState = BrokerParseState()
+        var foundHeader = false
+        var foundDraft = false
 
-        if (hasBrokerSignal) {
-            val lines = rawText.lines().map { it.trim() }.filter { it.isNotBlank() }
-            val headerIndex = findHeaderLineIndex(lines)
-            if (headerIndex >= 0) return true
+        var scannedLines = 0
+        for (rawLine in rawText.lineSequence()) {
+            val line = rawLine.trim()
+            if (line.isBlank()) continue
+            scannedLines++
+            if (scannedLines > 120 && !brandOrTitleSignal && !foundHeader) break
+
+            if (!probeState.hasDetectedBroker) {
+                val detected = detectBrokerNameOrNull(line)
+                if (detected != null) {
+                    probeState.brokerName = detected
+                    probeState.hasDetectedBroker = true
+                }
+            }
+
+            if (isNoiseOrFooterLine(line)) continue
+
+            if (isHeaderLine(line)) {
+                foundHeader = true
+                if (brandOrTitleSignal) return true
+                probeState.columnIndices = resolveColumnIndices(line) ?: probeState.columnIndices
+                continue
+            }
+
+            if (foundHeader) {
+                val draft = parseLine(line, "probe", probeState, AssetClass.STOCK, sourcePage = null)
+                if (draft != null) {
+                    foundDraft = true
+                    break
+                }
+            }
         }
 
-        // Even without brand signal, detect generic tabular tradebook headers
-        val lines = rawText.lines().map { it.trim() }.filter { it.isNotBlank() }
-        val headerIndex = findHeaderLineIndex(lines)
-        return headerIndex >= 0 && parse(rawText, "probe").isNotEmpty()
+        return (brandOrTitleSignal && foundHeader) || (foundHeader && foundDraft)
+    }
+
+    fun parsePage(
+        pageText: String,
+        pageNumber: Int,
+        documentId: String,
+        state: BrokerParseState,
+        defaultAssetClass: AssetClass = AssetClass.STOCK,
+    ): List<DraftTransactionEntity> {
+        if (pageText.isBlank()) return emptyList()
+        val drafts = mutableListOf<DraftTransactionEntity>()
+        streamLines(
+            lines = pageText.lineSequence(),
+            documentId = documentId,
+            state = state,
+            defaultAssetClass = defaultAssetClass,
+            sourcePage = pageNumber,
+        ) { draft ->
+            drafts.add(draft)
+        }
+        return drafts
     }
 
     fun parse(
@@ -53,40 +128,105 @@ class BrokerStatementParser @Inject constructor() {
         documentId: String,
         defaultAssetClass: AssetClass = AssetClass.STOCK,
     ): List<DraftTransactionEntity> {
+        if (rawText.isBlank()) return emptyList()
         val drafts = mutableListOf<DraftTransactionEntity>()
-        val lines = rawText.lines().map { it.trim() }.filter { it.isNotBlank() }
-        if (lines.isEmpty()) return drafts
-
-        val detectedBroker = detectBrokerName(rawText)
-        val headerIndex = findHeaderLineIndex(lines)
-        val columnIndices = if (headerIndex >= 0) resolveColumnIndices(lines[headerIndex]) else null
-
-        val startLine = if (headerIndex >= 0) headerIndex + 1 else 0
-        for (i in startLine until lines.size) {
-            val line = lines[i]
-            if (isNoiseOrFooterLine(line)) continue
-
-            val draft = if (columnIndices != null && columnIndices.delimiter != " ") {
-                parseTradeRow(
-                    line = line,
-                    documentId = documentId,
-                    columns = columnIndices,
-                    brokerName = detectedBroker,
-                    defaultAssetClass = defaultAssetClass,
-                ) ?: parseFromTokens(line.split(Regex("""\s+""")).filter { it.isNotBlank() }, documentId, detectedBroker, defaultAssetClass)
-            } else {
-                parseFromTokens(line.split(Regex("""\s+""")).filter { it.isNotBlank() }, documentId, detectedBroker, defaultAssetClass)
-            }
-            if (draft != null) {
-                drafts.add(draft)
-            }
+        val state = BrokerParseState()
+        streamLines(
+            lines = rawText.lineSequence(),
+            documentId = documentId,
+            state = state,
+            defaultAssetClass = defaultAssetClass,
+            sourcePage = null,
+        ) { draft ->
+            drafts.add(draft)
         }
-
         return drafts
     }
 
-    private fun detectBrokerName(rawText: String): String {
-        val sample = rawText.take(5000).lowercase()
+    private inline fun streamLines(
+        lines: Sequence<String>,
+        documentId: String,
+        state: BrokerParseState,
+        defaultAssetClass: AssetClass,
+        sourcePage: Int?,
+        onDraft: (DraftTransactionEntity) -> Unit,
+    ) {
+        for (rawLine in lines) {
+            val line = rawLine.trim()
+            if (line.isBlank()) continue
+
+            if (!state.hasDetectedBroker) {
+                val detected = detectBrokerNameOrNull(line)
+                if (detected != null) {
+                    state.brokerName = detected
+                    state.hasDetectedBroker = true
+                    state.hasBrokerSignal = true
+                }
+            }
+            if (!state.hasBrokerSignal && hasBrokerSignal(line)) {
+                state.hasBrokerSignal = true
+            }
+
+            if (isNoiseOrFooterLine(line)) continue
+
+            if (isHeaderLine(line)) {
+                state.hasBrokerSignal = true
+                val resolved = resolveColumnIndices(line)
+                if (resolved != null) {
+                    state.columnIndices = resolved
+                }
+                continue
+            }
+
+            val draft = parseLine(
+                line = line,
+                documentId = documentId,
+                state = state,
+                defaultAssetClass = defaultAssetClass,
+                sourcePage = sourcePage,
+            )
+            if (draft != null) {
+                onDraft(draft)
+            }
+        }
+    }
+
+    private fun parseLine(
+        line: String,
+        documentId: String,
+        state: BrokerParseState,
+        defaultAssetClass: AssetClass,
+        sourcePage: Int?,
+    ): DraftTransactionEntity? {
+        val columnIndices = state.columnIndices
+        return if (columnIndices != null && columnIndices.delimiter != " ") {
+            parseTradeRow(
+                line = line,
+                documentId = documentId,
+                columns = columnIndices,
+                brokerName = state.brokerName,
+                defaultAssetClass = defaultAssetClass,
+                sourcePage = sourcePage,
+            ) ?: parseFromTokens(
+                tokens = line.split(WHITESPACE_REGEX).filter { it.isNotBlank() },
+                documentId = documentId,
+                brokerName = state.brokerName,
+                defaultAssetClass = defaultAssetClass,
+                sourcePage = sourcePage,
+            )
+        } else {
+            parseFromTokens(
+                tokens = line.split(WHITESPACE_REGEX).filter { it.isNotBlank() },
+                documentId = documentId,
+                brokerName = state.brokerName,
+                defaultAssetClass = defaultAssetClass,
+                sourcePage = sourcePage,
+            )
+        }
+    }
+
+    private fun detectBrokerNameOrNull(text: String): String? {
+        val sample = text.lowercase()
         return when {
             sample.contains("zerodha") -> "Zerodha"
             sample.contains("groww") -> "Groww"
@@ -96,43 +236,26 @@ class BrokerStatementParser @Inject constructor() {
             sample.contains("hdfc securities") || sample.contains("hdfc sky") -> "HDFC Securities"
             sample.contains("kotak securities") || sample.contains("kotak neo") -> "Kotak Securities"
             sample.contains("dhan") -> "Dhan"
-            else -> "Broker"
+            else -> null
         }
     }
 
-    private fun findHeaderLineIndex(lines: List<String>): Int {
-        for (i in lines.indices) {
-            val lower = lines[i].lowercase()
-            val hasDate = lower.contains("date") || lower.contains("trade date") || lower.contains("trd date") || lower.contains("order date")
-            val hasAsset = lower.contains("symbol") || lower.contains("scrip") || lower.contains("stock") ||
-                lower.contains("security") || lower.contains("instrument") || lower.contains("company")
-            val hasType = lower.contains("type") || lower.contains("trade type") || lower.contains("buy/sell") ||
-                lower.contains("b/s") || lower.contains("action")
-            val hasFinancials = lower.contains("qty") || lower.contains("quantity") || lower.contains("shares") ||
-                lower.contains("units") || lower.contains("price") || lower.contains("rate") ||
-                lower.contains("amount") || lower.contains("value") || lower.contains("trade value")
+    internal fun isHeaderLine(line: String): Boolean {
+        val lower = line.lowercase()
+        val hasDate = lower.contains("date") || lower.contains("trade date") || lower.contains("trd date") || lower.contains("order date")
+        val hasAsset = lower.contains("symbol") || lower.contains("scrip") || lower.contains("stock") ||
+            lower.contains("security") || lower.contains("instrument") || lower.contains("company")
+        val hasType = lower.contains("type") || lower.contains("trade type") || lower.contains("buy/sell") ||
+            lower.contains("b/s") || lower.contains("action")
+        val hasFinancials = lower.contains("qty") || lower.contains("quantity") || lower.contains("shares") ||
+            lower.contains("units") || lower.contains("price") || lower.contains("rate") ||
+            lower.contains("amount") || lower.contains("value") || lower.contains("trade value")
 
-            if ((hasDate && hasAsset && (hasType || hasFinancials)) ||
-                (hasAsset && hasType && hasFinancials)
-            ) {
-                return i
-            }
-        }
-        return -1
+        return (hasDate && hasAsset && (hasType || hasFinancials)) ||
+            (hasAsset && hasType && hasFinancials)
     }
 
-    private data class ColumnPositions(
-        val dateCol: Int,
-        val assetCol: Int,
-        val typeCol: Int,
-        val qtyCol: Int,
-        val priceCol: Int,
-        val amountCol: Int,
-        val isinCol: Int,
-        val delimiter: String,
-    )
-
-    private fun resolveColumnIndices(headerLine: String): ColumnPositions? {
+    private fun resolveColumnIndices(headerLine: String): BrokerColumnPositions? {
         val delimiter = when {
             headerLine.contains("|") -> "|"
             headerLine.contains("\t") -> "\t"
@@ -142,7 +265,7 @@ class BrokerStatementParser @Inject constructor() {
         }
 
         val tokens = if (delimiter == "  ") {
-            headerLine.split(Regex("""\s{2,}""")).map { it.trim() }.filter { it.isNotBlank() }
+            headerLine.split(MULTI_SPACE_REGEX).map { it.trim() }.filter { it.isNotBlank() }
         } else {
             headerLine.split(delimiter).map { it.trim() }.filter { it.isNotBlank() }
         }
@@ -171,7 +294,6 @@ class BrokerStatementParser @Inject constructor() {
             }
         }
 
-        // Fallbacks
         if (assetCol == -1) {
             assetCol = if (dateCol == 0) 1 else 0
         }
@@ -179,7 +301,7 @@ class BrokerStatementParser @Inject constructor() {
             dateCol = if (assetCol == 0) 1 else 0
         }
 
-        return ColumnPositions(
+        return BrokerColumnPositions(
             dateCol = dateCol,
             assetCol = assetCol,
             typeCol = typeCol,
@@ -194,21 +316,21 @@ class BrokerStatementParser @Inject constructor() {
     private fun parseTradeRow(
         line: String,
         documentId: String,
-        columns: ColumnPositions,
+        columns: BrokerColumnPositions,
         brokerName: String,
         defaultAssetClass: AssetClass,
+        sourcePage: Int?,
     ): DraftTransactionEntity? {
         val tokens = if (columns.delimiter == "  ") {
-            line.split(Regex("""\s{2,}""")).map { it.trim() }.filter { it.isNotBlank() }
+            line.split(MULTI_SPACE_REGEX).map { it.trim() }.filter { it.isNotBlank() }
         } else {
             line.split(columns.delimiter).map { it.trim() }.filter { it.isNotBlank() }
         }
 
         if (tokens.size < 3) {
-            // Attempt whitespace fallback
-            val spaceTokens = line.split(Regex("""\s+""")).map { it.trim() }.filter { it.isNotBlank() }
+            val spaceTokens = line.split(WHITESPACE_REGEX).map { it.trim() }.filter { it.isNotBlank() }
             if (spaceTokens.size < 3) return null
-            return parseFromTokens(spaceTokens, documentId, brokerName, defaultAssetClass)
+            return parseFromTokens(spaceTokens, documentId, brokerName, defaultAssetClass, sourcePage)
         }
 
         val rawDate = tokens.getOrNull(columns.dateCol).orEmpty()
@@ -259,6 +381,7 @@ class BrokerStatementParser @Inject constructor() {
             broker = brokerName,
             isin = isin,
             ticker = if (isin == null && cleanAsset.length in 2..15 && !cleanAsset.contains(" ")) cleanAsset else null,
+            sourcePage = sourcePage,
         )
     }
 
@@ -267,6 +390,7 @@ class BrokerStatementParser @Inject constructor() {
         documentId: String,
         brokerName: String,
         defaultAssetClass: AssetClass,
+        sourcePage: Int?,
     ): DraftTransactionEntity? {
         var foundDate: Long? = null
         var foundType: String? = null
@@ -281,7 +405,7 @@ class BrokerStatementParser @Inject constructor() {
                 continue
             }
 
-            if (token.matches(Regex("""\d{1,2}:\d{2}(?::\d{2})?"""))) {
+            if (TIME_TOKEN_REGEX.matches(token)) {
                 continue
             }
 
@@ -344,18 +468,18 @@ class BrokerStatementParser @Inject constructor() {
             broker = brokerName,
             isin = foundIsin,
             ticker = if (foundIsin == null && foundAsset.length in 2..15 && !foundAsset.contains(" ")) foundAsset else null,
+            sourcePage = sourcePage,
         )
     }
 
     private fun isDateToken(token: String): Boolean {
         val hasSeparator = token.contains("-") || token.contains("/") || (token.contains(".") && token.count { it == '.' } == 2)
-        val hasMonthWord = Regex("""(?i)\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b""").containsMatchIn(token)
+        val hasMonthWord = MONTH_WORD_REGEX.containsMatchIn(token)
         return (hasSeparator || hasMonthWord) && DateParser.parseToLocalDate(token) != null
     }
 
     private fun extractDateFromLine(line: String): Long? {
-        val dateRegex = Regex("""\b(\d{1,2}[-/](?:[A-Za-z]{3}|\d{1,2})[-/]\d{2,4}|\d{4}-\d{2}-\d{2})\b""")
-        val match = dateRegex.find(line) ?: return null
+        val match = LINE_DATE_REGEX.find(line) ?: return null
         return DateParser.parseToEpochMilli(match.value)
     }
 
@@ -365,13 +489,13 @@ class BrokerStatementParser @Inject constructor() {
             clean = clean.replace(isin, "").trim()
         }
         return clean
-            .replace(Regex("""(?i)\b(EQ|NSE|BSE|BE|SM)\b"""), "")
-            .replace(Regex("""[|\-:]+$"""), "")
+            .replace(EXCHANGE_SUFFIX_REGEX, "")
+            .replace(TRAILING_SEP_REGEX, "")
             .trim()
     }
 
     private fun resolveType(rawType: String, fullLine: String): String {
-        val lower = (rawType + " " + fullLine).lowercase()
+        val lower = "$rawType $fullLine".lowercase()
         return when {
             lower.contains("sell") || lower.contains(" sold") || lower.contains(" s ") || lower.endsWith(" s") -> "SELL"
             lower.contains("buy") || lower.contains(" bought") || lower.contains(" b ") || lower.endsWith(" b") -> "BUY"
@@ -406,6 +530,13 @@ class BrokerStatementParser @Inject constructor() {
     }
 
     private companion object {
+        val WHITESPACE_REGEX = Regex("""\s+""")
+        val MULTI_SPACE_REGEX = Regex("""\s{2,}""")
+        val TIME_TOKEN_REGEX = Regex("""\d{1,2}:\d{2}(?::\d{2})?""")
+        val MONTH_WORD_REGEX = Regex("""(?i)\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b""")
+        val LINE_DATE_REGEX = Regex("""\b(\d{1,2}[-/](?:[A-Za-z]{3}|\d{1,2})[-/]\d{2,4}|\d{4}-\d{2}-\d{2})\b""")
+        val EXCHANGE_SUFFIX_REGEX = Regex("""(?i)\b(EQ|NSE|BSE|BE|SM)\b""")
+        val TRAILING_SEP_REGEX = Regex("""[|\-:]+$""")
         val NOISE_WORDS = setOf(
             "nse", "bse", "eq", "be", "sm", "trade", "exchange", "segment", "series",
             "order", "no", "tradebook", "statement", "brokerage", "stt", "gst",

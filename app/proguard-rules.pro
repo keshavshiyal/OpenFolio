@@ -35,3 +35,12 @@
 -keep class com.openfolio.core.data.local.entity.** { *; }
 -keep class com.openfolio.core.data.local.model.** { *; }
 -keep class com.openfolio.core.domain.model.** { *; }
+
+# WorkManager & Hilt Workers
+-keep class * extends androidx.work.CoroutineWorker { *; }
+-keep class * extends androidx.work.ListenableWorker {
+    public <init>(android.content.Context, androidx.work.WorkerParameters);
+}
+-keep class com.openfolio.core.worker.** { *; }
+-keep class androidx.hilt.work.** { *; }
+-dontwarn androidx.work.**

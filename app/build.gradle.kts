@@ -122,9 +122,12 @@ dependencies {
     implementation(libs.androidx.security.crypto)
     implementation(libs.google.generativeai)
     implementation(libs.kotlinx.serialization.json)
+    implementation(libs.androidx.work.runtime.ktx)
+    implementation(libs.androidx.hilt.work)
 
     ksp(libs.androidx.room.compiler)
     kapt(libs.hilt.android.compiler)
+    kapt(libs.androidx.hilt.compiler)
 
     testImplementation(libs.junit)
     testImplementation(libs.json)

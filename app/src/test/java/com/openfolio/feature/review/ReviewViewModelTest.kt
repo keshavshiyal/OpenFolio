@@ -601,4 +601,32 @@ class ReviewViewModelTest {
         viewModel.dismissTableReview()
         assertEquals(false, viewModel.showTableReview.value)
     }
+
+    @Test
+    fun resumesAiExtractionForFailedDocumentEvenWithPartialDrafts() = runTest {
+        val partialDraft = DraftTransactionEntity(
+            id = "partial-1",
+            documentId = document.id,
+            assetName = "Partial Asset",
+            transactionType = "BUY",
+            quantity = "5",
+            price = "100",
+            netAmount = "500",
+            confidence = 95,
+        )
+        repository.insertDraftTransactionsIfEmpty(document.id, listOf(partialDraft))
+        repository.document = document.copy(
+            status = DocumentStatus.FAILED.name,
+            pageCount = 10,
+            processedPages = 5,
+            extractionError = "Paused at page 5",
+        )
+        viewModel.loadDocument(document.id)
+        testScheduler.advanceUntilIdle()
+
+        viewModel.onProcessWithAi()
+        testScheduler.advanceUntilIdle()
+
+        assertEquals(1, repository.aiProcessCallCount)
+    }
 }

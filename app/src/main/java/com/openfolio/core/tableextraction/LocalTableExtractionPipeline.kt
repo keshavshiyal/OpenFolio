@@ -17,18 +17,50 @@ class LocalTableExtractionPipeline @Inject constructor(
         file: File,
         fileName: String,
         password: String? = null,
+        writeCsv: Boolean = true,
     ): List<ExtractedTable> =
         withContext(Dispatchers.IO) {
-            // 1. Extract positioned words with geometric coordinates
-            val words = geometryTextExtractor.extractWords(file, fileName, password)
-            if (words.isEmpty()) return@withContext emptyList()
+            val allRows = mutableListOf<List<String>>()
+            val pageIndices = mutableListOf<Int>()
+            var maxCols = 0
 
-            // 2. Lossless line-by-line table construction (no rows dropped)
-            val table = tableDetectionEngine.extractAllLinesAsTable(words, fileName)
-            if (table.rows.isEmpty()) return@withContext emptyList()
+            // Stream geometry extraction and row construction page-by-page without retaining all words in RAM.
+            geometryTextExtractor.forEachPageWords(file, fileName, password) { pageIndex, _, pageWords ->
+                if (pageWords.isEmpty()) return@forEachPageWords
+                val pageRows = tableDetectionEngine.extractPageRows(pageWords, pageIndex)
+                if (pageRows.isNotEmpty()) {
+                    pageIndices.add(pageIndex)
+                    for (row in pageRows) {
+                        if (row.size > maxCols) maxCols = row.size
+                        allRows.add(row)
+                    }
+                }
+            }
 
-            // 3. Generate CSV file with &COMMA; escaping and prepended metadata
-            val csvFile = csvTableGenerator.generateCsvFile(table)
-            listOf(table.copy(csvFile = csvFile))
+            if (allRows.isEmpty()) return@withContext emptyList()
+
+            val effectiveCols = maxOf(2, maxCols)
+            val headers = (1..effectiveCols).map { "Column $it" }
+            val paddedRows = allRows.map { row ->
+                if (row.size < effectiveCols) {
+                    row + List(effectiveCols - row.size) { "" }
+                } else {
+                    row
+                }
+            }
+            val table = ExtractedTable(
+                tableIndex = 1,
+                pageIndices = pageIndices,
+                headers = headers,
+                rows = paddedRows,
+                sourceFileName = fileName,
+            )
+
+            if (writeCsv) {
+                val csvFile = csvTableGenerator.generateCsvFile(table)
+                listOf(table.copy(csvFile = csvFile))
+            } else {
+                listOf(table)
+            }
         }
 }

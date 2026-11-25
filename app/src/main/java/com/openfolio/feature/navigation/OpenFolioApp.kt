@@ -210,6 +210,7 @@ fun OpenFolioApp(
                     onProcessWithAiClick = { documentId ->
                         navController.navigate("review/$documentId")
                     },
+                    onRetryClick = inboxViewModel::retryOrResume,
                     onImport = homeViewModel::ingestFile,
                     onSaveManualTransaction = homeViewModel::recordManualTransaction,
                 )
@@ -236,6 +237,7 @@ fun OpenFolioApp(
                     onBack = { navController.popBackStack() },
                     onSkip = { navController.popBackStack() },
                     onProcessWithAi = reviewViewModel::onProcessWithAi,
+                    onRetryLocalExtraction = reviewViewModel::retryLocalExtraction,
                     onProcessMappedData = reviewViewModel::processMappedData,
                     onReloadHeaders = reviewViewModel::loadHeadersForHeaderRow,
                     onSaveDraft = { id, a, t, q, p, amt -> reviewViewModel.saveDraft(id, a, t, q, p, amt) },

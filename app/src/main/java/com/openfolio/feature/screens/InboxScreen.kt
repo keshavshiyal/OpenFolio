@@ -22,9 +22,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -43,6 +47,7 @@ import com.openfolio.core.data.local.entity.AssetClass
 import com.openfolio.core.data.local.entity.DocumentEntity
 import com.openfolio.core.data.local.entity.DocumentStatus
 import com.openfolio.core.data.local.entity.TransactionType
+import com.openfolio.core.data.repository.DocumentRepositoryImpl
 import com.openfolio.core.ui.components.AssetTypeSelectionBottomSheet
 import com.openfolio.core.ui.components.ImportOptionsBottomSheet
 import com.openfolio.core.ui.components.ManualTransactionDialog
@@ -67,6 +72,7 @@ fun InboxScreen(
     documents: List<DocumentEntity>,
     onDocumentClick: (String) -> Unit,
     onProcessWithAiClick: ((String) -> Unit)? = null,
+    onRetryClick: ((DocumentEntity) -> Unit)? = null,
     onImport: ((Uri, AssetClass) -> Unit)? = null,
     onSaveManualTransaction: ((String, AssetClass, TransactionType, LocalDate, BigDecimal, BigDecimal, BigDecimal, BigDecimal, BigDecimal, String?, String?, String?) -> Unit)? = null,
 ) {
@@ -145,6 +151,13 @@ fun InboxScreen(
                         document = document,
                         onClick = { onDocumentClick(document.id) },
                         onProcessWithAi = { (onProcessWithAiClick ?: onDocumentClick)(document.id) },
+                        onRetry = {
+                            if (onRetryClick != null) {
+                                onRetryClick(document)
+                            } else {
+                                onDocumentClick(document.id)
+                            }
+                        },
                     )
                 }
             }
@@ -191,9 +204,15 @@ fun DocumentCard(
     document: DocumentEntity,
     onClick: () -> Unit,
     onProcessWithAi: (() -> Unit)? = null,
+    onRetry: (() -> Unit)? = null,
 ) {
     val colors = LocalOpenFolioColors.current
     val shape = RoundedCornerShape(12.dp)
+    val isInProgress = document.status == DocumentStatus.PENDING_OCR.name ||
+        document.status == DocumentStatus.PROCESSING.name
+    val isFailed = document.status == DocumentStatus.FAILED.name ||
+        document.status == DocumentStatus.OCR_FAILED.name
+    val isLocked = document.extractedText == DocumentRepositoryImpl.PASSWORD_PROTECTED_MARKER
 
     Surface(
         modifier = Modifier
@@ -203,74 +222,138 @@ fun DocumentCard(
         color = colors.surface,
         border = BorderStroke(1.dp, colors.border),
     ) {
-        Row(
+        Column(
             modifier = Modifier.padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            androidx.compose.material3.Icon(
-                imageVector = Icons.Outlined.Description,
-                contentDescription = "Document",
-                tint = colors.muted,
-                modifier = Modifier.size(24.dp),
-            )
-            Spacer(Modifier.width(12.dp))
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(3.dp),
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    text = document.fileName,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = colors.content,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                Icon(
+                    imageVector = Icons.Outlined.Description,
+                    contentDescription = "Document",
+                    tint = colors.muted,
+                    modifier = Modifier.size(24.dp),
                 )
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                Spacer(Modifier.width(12.dp))
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
                 ) {
-                    Surface(
-                        shape = RoundedCornerShape(4.dp),
-                        color = colors.brand.copy(alpha = 0.12f),
+                    Text(
+                        text = document.fileName,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = colors.content,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = colors.brand.copy(alpha = 0.12f),
+                        ) {
+                            Text(
+                                text = document.getAssetClassEnum().toDisplayTitle(),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.brand,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            )
+                        }
                         Text(
-                            text = document.getAssetClassEnum().toDisplayTitle(),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = colors.brand,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            text = "•  ${formatFileSize(document.fileSize)}",
+                            style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
+                            color = colors.muted,
                         )
                     }
                     Text(
-                        text = "•  ${formatFileSize(document.fileSize)}",
+                        text = "SHA-256: ${document.fileHash.take(8)}...",
                         style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
                         color = colors.muted,
                     )
                 }
-                Text(
-                    text = "SHA-256: ${document.fileHash.take(8)}...",
-                    style = MaterialTheme.typography.bodySmall,
-                    fontFamily = FontFamily.Monospace,
-                    color = colors.muted,
-                )
+                Spacer(Modifier.width(10.dp))
+                when {
+                    document.status == DocumentStatus.OCR_COMPLETE.name -> {
+                        Button(
+                            onClick = { onProcessWithAi?.invoke() ?: onClick() },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = colors.brand,
+                                contentColor = colors.onAccent,
+                            ),
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                        ) {
+                            Text(
+                                text = "Process with AI",
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
+                    }
+                    isFailed && !isLocked && onRetry != null -> {
+                        OutlinedButton(
+                            onClick = onRetry,
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, colors.brand),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                        ) {
+                            Text(
+                                text = if (document.status == DocumentStatus.FAILED.name && document.processedPages > 0) {
+                                    "Resume"
+                                } else {
+                                    "Retry"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.brand,
+                            )
+                        }
+                    }
+                    else -> {
+                        DocumentStatusBadge(document.status)
+                    }
+                }
             }
-            Spacer(Modifier.width(10.dp))
-            if (document.status == DocumentStatus.OCR_COMPLETE.name) {
-                androidx.compose.material3.Button(
-                    onClick = { onProcessWithAi?.invoke() ?: onClick() },
-                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                        containerColor = colors.brand,
-                        contentColor = androidx.compose.ui.graphics.Color.White,
-                    ),
-                    shape = RoundedCornerShape(8.dp),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                ) {
-                    Text(
-                        text = "Process with AI",
-                        style = MaterialTheme.typography.labelSmall,
+
+            if (isInProgress) {
+                val progressText = if (document.pageCount > 0) {
+                    "Processing page ${document.processedPages} of ${document.pageCount}"
+                } else {
+                    "Preparing extraction..."
+                }
+                Text(
+                    text = progressText,
+                    style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
+                    color = colors.brand,
+                )
+                if (document.pageCount > 0) {
+                    val fraction = (document.processedPages.toFloat() / document.pageCount.coerceAtLeast(1))
+                        .coerceIn(0f, 1f)
+                    LinearProgressIndicator(
+                        progress = { fraction },
+                        modifier = Modifier.fillMaxWidth(),
+                        color = colors.brand,
+                        trackColor = colors.brandSubtle,
+                    )
+                } else {
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = colors.brand,
+                        trackColor = colors.brandSubtle,
                     )
                 }
-            } else {
-                DocumentStatusBadge(document.status)
+            }
+
+            if (isFailed && !document.extractionError.isNullOrBlank()) {
+                Text(
+                    text = document.extractionError,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.lossGlyph,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
     }
@@ -284,12 +367,22 @@ private fun DocumentStatusBadge(status: String) {
     val background: androidx.compose.ui.graphics.Color
     when (status) {
         DocumentStatus.PENDING_OCR.name -> {
-            label = "Processing OCR..."
-            foreground = colors.muted
-            background = colors.background
+            label = "Extracting..."
+            foreground = colors.brand
+            background = colors.brandSubtle
+        }
+        DocumentStatus.PROCESSING.name -> {
+            label = "Processing AI..."
+            foreground = colors.brand
+            background = colors.brandSubtle
         }
         DocumentStatus.OCR_FAILED.name -> {
             label = "OCR Failed"
+            foreground = colors.lossGlyph
+            background = colors.lossGlyph.copy(alpha = 0.12f)
+        }
+        DocumentStatus.FAILED.name -> {
+            label = "Failed"
             foreground = colors.lossGlyph
             background = colors.lossGlyph.copy(alpha = 0.12f)
         }

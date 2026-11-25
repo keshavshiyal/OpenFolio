@@ -279,4 +279,27 @@ class TableDetectionEngineTest {
         assertEquals(listOf("2024-03-01", "TCS", "BUY", "10", "3800.00"), table.rows[1])
         assertEquals(listOf("2024-03-02", "INFY", "SELL", "50", "1600.00"), table.rows[2])
     }
+
+    @Test
+    fun clusterWordsIntoRowsAndExtractPageRowsHandleLargeScrambledPage() {
+        val words = mutableListOf<ExtractedWord>()
+        val rowCount = 300
+        for (r in 0 until rowCount) {
+            val top = 50f + r * 22f
+            val bottom = top + 12f
+            words.add(ExtractedWord("2024-01-01", BoundingBox(40f, top, 100f, bottom), 1))
+            words.add(ExtractedWord("ASSET_$r", BoundingBox(150f, top, 220f, bottom), 1))
+            words.add(ExtractedWord("BUY", BoundingBox(280f, top, 310f, bottom), 1))
+            words.add(ExtractedWord("${r + 1}.00", BoundingBox(380f, top, 430f, bottom), 1))
+        }
+        val scrambled = words.reversed()
+        val clustered = engine.clusterWordsIntoRows(scrambled, pageIndex = 1)
+        assertEquals(rowCount, clustered.size)
+        assertEquals("ASSET_0", clustered.first().words[1].text)
+        assertEquals("ASSET_${rowCount - 1}", clustered.last().words[1].text)
+
+        val pageRows = engine.extractPageRows(scrambled, pageIndex = 1)
+        assertEquals(rowCount, pageRows.size)
+        assertEquals(listOf("2024-01-01", "ASSET_0", "BUY", "1.00"), pageRows.first())
+    }
 }

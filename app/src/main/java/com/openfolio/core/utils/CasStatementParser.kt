@@ -7,20 +7,21 @@ import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
+data class CasParseState(
+    var currentAmc: String = "",
+    var currentScheme: String = "",
+    var currentIsin: String? = null,
+    var hasSeenCasSignal: Boolean = false,
+)
+
 /**
  * Deterministic offline parser for CAMS, KFintech, MFCentral Consolidated Account Statements (CAS),
  * and individual AMC Mutual Fund Statements of Account (SOA).
- * Operates on layout-sorted text extracted via PdfBox.
- * Extracts AMC, Folio, Scheme names, ISINs, and transaction rows (Buy, Sell, SIP, Dividend/IDCW)
- * directly into [DraftTransactionEntity] records with zero Double arithmetic for monetary values.
+ * Operates on layout-sorted text extracted via PdfBox, streaming page-by-page with preserved
+ * AMC/Scheme/ISIN state across page breaks and zero Double arithmetic for monetary values.
  */
 @Singleton
 class CasStatementParser @Inject constructor() {
-
-    private val txnLineRegex = Regex(
-        """^\s*(\d{1,2}[-/](?:[A-Za-z]{3}|\d{1,2})[-/]\d{2,4}|\d{4}-\d{2}-\d{2})\s+(.+?)\s+(-?\(?[\d,]+(?:\.\d+)?\)?)\s+(-?\(?[\d,]+(?:\.\d+)?\)?)\s+([\d,]+(?:\.\d+)?)(?:\s+([\d,]+(?:\.\d+)?))?\s*$""",
-        RegexOption.MULTILINE,
-    )
 
     private val amcRegex = Regex(
         """^([A-Za-z0-9\s&.,'-]+(?:Mutual Fund|Fund House|Asset Management|Investments|MF))$""",
@@ -30,93 +31,166 @@ class CasStatementParser @Inject constructor() {
     private val folioRegex = Regex("""Folio\s*(?:No|Number)?\s*[:\-]?\s*([A-Za-z0-9/\-]+)""", RegexOption.IGNORE_CASE)
 
     private val datePrefixRegex = Regex(
-        """^\s*(\d{1,2}[-/](?:[A-Za-z]{3}|\d{1,2})[-/]\d{2,4}|\d{4}-\d{2}-\d{2})\b"""
+        """^\s*(\d{1,2}[-/](?:[A-Za-z]{3}|\d{1,2})[-/]\d{2,4}|\d{4}-\d{2}-\d{2})\b""",
     )
+
+    private val numberRegex = Regex("""-?\(?₹?\s*[\d,]+(?:\.\d+)?\)?|\b\d+\b""")
+
+    fun hasCasSignal(sampleText: String): Boolean {
+        if (sampleText.isBlank()) return false
+        return sampleText.contains("Consolidated Account Statement", ignoreCase = true) ||
+            sampleText.contains("CAMS", ignoreCase = true) ||
+            sampleText.contains("KFintech", ignoreCase = true) ||
+            sampleText.contains("Computer Age Management Services", ignoreCase = true) ||
+            sampleText.contains("Karvy", ignoreCase = true) ||
+            sampleText.contains("MFCentral", ignoreCase = true) ||
+            sampleText.contains("MF Central", ignoreCase = true) ||
+            sampleText.contains("Mutual Fund", ignoreCase = true) ||
+            sampleText.contains("Statement of Account", ignoreCase = true) ||
+            sampleText.contains("Folio No", ignoreCase = true) ||
+            sampleText.contains("Folio Number", ignoreCase = true) ||
+            sampleText.contains("Unit Balance", ignoreCase = true) ||
+            sampleText.contains("ISIN: INF", ignoreCase = true) ||
+            sampleText.contains("ISIN:INF", ignoreCase = true) ||
+            sampleText.contains("ISIN : INF", ignoreCase = true)
+    }
 
     fun isCasStatement(rawText: String): Boolean {
         if (rawText.isBlank()) return false
-        val sample = rawText.take(15000)
-        val hasMfSignal = sample.contains("Consolidated Account Statement", ignoreCase = true) ||
-            sample.contains("CAMS", ignoreCase = true) ||
-            sample.contains("KFintech", ignoreCase = true) ||
-            sample.contains("Computer Age Management Services", ignoreCase = true) ||
-            sample.contains("Karvy", ignoreCase = true) ||
-            sample.contains("MFCentral", ignoreCase = true) ||
-            sample.contains("MF Central", ignoreCase = true) ||
-            sample.contains("Mutual Fund", ignoreCase = true) ||
-            sample.contains("Statement of Account", ignoreCase = true) ||
-            sample.contains("Folio No", ignoreCase = true) ||
-            sample.contains("Folio Number", ignoreCase = true) ||
-            sample.contains("Unit Balance", ignoreCase = true) ||
-            sample.contains("ISIN: INF", ignoreCase = true) ||
-            sample.contains("ISIN:INF", ignoreCase = true) ||
-            sample.contains("ISIN : INF", ignoreCase = true)
+        val sample = rawText.take(15_000)
+        if (!hasCasSignal(sample)) return false
 
-        if (!hasMfSignal) return false
+        val state = CasParseState()
+        var foundFirst = false
+        streamLines(rawText.lineSequence(), "probe", state, sourcePage = null) {
+            foundFirst = true
+            false // stop immediately on first valid transaction
+        }
+        return foundFirst
+    }
 
-        // Fast probe check using parse
-        return parse(rawText, "probe").isNotEmpty()
+    fun parsePage(
+        pageText: String,
+        pageNumber: Int,
+        documentId: String,
+        state: CasParseState,
+    ): List<DraftTransactionEntity> {
+        if (pageText.isBlank()) return emptyList()
+        if (!state.hasSeenCasSignal && hasCasSignal(pageText)) {
+            state.hasSeenCasSignal = true
+        }
+        val drafts = mutableListOf<DraftTransactionEntity>()
+        streamLines(pageText.lineSequence(), documentId, state, sourcePage = pageNumber) { draft ->
+            drafts.add(draft)
+            true
+        }
+        return drafts
     }
 
     fun parse(rawText: String, documentId: String): List<DraftTransactionEntity> {
+        if (rawText.isBlank()) return emptyList()
         val drafts = mutableListOf<DraftTransactionEntity>()
-        var currentAmc = ""
-        var currentScheme = ""
-        var currentIsin: String? = null
+        val state = CasParseState()
+        streamLines(rawText.lineSequence(), documentId, state, sourcePage = null) { draft ->
+            drafts.add(draft)
+            true
+        }
+        return drafts
+    }
 
-        val lines = rawText.lines().map { it.trim() }.filter { it.isNotBlank() }
+    /**
+     * Streams non-blank trimmed lines through a bounded 5-line lookahead window without
+     * allocating full-document line lists. [onDraft] returns true to continue or false to stop early.
+     */
+    private inline fun streamLines(
+        lines: Sequence<String>,
+        documentId: String,
+        state: CasParseState,
+        sourcePage: Int?,
+        onDraft: (DraftTransactionEntity) -> Boolean,
+    ) {
+        val iterator = lines
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .iterator()
+        val window = ArrayDeque<String>(LOOKAHEAD_WINDOW)
 
-        var i = 0
-        while (i < lines.size) {
-            val line = lines[i]
+        while (true) {
+            fillLookaheadWindow(window, iterator)
+            if (window.isEmpty()) break
+            val line = window.first()
+
+            if (!state.hasSeenCasSignal && hasCasSignal(line)) {
+                state.hasSeenCasSignal = true
+            }
 
             // 1. Skip noise / header / footer rows
             if (isNoiseRow(line)) {
-                i++
+                window.removeFirst()
                 continue
             }
 
             // 2. Detect AMC header (e.g. "SBI Mutual Fund", "Zerodha Fund House")
-            if (amcRegex.matches(line) && line.length < 90 && !line.contains("Growth", ignoreCase = true) && !line.contains("Direct", ignoreCase = true)) {
-                currentAmc = line
-                currentScheme = ""
-                currentIsin = null
-                i++
+            if (amcRegex.matches(line) &&
+                line.length < 90 &&
+                !line.contains("Growth", ignoreCase = true) &&
+                !line.contains("Direct", ignoreCase = true)
+            ) {
+                state.currentAmc = line
+                state.currentScheme = ""
+                state.currentIsin = null
+                window.removeFirst()
                 continue
             }
 
             // 3. Detect Scheme + ISIN line (in digital CAS PDFs, scheme lines contain ISIN: INF...)
             val foundIsin = AssetNameNormalizer.extractIsin(line)
             if (foundIsin != null && !datePrefixRegex.containsMatchIn(line)) {
-                currentIsin = foundIsin
+                state.currentIsin = foundIsin
                 val cleanScheme = extractCleanScheme(line)
                 if (cleanScheme.isNotBlank() && cleanScheme.length > 4 && !cleanScheme.startsWith("(")) {
-                    currentScheme = cleanScheme
+                    state.currentScheme = cleanScheme
                 }
-                i++
+                window.removeFirst()
                 continue
             }
 
             // 4. Check for standalone Scheme name line without ISIN on the same line
             if (isLikelySchemeLine(line)) {
-                currentScheme = extractCleanScheme(line)
-                currentIsin = null
-                i++
+                state.currentScheme = extractCleanScheme(line)
+                state.currentIsin = null
+                window.removeFirst()
                 continue
             }
 
-            // 5. Match Transaction Row
-            val parsedTxn = tryParseTransactionRow(lines, i, documentId, currentScheme, currentAmc, currentIsin)
+            // 5. Match Transaction Row using bounded lookahead window
+            val parsedTxn = tryParseTransactionRow(
+                window = window,
+                documentId = documentId,
+                currentScheme = state.currentScheme,
+                currentAmc = state.currentAmc,
+                currentIsin = state.currentIsin,
+                sourcePage = sourcePage,
+            )
             if (parsedTxn != null) {
-                drafts.add(parsedTxn.draft)
-                i += parsedTxn.linesConsumed
+                repeat(parsedTxn.linesConsumed.coerceAtMost(window.size)) {
+                    window.removeFirst()
+                }
+                if (!onDraft(parsedTxn.draft)) {
+                    return
+                }
                 continue
             }
 
-            i++
+            window.removeFirst()
         }
+    }
 
-        return drafts
+    @PublishedApi
+    internal fun fillLookaheadWindow(window: ArrayDeque<String>, iterator: Iterator<String>) {
+        while (window.size < LOOKAHEAD_WINDOW && iterator.hasNext()) {
+            window.addLast(iterator.next())
+        }
     }
 
     private data class ParsedTransactionResult(
@@ -125,14 +199,14 @@ class CasStatementParser @Inject constructor() {
     )
 
     private fun tryParseTransactionRow(
-        lines: List<String>,
-        startIndex: Int,
+        window: ArrayDeque<String>,
         documentId: String,
         currentScheme: String,
         currentAmc: String,
         currentIsin: String?,
+        sourcePage: Int?,
     ): ParsedTransactionResult? {
-        val line = lines[startIndex]
+        val line = window.firstOrNull() ?: return null
         val dateMatch = datePrefixRegex.find(line) ?: return null
         val dateStr = dateMatch.value
         val tradeDateMillis = DateParser.parseToEpochMilli(dateStr) ?: return null
@@ -150,6 +224,7 @@ class CasStatementParser @Inject constructor() {
                 currentScheme = currentScheme,
                 currentAmc = currentAmc,
                 currentIsin = currentIsin,
+                sourcePage = sourcePage,
             )
             if (draft != null) {
                 return ParsedTransactionResult(draft, linesConsumed = 1)
@@ -157,20 +232,18 @@ class CasStatementParser @Inject constructor() {
         }
 
         // Case B: Multi-line wrapped row (description on lines 1..k, numbers on next line)
-        for (offset in 1..4) {
-            val nextIdx = startIndex + offset
-            if (nextIdx >= lines.size) break
-            val nextLine = lines[nextIdx]
+        for (offset in 1 until minOf(LOOKAHEAD_WINDOW, window.size)) {
+            val nextLine = window[offset]
             if (datePrefixRegex.containsMatchIn(nextLine)) break
             if (isNoiseRow(nextLine) || isLikelySchemeLine(nextLine) || amcRegex.matches(nextLine)) break
 
             val numbersOnNext = extractNumberTokens(nextLine)
             if (numbersOnNext.size >= 2 || (numbersOnNext.size == 1 && isDividendLine(remainderOnLine))) {
                 val combinedDesc = StringBuilder(remainderOnLine)
-                for (d in (startIndex + 1) until nextIdx) {
-                    combinedDesc.append(" ").append(lines[d])
+                for (d in 1 until offset) {
+                    combinedDesc.append(' ').append(window[d])
                 }
-                combinedDesc.append(" ").append(extractNonNumberText(nextLine, numbersOnNext))
+                combinedDesc.append(' ').append(extractNonNumberText(nextLine))
                 val draft = buildDraft(
                     documentId = documentId,
                     dateMillis = tradeDateMillis,
@@ -179,6 +252,7 @@ class CasStatementParser @Inject constructor() {
                     currentScheme = currentScheme,
                     currentAmc = currentAmc,
                     currentIsin = currentIsin,
+                    sourcePage = sourcePage,
                 )
                 if (draft != null) {
                     return ParsedTransactionResult(draft, linesConsumed = offset + 1)
@@ -197,17 +271,13 @@ class CasStatementParser @Inject constructor() {
         currentScheme: String,
         currentAmc: String,
         currentIsin: String?,
+        sourcePage: Int?,
     ): DraftTransactionEntity? {
         if (numbers.isEmpty()) return null
 
         val (amount, units, nav) = when (numbers.size) {
-            1 -> {
-                // Dividend payout
-                val amt = numbers[0]
-                Triple(amt, BigDecimal.ZERO, BigDecimal.ZERO)
-            }
+            1 -> Triple(numbers[0], BigDecimal.ZERO, BigDecimal.ZERO)
             2 -> {
-                // Amount and Units
                 val amt = numbers[0]
                 val u = numbers[1]
                 val n = if (u.compareTo(BigDecimal.ZERO) != 0) {
@@ -215,14 +285,7 @@ class CasStatementParser @Inject constructor() {
                 } else BigDecimal.ZERO
                 Triple(amt, u, n)
             }
-            3 -> {
-                // Amount, Units, NAV
-                Triple(numbers[0], numbers[1], numbers[2])
-            }
-            else -> {
-                // 4 or more numbers: Amount, Units, NAV, Balance
-                Triple(numbers[0], numbers[1], numbers[2])
-            }
+            else -> Triple(numbers[0], numbers[1], numbers[2])
         }
 
         val txnType = resolveTransactionType(textBeforeNumbers, amount, units)
@@ -244,11 +307,12 @@ class CasStatementParser @Inject constructor() {
             broker = "CAMS/KFintech",
             isin = currentIsin,
             ticker = null,
+            sourcePage = sourcePage,
         )
     }
 
     private fun extractNumberTokens(text: String): List<BigDecimal> {
-        val matches = Regex("""-?\(?₹?\s*[\d,]+(?:\.\d+)?\)?|\b\d+\b""").findAll(text)
+        val matches = numberRegex.findAll(text)
         val list = mutableListOf<BigDecimal>()
         for (m in matches) {
             val bd = parseSignedBigDecimal(m.value)
@@ -261,7 +325,6 @@ class CasStatementParser @Inject constructor() {
 
     private fun extractDescription(fullText: String, numbers: List<BigDecimal>): String {
         var desc = fullText
-        val numberRegex = Regex("""-?\(?₹?\s*[\d,]+(?:\.\d+)?\)?|\b\d+\b""")
         val lastMatches = numberRegex.findAll(fullText).toList().takeLast(numbers.size)
         if (lastMatches.isNotEmpty()) {
             val firstNumIndex = lastMatches.first().range.first
@@ -270,11 +333,9 @@ class CasStatementParser @Inject constructor() {
         return desc.ifBlank { fullText }
     }
 
-    private fun extractNonNumberText(line: String, numbers: List<BigDecimal>): String {
+    private fun extractNonNumberText(line: String): String {
         var text = line
-        val numberRegex = Regex("""-?\(?₹?\s*[\d,]+(?:\.\d+)?\)?|\b\d+\b""")
-        val matches = numberRegex.findAll(line).toList()
-        for (m in matches) {
+        for (m in numberRegex.findAll(line)) {
             text = text.replace(m.value, " ")
         }
         return text.trim()
@@ -286,7 +347,7 @@ class CasStatementParser @Inject constructor() {
     }
 
     private fun isNoiseRow(line: String): Boolean {
-        if (line.startsWith("***") ||
+        return line.startsWith("***") ||
             line.contains("Stamp Duty", ignoreCase = true) ||
             line.contains("STT Paid", ignoreCase = true) ||
             line.contains("Securities Transaction Tax", ignoreCase = true) ||
@@ -301,10 +362,6 @@ class CasStatementParser @Inject constructor() {
             line.contains("Standard Terms and Conditions", ignoreCase = true) ||
             line.contains("Glossary of Terms", ignoreCase = true) ||
             line.contains("Guidelines for Investors", ignoreCase = true)
-        ) {
-            return true
-        }
-        return false
     }
 
     private fun isLikelySchemeLine(line: String): Boolean {
@@ -368,5 +425,9 @@ class CasStatementParser @Inject constructor() {
                 lower.contains("allotment") || lower.contains("additional") -> "BUY"
             else -> "BUY"
         }
+    }
+
+    private companion object {
+        const val LOOKAHEAD_WINDOW = 5
     }
 }

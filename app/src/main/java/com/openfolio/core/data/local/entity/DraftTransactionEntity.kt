@@ -36,6 +36,7 @@ data class DraftTransactionEntity(
     @ColumnInfo(defaultValue = "NULL") val broker: String? = null,
     @ColumnInfo(defaultValue = "NULL") val isin: String? = null,
     @ColumnInfo(defaultValue = "NULL") val ticker: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val sourcePage: Int? = null,
 ) {
     init {
         require(confidence in 0..100) { "Confidence must be between 0 and 100." }

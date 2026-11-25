@@ -7,75 +7,268 @@ import com.google.ai.client.generativeai.type.generationConfig
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
 import com.openfolio.core.utils.AssetNameNormalizer
 import com.openfolio.core.utils.DateParser
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import org.json.JSONArray
-import org.json.JSONObject
 import java.math.BigDecimal
+import java.net.SocketTimeoutException
 import java.time.LocalDate
-import java.time.ZoneId
-import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.util.UUID
+import java.util.concurrent.TimeoutException
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONException
+import org.json.JSONObject
 
 @Singleton
-class GeminiAiProvider @Inject constructor() : AiProvider {
+class GeminiAiProvider internal constructor(
+    private val delayFn: suspend (Long) -> Unit,
+    private val generateContentFn: (suspend (apiKey: String, rawText: String) -> String)?,
+) : TruncationAwareAiProvider {
+
+    @Inject
+    constructor() : this(
+        delayFn = { millis -> delay(millis) },
+        generateContentFn = null,
+    )
+
+    internal data class ParsedAiResponse(
+        val drafts: List<DraftTransactionEntity>,
+        val wasTruncated: Boolean,
+    )
+
+    @Volatile
+    private var cachedModelKey: Pair<String, String>? = null
+
+    @Volatile
+    private var cachedModel: GenerativeModel? = null
+
+    private val modelLock = Any()
+
+    private fun getOrCreateModel(apiKey: String): GenerativeModel {
+        val today = LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE)
+        val cacheKey = apiKey to today
+        cachedModel?.takeIf { cachedModelKey == cacheKey }?.let { return it }
+
+        synchronized(modelLock) {
+            cachedModel?.takeIf { cachedModelKey == cacheKey }?.let { return it }
+            val created = GenerativeModel(
+                modelName = MODEL_NAME,
+                apiKey = apiKey,
+                generationConfig = generationConfig {
+                    temperature = 0f
+                    maxOutputTokens = MAX_OUTPUT_TOKENS
+                    responseMimeType = "application/json"
+                },
+                systemInstruction = content {
+                    text(buildSystemPrompt(today))
+                },
+            )
+            cachedModelKey = cacheKey
+            cachedModel = created
+            return created
+        }
+    }
 
     override suspend fun extractTransactions(
         rawText: String,
         apiKey: String,
         documentId: String,
-    ): Result<List<DraftTransactionEntity>> = withContext(Dispatchers.IO) {
-        runCatching {
-            try {
-                require(apiKey.isNotBlank()) { "API key must not be blank." }
-                require(rawText.isNotBlank()) { "Raw text must not be blank." }
+    ): Result<List<DraftTransactionEntity>> =
+        extractTransactionsDetailed(rawText, apiKey, documentId).map { it.drafts }
 
-                val model = GenerativeModel(
-                    modelName = "gemini-2.5-flash",
-                    apiKey = apiKey,
-                    generationConfig = generationConfig {
-                        responseMimeType = "application/json"
-                    },
-                    systemInstruction = content {
-                        text(SYSTEM_PROMPT)
-                    },
-                )
+    override suspend fun extractTransactionsDetailed(
+        rawText: String,
+        apiKey: String,
+        documentId: String,
+    ): Result<AiExtractionBatchResult> = withContext(Dispatchers.IO) {
+        try {
+            require(apiKey.isNotBlank()) { "API key must not be blank." }
+            require(rawText.isNotBlank()) { "Raw text must not be blank." }
 
-                val response = model.generateContent(rawText)
-                val responseText = response.text.orEmpty().trim()
-                parseJsonResponse(responseText, documentId)
-            } catch (exception: Throwable) {
-                Log.e("GeminiAiProvider", "Gemini API call failed: ${exception.message}", exception)
-                throw exception
+            val responseText = executeWithRetry {
+                if (generateContentFn != null) {
+                    generateContentFn.invoke(apiKey, rawText)
+                } else {
+                    val model = getOrCreateModel(apiKey)
+                    val response = model.generateContent(rawText)
+                    response.text.orEmpty().trim()
+                }
             }
+            val parsed = parseJsonResponseWithMetadata(responseText, documentId)
+            Result.success(
+                AiExtractionBatchResult(
+                    drafts = parsed.drafts,
+                    wasTruncated = parsed.wasTruncated,
+                ),
+            )
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (exception: Throwable) {
+            runCatching { Log.e("GeminiAiProvider", "Gemini API call failed: ${exception.message}", exception) }
+            Result.failure(exception)
+        }
+    }
+
+    internal suspend fun <T> executeWithRetry(
+        maxAttempts: Int = MAX_RETRY_ATTEMPTS,
+        initialDelayMs: Long = INITIAL_RETRY_DELAY_MS,
+        maxDelayMs: Long = MAX_RETRY_DELAY_MS,
+        block: suspend () -> T,
+    ): T {
+        var delayMillis = initialDelayMs
+        var lastError: Throwable? = null
+        for (attempt in 1..maxAttempts) {
+            currentCoroutineContext().ensureActive()
+            try {
+                return block()
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (error: Throwable) {
+                lastError = error
+                if (attempt == maxAttempts || !isRetryableError(error)) {
+                    throw error
+                }
+                delayFn(delayMillis.coerceAtMost(maxDelayMs))
+                delayMillis = (delayMillis * 2).coerceAtMost(maxDelayMs)
+            }
+        }
+        throw lastError ?: IllegalStateException("Retry attempts exhausted.")
+    }
+
+    internal fun isRetryableError(error: Throwable): Boolean {
+        val chain = generateSequence(error) { it.cause }.toList()
+        if (chain.any { it is IllegalArgumentException || it is JSONException }) {
+            return false
+        }
+        return chain.any { t ->
+            if (t is SocketTimeoutException || t is TimeoutException) {
+                return@any true
+            }
+            val msg = t.message.orEmpty().lowercase()
+            val cls = t::class.java.simpleName.lowercase()
+            if (msg.contains("api key") || msg.contains("401") || msg.contains("403") || msg.contains("400")) {
+                return@any false
+            }
+            msg.contains("429") ||
+                msg.contains("resource_exhausted") ||
+                msg.contains("resource exhausted") ||
+                msg.contains("too many requests") ||
+                msg.contains("rate limit") ||
+                msg.contains("503") ||
+                msg.contains("service unavailable") ||
+                msg.contains("timeout") ||
+                msg.contains("timed out") ||
+                cls.contains("quota") ||
+                cls.contains("timeout")
         }
     }
 
     internal fun parseJsonResponse(
         responseText: String,
         documentId: String,
-    ): List<DraftTransactionEntity> {
-        val cleaned = responseText
+    ): List<DraftTransactionEntity> =
+        parseJsonResponseWithMetadata(responseText, documentId).drafts
+
+    internal fun parseJsonResponseWithMetadata(
+        responseText: String,
+        documentId: String,
+    ): ParsedAiResponse {
+        var cleaned = responseText.trim()
             .removePrefix("```json")
             .removePrefix("```JSON")
             .removePrefix("```")
             .removeSuffix("```")
             .trim()
 
-        val jsonArray = JSONArray(cleaned)
-        val transactions = mutableListOf<DraftTransactionEntity>()
-        val allowedAssetClasses = setOf("STOCK", "MUTUAL_FUND", "BOND", "FD", "HOUSE", "LAND", "GOLD", "CRYPTO")
+        val firstBracket = cleaned.indexOf('[')
+        if (firstBracket > 0) {
+            cleaned = cleaned.substring(firstBracket).trim()
+        }
 
-        for (i in 0 until jsonArray.length()) {
-            val obj = jsonArray.getJSONObject(i)
+        return try {
+            val jsonArray = JSONArray(cleaned)
+            val objects = buildList(jsonArray.length()) {
+                for (i in 0 until jsonArray.length()) {
+                    jsonArray.optJSONObject(i)?.let(::add)
+                }
+            }
+            ParsedAiResponse(
+                drafts = mapJsonObjectsToDrafts(objects, documentId),
+                wasTruncated = false,
+            )
+        } catch (jsonEx: JSONException) {
+            val salvagedObjects = salvageCompleteJsonObjects(cleaned)
+            val looksLikeArray = cleaned.startsWith("[")
+            if (salvagedObjects.isEmpty() && !looksLikeArray) {
+                throw jsonEx
+            }
+            ParsedAiResponse(
+                drafts = mapJsonObjectsToDrafts(salvagedObjects, documentId),
+                wasTruncated = true,
+            )
+        }
+    }
+
+    private fun salvageCompleteJsonObjects(raw: String): List<JSONObject> {
+        val salvaged = mutableListOf<JSONObject>()
+        var inString = false
+        var escapeNext = false
+        var braceDepth = 0
+        var objectStart = -1
+
+        for (i in raw.indices) {
+            val ch = raw[i]
+            if (escapeNext) {
+                escapeNext = false
+                continue
+            }
+            if (inString) {
+                when (ch) {
+                    '\\' -> escapeNext = true
+                    '"' -> inString = false
+                }
+                continue
+            }
+            when (ch) {
+                '"' -> inString = true
+                '{' -> {
+                    if (braceDepth == 0) {
+                        objectStart = i
+                    }
+                    braceDepth++
+                }
+                '}' -> {
+                    if (braceDepth > 0) {
+                        braceDepth--
+                        if (braceDepth == 0 && objectStart >= 0) {
+                            val objectText = raw.substring(objectStart, i + 1)
+                            runCatching { JSONObject(objectText) }.getOrNull()?.let(salvaged::add)
+                            objectStart = -1
+                        }
+                    }
+                }
+            }
+        }
+        return salvaged
+    }
+
+    private fun mapJsonObjectsToDrafts(
+        objects: List<JSONObject>,
+        documentId: String,
+    ): List<DraftTransactionEntity> {
+        val transactions = mutableListOf<DraftTransactionEntity>()
+        for (obj in objects) {
             val assetName = obj.optString("assetName", "").trim()
             if (assetName.isBlank()) continue
 
             val rawAssetClass = obj.optString("assetClass", "STOCK").trim().uppercase()
-            val assetClass = if (rawAssetClass in allowedAssetClasses) rawAssetClass else "STOCK"
+            val assetClass = if (rawAssetClass in ALLOWED_ASSET_CLASSES) rawAssetClass else "STOCK"
 
             val transactionType = obj.optString("transactionType", "BUY").trim().uppercase()
             val quantity = extractJsonString(obj, "quantity", "1")
@@ -111,7 +304,6 @@ class GeminiAiProvider @Inject constructor() : AiProvider {
                 ),
             )
         }
-
         return transactions
     }
 
@@ -133,6 +325,15 @@ class GeminiAiProvider @Inject constructor() : AiProvider {
         DateParser.parseToEpochMilli(tradeDateStr)
 
     companion object {
+        private const val MODEL_NAME = "gemini-2.5-flash"
+        private const val MAX_OUTPUT_TOKENS = 8192
+        private const val MAX_RETRY_ATTEMPTS = 4
+        private const val INITIAL_RETRY_DELAY_MS = 2_000L
+        private const val MAX_RETRY_DELAY_MS = 30_000L
+        private val ALLOWED_ASSET_CLASSES = setOf(
+            "STOCK", "MUTUAL_FUND", "BOND", "FD", "HOUSE", "LAND", "GOLD", "CRYPTO",
+        )
+
         fun buildSystemPrompt(today: String = LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE)): String =
             """
             You are an expert financial parser. Extract all transactions and holdings from the provided text exhaustively. Return ONLY a valid JSON array of objects without markdown formatting like ```json.

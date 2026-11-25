@@ -190,17 +190,54 @@ class TableDetectionEngine @Inject constructor() {
     }
 
     /**
-     * Clusters words on a page into rows based on vertical overlap.
+     * Extracts rows for a single page without retaining word objects across pages.
+     */
+    fun extractPageRows(
+        pageWords: List<ExtractedWord>,
+        pageIndex: Int,
+    ): List<List<String>> {
+        if (pageWords.isEmpty()) return emptyList()
+        val pageRows = clusterWordsIntoRows(pageWords, pageIndex).sortedBy { it.top }
+        val result = ArrayList<List<String>>(pageRows.size)
+        for (row in pageRows) {
+            val cells = mergeWordsIntoRowCells(row)
+            if (cells.isEmpty()) continue
+            if (cells.size == 1) {
+                result.add(listOf(cells[0].text))
+            } else {
+                result.add(cells.map { it.text })
+            }
+        }
+        return result
+    }
+
+    /**
+     * Clusters words on a page into rows based on vertical overlap in O(W log W) time
+     * by maintaining only vertically active trailing rows.
      */
     internal fun clusterWordsIntoRows(words: List<ExtractedWord>, pageIndex: Int): List<ExtractedRow> {
+        if (words.isEmpty()) return emptyList()
         val sorted = words.sortedBy { it.bbox.centerY }
         val rows = mutableListOf<MutableRow>()
+        val activeRows = mutableListOf<MutableRow>()
 
         for (word in sorted) {
-            val matchingRow = rows.firstOrNull { row ->
+            val centerY = word.bbox.centerY
+            var matchingRow: MutableRow? = null
+
+            val iterator = activeRows.iterator()
+            while (iterator.hasNext()) {
+                val row = iterator.next()
                 val rowHeight = (row.bottom - row.top).coerceAtLeast(8f)
                 val tolerance = rowHeight * 0.45f
-                word.bbox.centerY in (row.top - tolerance)..(row.bottom + tolerance)
+                if (centerY > row.bottom + tolerance) {
+                    // Since words are sorted by centerY ascending, no future word can match this row.
+                    iterator.remove()
+                    continue
+                }
+                if (matchingRow == null && centerY >= row.top - tolerance) {
+                    matchingRow = row
+                }
             }
 
             if (matchingRow != null) {
@@ -208,14 +245,14 @@ class TableDetectionEngine @Inject constructor() {
                 matchingRow.top = minOf(matchingRow.top, word.bbox.top)
                 matchingRow.bottom = maxOf(matchingRow.bottom, word.bbox.bottom)
             } else {
-                rows.add(
-                    MutableRow(
-                        words = mutableListOf(word),
-                        pageIndex = pageIndex,
-                        top = word.bbox.top,
-                        bottom = word.bbox.bottom,
-                    )
+                val newRow = MutableRow(
+                    words = mutableListOf(word),
+                    pageIndex = pageIndex,
+                    top = word.bbox.top,
+                    bottom = word.bbox.bottom,
                 )
+                rows.add(newRow)
+                activeRows.add(newRow)
             }
         }
 

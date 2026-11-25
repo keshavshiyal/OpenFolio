@@ -1,10 +1,13 @@
 package com.openfolio.core.tableextraction
 
 import android.content.Context
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 import org.mockito.kotlin.mock
 import java.io.File
 
@@ -12,6 +15,10 @@ class CsvTableGeneratorTest {
 
     private lateinit var generator: CsvTableGenerator
     private val mockContext: Context = mock()
+
+    @Rule
+    @JvmField
+    val tempFolder = TemporaryFolder()
 
     @Before
     fun setUp() {
@@ -75,5 +82,28 @@ class CsvTableGeneratorTest {
         val lines = csv.lines()
 
         assertTrue(lines.any { it == "Val1,Val2," })
+    }
+
+    @Test
+    fun generateCsvFileStreamsLargeTableWithCommaEscaping() = runBlocking {
+        val rows = (1..1_000).map { i ->
+            listOf("2024-01-01", "Fund, Plan $i", "1,500.25")
+        }
+        val table = ExtractedTable(
+            tableIndex = 1,
+            pageIndices = (1..50).toList(),
+            headers = listOf("Date", "Scheme, Name", "Amount"),
+            rows = rows,
+            sourceFileName = "large_cas.pdf",
+        )
+
+        val outDir = tempFolder.newFolder("csv_out")
+        val file = generator.generateCsvFile(table, outputDirectory = outDir)
+        assertTrue(file.exists())
+
+        val fileLines = file.readLines(Charsets.UTF_8)
+        assertTrue(fileLines.contains("# Rows: 1000"))
+        assertTrue(fileLines.contains("Date,Scheme&COMMA; Name,Amount"))
+        assertTrue(fileLines.contains("2024-01-01,Fund&COMMA; Plan 1000,1&COMMA;500.25"))
     }
 }

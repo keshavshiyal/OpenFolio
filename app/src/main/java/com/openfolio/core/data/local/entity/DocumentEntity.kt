@@ -1,5 +1,6 @@
 package com.openfolio.core.data.local.entity
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
@@ -29,6 +30,10 @@ data class DocumentEntity(
     val extractedText: String? = null,
     val status: String = extractionStatus.name,
     val assetClass: String = "STOCK",
+    @ColumnInfo(defaultValue = "NULL") val extractedTextPath: String? = null,
+    @ColumnInfo(defaultValue = "0") val pageCount: Int = 0,
+    @ColumnInfo(defaultValue = "0") val processedPages: Int = 0,
+    @ColumnInfo(defaultValue = "NULL") val extractionError: String? = null,
 ) {
     fun getAssetClassEnum(): AssetClass = try {
         AssetClass.valueOf(assetClass.trim().uppercase())

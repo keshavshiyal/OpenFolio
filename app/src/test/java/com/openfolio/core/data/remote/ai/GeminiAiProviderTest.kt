@@ -1,8 +1,12 @@
 package com.openfolio.core.data.remote.ai
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -282,5 +286,91 @@ class GeminiAiProviderTest {
 
         val parsed4 = provider.parseTradeDate("2024-05-10T14:30:00Z")
         assertNotNull("ISO with T and Z", parsed4)
+    }
+
+    @Test
+    fun parseJsonResponseSalvagesCompleteObjectsFromTruncatedJsonArray() {
+        val truncated = """
+            [
+              {
+                "assetName": "Infosys Ltd",
+                "transactionType": "BUY",
+                "quantity": "12.500",
+                "price": "1540.25",
+                "netAmount": "19253.125",
+                "tradeDate": "2024-05-10",
+                "notes": "Contains {braces} and \"escaped\" quotes"
+              },
+              {
+                "assetName": "TCS",
+                "transactionType": "SELL",
+                "quantity": "4",
+                "price": "3900.00",
+                "netAmount": "15600.00",
+                "tradeDate": "2024-06-01"
+              },
+              {
+                "assetName": "HDFC Bank",
+                "transactionType": "BUY",
+                "quantity": "10"
+        """.trimIndent()
+
+        val parsed = provider.parseJsonResponseWithMetadata(truncated, "doc-trunc")
+        assertTrue(parsed.wasTruncated)
+        assertEquals(2, parsed.drafts.size)
+        assertEquals("Infosys Ltd", parsed.drafts[0].assetName)
+        assertEquals("12.500", parsed.drafts[0].quantity)
+        assertEquals("19253.125", parsed.drafts[0].netAmount)
+        assertEquals("TCS", parsed.drafts[1].assetName)
+        assertEquals("SELL", parsed.drafts[1].transactionType)
+    }
+
+    @Test
+    fun extractTransactionsRetriesWithExponentialBackoffOn429() = runBlocking {
+        val recordedDelays = mutableListOf<Long>()
+        var attempts = 0
+        val retryProvider = GeminiAiProvider(
+            delayFn = { millis -> recordedDelays.add(millis) },
+            generateContentFn = { _, _ ->
+                attempts++
+                if (attempts < 4) {
+                    throw RuntimeException("HTTP 429 RESOURCE_EXHAUSTED: rate limit exceeded")
+                }
+                """[{"assetName":"RELIANCE","transactionType":"BUY","quantity":"10","price":"2500.50","netAmount":"25005.00","tradeDate":"2024-04-12"}]"""
+            },
+        )
+
+        val result = retryProvider.extractTransactionsDetailed("trade text", "api-key", "doc-retry")
+        assertTrue(result.isSuccess)
+        val batch = result.getOrThrow()
+        assertFalse(batch.wasTruncated)
+        assertEquals(1, batch.drafts.size)
+        assertEquals("RELIANCE", batch.drafts[0].assetName)
+        assertEquals("2500.50", batch.drafts[0].price)
+        assertEquals(4, attempts)
+        assertEquals(listOf(2_000L, 4_000L, 8_000L), recordedDelays)
+    }
+
+    @Test
+    fun extractTransactionsDoesNotRetryNonRetryableErrorsAndRethrowsCancellation() {
+        var attempts = 0
+        val nonRetryProvider = GeminiAiProvider(
+            delayFn = { },
+            generateContentFn = { _, _ ->
+                attempts++
+                throw RuntimeException("HTTP 403 API key invalid")
+            },
+        )
+        val failed = runBlocking { nonRetryProvider.extractTransactions("text", "bad-key", "doc-1") }
+        assertTrue(failed.isFailure)
+        assertEquals(1, attempts)
+
+        val cancellingProvider = GeminiAiProvider(
+            delayFn = { },
+            generateContentFn = { _, _ -> throw CancellationException("Cancelled") },
+        )
+        assertThrows(CancellationException::class.java) {
+            runBlocking { cancellingProvider.extractTransactions("text", "key", "doc-2") }
+        }
     }
 }

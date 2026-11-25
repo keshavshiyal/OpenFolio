@@ -23,7 +23,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.TableChart
@@ -43,6 +43,7 @@ import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.ModalBottomSheet
@@ -102,6 +103,7 @@ fun ReviewScreen(
     onBack: () -> Unit,
     onSkip: () -> Unit,
     onProcessWithAi: () -> Unit,
+    onRetryLocalExtraction: () -> Unit = {},
     onProcessMappedData: (String, String, String, String, String, String, String, Int) -> Unit,
     onReloadHeaders: (Int) -> Unit,
     onSaveDraft: (String?, String, String, String, String, String) -> Unit,
@@ -183,24 +185,47 @@ fun ReviewScreen(
                 color = colors.surface,
                 border = BorderStroke(1.dp, colors.border),
             ) {
-                Row(
+                Column(
                     modifier = Modifier.padding(24.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    CircularProgressIndicator(
-                        color = colors.brand,
-                        strokeWidth = 3.dp,
-                    )
-                    Text(
-                        text = if (actionState == ReviewActionState.ProcessingAi) {
-                            "Extracting via Gemini..."
-                        } else {
-                            "Extracting tables locally (OCR)..."
-                        },
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = colors.content,
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    ) {
+                        CircularProgressIndicator(
+                            color = colors.brand,
+                            strokeWidth = 3.dp,
+                        )
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                text = if (actionState == ReviewActionState.ProcessingAi) {
+                                    "Extracting via Gemini..."
+                                } else {
+                                    "Extracting tables locally (OCR)..."
+                                },
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = colors.content,
+                            )
+                            if (actionState == ReviewActionState.ProcessingAi && document != null && document.pageCount > 0) {
+                                Text(
+                                    text = "Processing page ${document.processedPages} of ${document.pageCount}",
+                                    style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
+                                    color = colors.muted,
+                                )
+                            }
+                        }
+                    }
+                    if (actionState == ReviewActionState.ProcessingAi && document != null && document.pageCount > 0) {
+                        val fraction = (document.processedPages.toFloat() / document.pageCount.coerceAtLeast(1))
+                            .coerceIn(0f, 1f)
+                        LinearProgressIndicator(
+                            progress = { fraction },
+                            modifier = Modifier.fillMaxWidth(),
+                            color = colors.brand,
+                            trackColor = colors.brandSubtle,
+                        )
+                    }
                 }
             }
         }
@@ -301,7 +326,7 @@ fun ReviewScreen(
                 },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
                 actions = {
@@ -529,22 +554,63 @@ fun ReviewScreen(
                                 uiState is ReviewUiState.Error -> uiState.message
                                 uiState == ReviewUiState.NotFound -> "No document found."
                                 isLocked -> "Enter password above to decrypt and parse transactions."
-                                document?.status == DocumentStatus.PENDING_OCR.name ->
-                                    "Local text extraction is in progress."
+                                document?.status == DocumentStatus.PENDING_OCR.name ||
+                                    document?.status == DocumentStatus.PROCESSING.name ->
+                                    if ((document.pageCount) > 0) {
+                                        "Processing page ${document.processedPages} of ${document.pageCount}"
+                                    } else {
+                                        "Local text extraction is in progress."
+                                    }
                                 document?.status == DocumentStatus.OCR_FAILED.name ->
-                                    "Local text extraction failed. You can still add records manually."
+                                    document.extractionError ?: "Local text extraction failed. You can retry or add records manually."
+                                document?.status == DocumentStatus.FAILED.name ->
+                                    document.extractionError ?: "AI extraction was interrupted. Tap Resume or Retry to continue."
                                 document?.status == DocumentStatus.OCR_COMPLETE.name ||
                                     document?.status == DocumentStatus.AI_COMPLETE.name ->
                                     "Ready to extract transactions from this statement."
                                 else -> "Waiting for local text extraction."
                             },
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = colors.muted,
+                            style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum"),
+                            color = if (document?.status == DocumentStatus.OCR_FAILED.name || document?.status == DocumentStatus.FAILED.name) {
+                                colors.lossGlyph
+                            } else {
+                                colors.muted
+                            },
                         )
+                        if (document?.status == DocumentStatus.PENDING_OCR.name ||
+                            document?.status == DocumentStatus.PROCESSING.name
+                        ) {
+                            if (document.pageCount > 0) {
+                                val fraction = (document.processedPages.toFloat() / document.pageCount.coerceAtLeast(1))
+                                    .coerceIn(0f, 1f)
+                                LinearProgressIndicator(
+                                    progress = { fraction },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = colors.brand,
+                                    trackColor = colors.brandSubtle,
+                                )
+                            } else {
+                                LinearProgressIndicator(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = colors.brand,
+                                    trackColor = colors.brandSubtle,
+                                )
+                            }
+                        }
+                        if (!isLocked && document?.status == DocumentStatus.OCR_FAILED.name) {
+                            OutlinedButton(
+                                onClick = onRetryLocalExtraction,
+                                modifier = Modifier.fillMaxWidth(),
+                                border = BorderStroke(1.dp, colors.brand),
+                            ) {
+                                Text("Retry Local Extraction", color = colors.brand)
+                            }
+                        }
                         if (
                             !isLocked && (
                                 document?.status == DocumentStatus.OCR_COMPLETE.name ||
-                                document?.status == DocumentStatus.AI_COMPLETE.name
+                                document?.status == DocumentStatus.AI_COMPLETE.name ||
+                                document?.status == DocumentStatus.FAILED.name
                             )
                         ) {
                             Column(
@@ -575,11 +641,52 @@ fun ReviewScreen(
                                         actionState != ReviewActionState.ProcessingMapping,
                                     modifier = Modifier.fillMaxWidth(),
                                 ) {
-                                    Text("Process with Cloud AI")
+                                    val aiButtonLabel = when {
+                                        document.status == DocumentStatus.FAILED.name && document.processedPages > 0 ->
+                                            "Resume Cloud AI (Page ${document.processedPages + 1})"
+                                        document.status == DocumentStatus.FAILED.name ->
+                                            "Retry Cloud AI Extraction"
+                                        else -> "Process with Cloud AI"
+                                    }
+                                    Text(aiButtonLabel)
                                 }
                             }
                         }
                     } else {
+                        if (document?.status == DocumentStatus.FAILED.name) {
+                            Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                color = colors.lossGlyph.copy(alpha = 0.08f),
+                                border = BorderStroke(1.dp, colors.lossGlyph.copy(alpha = 0.25f)),
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    Text(
+                                        text = document.extractionError
+                                            ?: "Partial drafts extracted (${document.processedPages}/${document.pageCount} pages). Resume to finish remaining pages.",
+                                        style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
+                                        color = colors.lossGlyph,
+                                    )
+                                    OutlinedButton(
+                                        onClick = onProcessWithAi,
+                                        enabled = actionState != ReviewActionState.ProcessingAi,
+                                        border = BorderStroke(1.dp, colors.brand),
+                                    ) {
+                                        Text(
+                                            text = if (document.processedPages > 0) {
+                                                "Resume AI Extraction (Page ${document.processedPages + 1})"
+                                            } else {
+                                                "Retry AI Extraction"
+                                            },
+                                            color = colors.brand,
+                                        )
+                                    }
+                                }
+                            }
+                        }
                         val itemsToDisplay = remember(drafts, draftReviewItems) {
                             if (draftReviewItems.isNotEmpty()) {
                                 draftReviewItems
@@ -1011,7 +1118,7 @@ private fun MappingColumnDropdown(
             },
             modifier = Modifier
                 .fillMaxWidth()
-                .menuAnchor(),
+                .menuAnchor(MenuAnchorType.PrimaryNotEditable),
             singleLine = true,
         )
         ExposedDropdownMenu(

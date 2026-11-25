@@ -163,8 +163,15 @@ class ReviewViewModel @Inject constructor(
 
     fun onProcessWithAi() {
         val document = (uiState.value as? ReviewUiState.Loaded)?.document ?: return
-        if (_drafts.value.isNotEmpty() || _actionState.value == ReviewActionState.ProcessingAi) return
-        if (document.status != DocumentStatus.OCR_COMPLETE.name && document.status != DocumentStatus.AI_COMPLETE.name) {
+        if (_actionState.value == ReviewActionState.ProcessingAi) return
+        val canResumeFailed = document.status == DocumentStatus.FAILED.name
+        if (_drafts.value.isNotEmpty() && !canResumeFailed) return
+        val allowedStatuses = setOf(
+            DocumentStatus.OCR_COMPLETE.name,
+            DocumentStatus.AI_COMPLETE.name,
+            DocumentStatus.FAILED.name,
+        )
+        if (document.status !in allowedStatuses) {
             val message = "Wait for local text extraction to finish before processing."
             _errorMessage.value = message
             _actionState.value = ReviewActionState.Error(message)
@@ -189,8 +196,8 @@ class ReviewViewModel @Inject constructor(
                 _actionState.value = ReviewActionState.Error(message)
             } catch (e: MissingApiKeyException) {
                 _actionState.value = ReviewActionState.MissingApiKey
-            } catch (e: AiExtractionException) {
-                val message = e.message ?: "AI extraction failed."
+            } catch (aiException: AiExtractionException) {
+                val message = aiException.message ?: "AI extraction failed."
                 _errorMessage.value = message
                 _actionState.value = ReviewActionState.Error(message)
             } catch (e: Exception) {
@@ -198,6 +205,13 @@ class ReviewViewModel @Inject constructor(
                 _errorMessage.value = message
                 _actionState.value = ReviewActionState.Error(message)
             }
+        }
+    }
+
+    fun retryLocalExtraction() {
+        val document = (uiState.value as? ReviewUiState.Loaded)?.document ?: return
+        viewModelScope.launch {
+            documentRepository.retryLocalExtraction(document.id)
         }
     }
 

@@ -57,7 +57,9 @@ class Converters {
     fun fromExtractionStatus(value: ExtractionStatus?): String? = value?.name
 
     @TypeConverter
-    fun toExtractionStatus(value: String?): ExtractionStatus? = value?.let { ExtractionStatus.valueOf(it) }
+    fun toExtractionStatus(value: String?): ExtractionStatus? = value?.let { raw ->
+        runCatching { ExtractionStatus.valueOf(raw) }.getOrDefault(ExtractionStatus.PENDING_OCR)
+    }
 
     companion object {
         inline fun <reified T : Enum<T>> enumToString(value: T?): String? = value?.name
