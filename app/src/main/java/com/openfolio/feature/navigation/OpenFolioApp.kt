@@ -244,6 +244,7 @@ fun OpenFolioApp(
                     onProcessWithAi = reviewViewModel::onProcessWithAi,
                     onProcessNextAiBatch = reviewViewModel::onProcessNextAiBatch,
                     onAutoProcessRemainingAi = reviewViewModel::onAutoProcessRemainingAi,
+                    onCancelAiProcessing = reviewViewModel::onCancelAiProcessing,
                     batchBannerMessage = reviewBatchBannerMessage,
                     onRetryLocalExtraction = reviewViewModel::retryLocalExtraction,
                     onProcessMappedData = reviewViewModel::processMappedData,

@@ -63,6 +63,14 @@ class DocumentImportWorker @AssistedInject constructor(
                         onProgress = onProgress,
                     )
                     if (extractionResult.isSuccess) {
+                        if (documentRepository.hasGeminiApiKey()) {
+                            runCatching {
+                                documentRepository.processNextAiBatch(
+                                    documentId = documentId,
+                                    onProgress = onProgress,
+                                )
+                            }
+                        }
                         Result.success()
                     } else {
                         Result.failure()
@@ -70,6 +78,20 @@ class DocumentImportWorker @AssistedInject constructor(
                 }
                 MODE_AI_EXTRACT -> {
                     documentRepository.processDocumentWithAi(
+                        documentId = documentId,
+                        onProgress = onProgress,
+                    )
+                    Result.success()
+                }
+                MODE_AI_BATCH -> {
+                    documentRepository.processNextAiBatch(
+                        documentId = documentId,
+                        onProgress = onProgress,
+                    )
+                    Result.success()
+                }
+                MODE_AI_AUTO -> {
+                    documentRepository.autoProcessRemainingAiBatches(
                         documentId = documentId,
                         onProgress = onProgress,
                     )
@@ -109,8 +131,8 @@ class DocumentImportWorker @AssistedInject constructor(
     ): ForegroundInfo {
         ensureNotificationChannel()
         val label = when (stage) {
-            MODE_AI_EXTRACT -> "Extracting transactions with AI"
-            else -> "Reading statement locally"
+            MODE_AI_EXTRACT, "AI_EXTRACT" -> "Extracting transactions with Gemini AI"
+            else -> "Reading statement pages"
         }
         val contentText = if (total > 0) {
             "$label • Page $current of $total"
@@ -162,6 +184,8 @@ class DocumentImportWorker @AssistedInject constructor(
         const val KEY_TOTAL = "total"
         const val MODE_LOCAL_EXTRACT = "LOCAL_EXTRACT"
         const val MODE_AI_EXTRACT = "AI_EXTRACT"
+        const val MODE_AI_BATCH = "AI_BATCH"
+        const val MODE_AI_AUTO = "AI_AUTO"
         private const val CHANNEL_ID = "openfolio_imports"
         private const val NOTIFICATION_ID_BASE = 4100
         private const val FOREGROUND_SIZE_THRESHOLD_BYTES = 2L * 1024L * 1024L

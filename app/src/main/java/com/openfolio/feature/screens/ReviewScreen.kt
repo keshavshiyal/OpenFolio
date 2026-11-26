@@ -24,9 +24,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.TableChart
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Warning
@@ -105,6 +105,7 @@ fun ReviewScreen(
     onProcessWithAi: () -> Unit,
     onProcessNextAiBatch: () -> Unit = {},
     onAutoProcessRemainingAi: () -> Unit = {},
+    onCancelAiProcessing: () -> Unit = {},
     batchBannerMessage: String? = null,
     onRetryLocalExtraction: () -> Unit = {},
     onProcessMappedData: (String, String, String, String, String, String, String, Int) -> Unit,
@@ -141,14 +142,8 @@ fun ReviewScreen(
     var passwordInput by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
 
-    if (showTableReview && extractedTables.isNotEmpty()) {
-        OcrTableReviewScreen(
-            tables = extractedTables,
-            onBack = onDismissTableReview,
-            onApproveTable = onApproveExtractedTable,
-        )
-        return
-    }
+    val isAiRunning = actionState == ReviewActionState.ProcessingAi ||
+        document?.status == DocumentStatus.PROCESSING.name
 
     LaunchedEffect(errorMessage) {
         if (!errorMessage.isNullOrBlank() && actionState !is ReviewActionState.NoFinancialData) {
@@ -176,62 +171,6 @@ fun ReviewScreen(
                 }
             }
             else -> Unit
-        }
-    }
-
-    if (actionState == ReviewActionState.ProcessingAi || (actionState == ReviewActionState.ProcessingMapping && !showTableReview)) {
-        Dialog(
-            onDismissRequest = {},
-            properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
-        ) {
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = colors.surface,
-                border = BorderStroke(1.dp, colors.border),
-            ) {
-                Column(
-                    modifier = Modifier.padding(24.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(16.dp),
-                    ) {
-                        CircularProgressIndicator(
-                            color = colors.brand,
-                            strokeWidth = 3.dp,
-                        )
-                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(
-                                text = if (actionState == ReviewActionState.ProcessingAi) {
-                                    "Extracting via Gemini..."
-                                } else {
-                                    "Extracting tables locally (OCR)..."
-                                },
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = colors.content,
-                            )
-                            if (actionState == ReviewActionState.ProcessingAi && document != null && document.pageCount > 0) {
-                                Text(
-                                    text = "Page ${document.processedPages} of ${document.pageCount}",
-                                    style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
-                                    color = colors.muted,
-                                )
-                            }
-                        }
-                    }
-                    if (actionState == ReviewActionState.ProcessingAi && document != null && document.pageCount > 0) {
-                        val fraction = (document.processedPages.toFloat() / document.pageCount.coerceAtLeast(1))
-                            .coerceIn(0f, 1f)
-                        LinearProgressIndicator(
-                            progress = { fraction },
-                            modifier = Modifier.fillMaxWidth(),
-                            color = colors.brand,
-                            trackColor = colors.brandSubtle,
-                        )
-                    }
-                }
-            }
         }
     }
 
@@ -504,7 +443,7 @@ fun ReviewScreen(
                                     Button(
                                         onClick = { onUnlockPdf(passwordInput) },
                                         enabled = passwordInput.isNotBlank() &&
-                                            actionState != ReviewActionState.ProcessingAi &&
+                                            !isAiRunning &&
                                             actionState != ReviewActionState.ProcessingMapping,
                                         modifier = Modifier.fillMaxWidth(),
                                         colors = ButtonDefaults.buttonColors(
@@ -512,7 +451,7 @@ fun ReviewScreen(
                                             contentColor = colors.onAccent,
                                         ),
                                     ) {
-                                        Text("Unlock & Extract Offline")
+                                        Text("Unlock & Extract Pages")
                                     }
                                 }
                             }
@@ -592,19 +531,24 @@ fun ReviewScreen(
                                 colors.muted
                             },
                         )
-                        if (hasPendingAiPages) {
+                        if (isAiRunning) {
+                            NonBlockingAiProgressCard(
+                                processedPages = document?.processedPages ?: 0,
+                                pageCount = document?.pageCount ?: 0,
+                                stagedCount = drafts.size,
+                                onPause = onCancelAiProcessing,
+                            )
+                        } else if (hasPendingAiPages) {
                             val activeDoc = document!!
                             BatchProgressControlsCard(
                                 document = activeDoc,
                                 stagedCount = drafts.size,
                                 bannerMessage = batchBannerMessage ?: activeDoc.extractionError,
-                                isProcessing = actionState == ReviewActionState.ProcessingAi,
+                                isProcessing = isAiRunning,
                                 onNextBatch = onProcessNextAiBatch,
                                 onAutoProcessRemaining = onAutoProcessRemainingAi,
                             )
-                        } else if (document?.status == DocumentStatus.PENDING_OCR.name ||
-                            document?.status == DocumentStatus.PROCESSING.name
-                        ) {
+                        } else if (document?.status == DocumentStatus.PENDING_OCR.name) {
                             if (document.pageCount > 0) {
                                 val fraction = (document.processedPages.toFloat() / document.pageCount.coerceAtLeast(1))
                                     .coerceIn(0f, 1f)
@@ -628,11 +572,11 @@ fun ReviewScreen(
                                 modifier = Modifier.fillMaxWidth(),
                                 border = BorderStroke(1.dp, colors.brand),
                             ) {
-                                Text("Retry Local Extraction", color = colors.brand)
+                                Text("Retry Page Extraction", color = colors.brand)
                             }
                         }
                         if (
-                            !isLocked && !hasPendingAiPages && (
+                            !isLocked && !isAiRunning && !hasPendingAiPages && (
                                 document?.status == DocumentStatus.OCR_COMPLETE.name ||
                                 document?.status == DocumentStatus.AI_COMPLETE.name ||
                                 document?.status == DocumentStatus.FAILED.name
@@ -640,12 +584,11 @@ fun ReviewScreen(
                         ) {
                             Column(
                                 modifier = Modifier.fillMaxWidth(),
-                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
                             ) {
                                 Button(
-                                    onClick = onExtractTablesLocally,
-                                    enabled = actionState != ReviewActionState.ProcessingAi &&
-                                        actionState != ReviewActionState.ProcessingMapping,
+                                    onClick = onProcessWithAi,
+                                    enabled = actionState != ReviewActionState.ProcessingMapping,
                                     modifier = Modifier.fillMaxWidth(),
                                     colors = ButtonDefaults.buttonColors(
                                         containerColor = colors.brand,
@@ -653,38 +596,44 @@ fun ReviewScreen(
                                     ),
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Filled.TableChart,
+                                        imageVector = Icons.Filled.AutoAwesome,
                                         contentDescription = null,
                                         modifier = Modifier.size(18.dp),
                                     )
                                     Spacer(modifier = Modifier.width(8.dp))
-                                    Text("Extract Tables Locally (Offline)")
-                                }
-                                OutlinedButton(
-                                    onClick = onProcessWithAi,
-                                    enabled = actionState != ReviewActionState.ProcessingAi &&
-                                        actionState != ReviewActionState.ProcessingMapping,
-                                    modifier = Modifier.fillMaxWidth(),
-                                ) {
                                     val aiButtonLabel = when {
                                         document.status == DocumentStatus.FAILED.name && document.processedPages > 0 ->
-                                            "Resume Cloud AI (Page ${document.processedPages + 1})"
+                                            "Resume Gemini AI (Page ${document.processedPages + 1})"
                                         document.status == DocumentStatus.FAILED.name ->
-                                            "Retry Cloud AI Extraction"
-                                        else -> "Process with Cloud AI"
+                                            "Retry Gemini AI Extraction"
+                                        else -> "Extract Records with Gemini AI"
                                     }
                                     Text(aiButtonLabel)
+                                }
+                                if (document.pageCount > 5) {
+                                    Text(
+                                        text = "Sends 5 pages per request so you can verify Batch 1 before continuing.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = colors.muted,
+                                    )
                                 }
                             }
                         }
                     } else {
-                        if (hasPendingAiPages) {
+                        if (isAiRunning) {
+                            NonBlockingAiProgressCard(
+                                processedPages = document?.processedPages ?: 0,
+                                pageCount = document?.pageCount ?: 0,
+                                stagedCount = drafts.size,
+                                onPause = onCancelAiProcessing,
+                            )
+                        } else if (hasPendingAiPages) {
                             val activeDoc = document!!
                             BatchProgressControlsCard(
                                 document = activeDoc,
                                 stagedCount = drafts.size,
                                 bannerMessage = batchBannerMessage ?: activeDoc.extractionError,
-                                isProcessing = actionState == ReviewActionState.ProcessingAi,
+                                isProcessing = isAiRunning,
                                 onNextBatch = onProcessNextAiBatch,
                                 onAutoProcessRemaining = onAutoProcessRemainingAi,
                             )
@@ -707,7 +656,7 @@ fun ReviewScreen(
                                     )
                                     OutlinedButton(
                                         onClick = onProcessWithAi,
-                                        enabled = actionState != ReviewActionState.ProcessingAi,
+                                        enabled = !isAiRunning,
                                         border = BorderStroke(1.dp, colors.brand),
                                     ) {
                                         Text(
@@ -853,8 +802,8 @@ fun ReviewScreen(
                         Button(
                             onClick = onSaveConfirmed,
                             enabled = !hasPendingAiPages &&
-                                actionState != ReviewActionState.Saving &&
-                                actionState != ReviewActionState.ProcessingAi,
+                                !isAiRunning &&
+                                actionState != ReviewActionState.Saving,
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             if (actionState == ReviewActionState.Saving) {
@@ -866,6 +815,8 @@ fun ReviewScreen(
                                 Text("  Saving…")
                             } else {
                                 val label = when {
+                                    isAiRunning ->
+                                        "Extracting in Background ($selectedCount Staged)"
                                     hasPendingAiPages ->
                                         "Complete All ${document!!.pageCount} Pages to Commit ($selectedCount Staged)"
                                     selectedCount == 0 -> "Skip All & Complete"
@@ -1563,6 +1514,79 @@ private fun ManualDraftForm(
             modifier = Modifier.fillMaxWidth(),
         ) {
             Text("Save Record")
+        }
+    }
+}
+
+@Composable
+private fun NonBlockingAiProgressCard(
+    processedPages: Int,
+    pageCount: Int,
+    stagedCount: Int,
+    onPause: () -> Unit,
+) {
+    val colors = LocalOpenFolioColors.current
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = colors.brandSubtle,
+        border = BorderStroke(1.dp, colors.brand.copy(alpha = 0.25f)),
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        color = colors.brand,
+                        strokeWidth = 2.dp,
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = "Gemini AI extracting (non-blocking)",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = colors.content,
+                        )
+                        val progressLabel = if (pageCount > 0) {
+                            "Page $processedPages of $pageCount · $stagedCount staged"
+                        } else {
+                            "$stagedCount staged"
+                        }
+                        Text(
+                            text = progressLabel,
+                            style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
+                            color = colors.muted,
+                        )
+                    }
+                }
+                TextButton(onClick = onPause) {
+                    Text("Pause", color = colors.brand)
+                }
+            }
+            if (pageCount > 0) {
+                val fraction = (processedPages.toFloat() / pageCount.coerceAtLeast(1)).coerceIn(0f, 1f)
+                LinearProgressIndicator(
+                    progress = { fraction },
+                    modifier = Modifier.fillMaxWidth(),
+                    color = colors.brand,
+                    trackColor = colors.surface,
+                )
+            } else {
+                LinearProgressIndicator(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = colors.brand,
+                    trackColor = colors.surface,
+                )
+            }
         }
     }
 }

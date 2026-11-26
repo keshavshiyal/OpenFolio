@@ -42,4 +42,7 @@ interface DraftTransactionDao {
 
     @Query("DELETE FROM draft_transactions WHERE documentId = :documentId")
     suspend fun deleteByDocumentId(documentId: String)
+
+    @Query("DELETE FROM draft_transactions WHERE id IN (:ids)")
+    suspend fun deleteByIds(ids: List<String>)
 }

@@ -70,6 +70,7 @@ import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
@@ -784,8 +785,10 @@ class DocumentRepositoryImpl @Inject constructor(
             emptyList()
         }
         var totalExistingDraftCount = priorDrafts.size
-        val boundarySignatures = priorDrafts
+        val boundaryDrafts = priorDrafts
             .filter { it.sourcePage == null || it.sourcePage >= (startPage - 1) }
+            .toMutableList()
+        val boundarySignatures = boundaryDrafts
             .mapTo(HashSet()) { buildDraftSignature(it) }
 
         var activeCarryOver = AiCarryOverContext.fromJson(document.carryOverContextJson)
@@ -893,38 +896,60 @@ class DocumentRepositoryImpl @Inject constructor(
             return batchResult
         }
 
+        data class NormalizedBatchResult(
+            val newDrafts: List<DraftTransactionEntity>,
+            val stubIdsToDelete: List<String>,
+        )
+
+        fun isZeroValueStub(draft: DraftTransactionEntity): Boolean {
+            val price = parseCleanBigDecimal(draft.price)?.abs() ?: BigDecimal.ZERO
+            val net = parseCleanBigDecimal(draft.netAmount)?.abs() ?: BigDecimal.ZERO
+            return price.compareTo(BigDecimal.ZERO) == 0 && net.compareTo(BigDecimal.ZERO) == 0
+        }
+
         fun normalizeAndFilterBatchDrafts(
             rawDrafts: List<DraftTransactionEntity>,
             priorContext: AiCarryOverContext,
             defaultSourcePage: Int?,
+            batchStartPage: Int?,
             batchEndPage: Int?,
-        ): List<DraftTransactionEntity> {
+        ): NormalizedBatchResult {
             val newDrafts = ArrayList<DraftTransactionEntity>(rawDrafts.size)
+            val stubIdsToDelete = ArrayList<String>()
+            val newEndBoundaryDrafts = ArrayList<DraftTransactionEntity>()
             val newEndBoundarySignatures = HashSet<String>()
+
             for (rawDraft in rawDrafts) {
-                val adjustedClass = if (rawDraft.assetClass == "STOCK" && document.assetClass != "STOCK") {
-                    document.assetClass
-                } else {
-                    rawDraft.assetClass
+                val adjustedClass = when {
+                    (rawDraft.assetClass.isBlank() || rawDraft.assetClass == "STOCK") &&
+                        priorContext.activeAssetClass.isNotBlank() ->
+                        priorContext.activeAssetClass
+                    (rawDraft.assetClass.isBlank() || rawDraft.assetClass == "STOCK") &&
+                        document.assetClass != "STOCK" ->
+                        document.assetClass
+                    rawDraft.assetClass.isBlank() -> "STOCK"
+                    else -> rawDraft.assetClass
                 }
                 val adjustedBroker = rawDraft.broker?.takeIf(String::isNotBlank)
                     ?: priorContext.activeBroker.takeIf(String::isNotBlank)
-                val adjustedIsin = rawDraft.isin?.takeIf(String::isNotBlank)
-                    ?: priorContext.activeIsin.takeIf { isin ->
-                        isin.isNotBlank() && (
-                            rawDraft.assetName.contains(priorContext.activeScheme, ignoreCase = true) ||
-                                priorContext.activeScheme.contains(rawDraft.assetName, ignoreCase = true) ||
-                                rawDraft.assetName.equals("Mutual Fund", ignoreCase = true)
-                            )
-                    }
                 val adjustedAssetName = if (
-                    rawDraft.assetName.equals("Mutual Fund", ignoreCase = true) &&
+                    (rawDraft.assetName.isBlank() ||
+                        rawDraft.assetName.equals("Mutual Fund", ignoreCase = true) ||
+                        rawDraft.assetName.equals("Unknown", ignoreCase = true)) &&
                     priorContext.activeScheme.isNotBlank()
                 ) {
                     priorContext.activeScheme
                 } else {
                     rawDraft.assetName
                 }
+                val adjustedIsin = rawDraft.isin?.takeIf(String::isNotBlank)
+                    ?: priorContext.activeIsin.takeIf { isin ->
+                        isin.isNotBlank() && (
+                            adjustedAssetName.contains(priorContext.activeScheme, ignoreCase = true) ||
+                                priorContext.activeScheme.contains(adjustedAssetName, ignoreCase = true) ||
+                                adjustedAssetName.equals("Mutual Fund", ignoreCase = true)
+                            )
+                    }
 
                 val adjusted = rawDraft.copy(
                     assetName = adjustedAssetName,
@@ -935,15 +960,38 @@ class DocumentRepositoryImpl @Inject constructor(
                 )
                 val sig = buildDraftSignature(adjusted)
                 if (sig !in boundarySignatures) {
+                    // Replace incomplete zero-amount boundary stub from previous page if completed here
+                    if (batchStartPage != null && !isZeroValueStub(adjusted) &&
+                        (adjusted.sourcePage == null || adjusted.sourcePage == batchStartPage)
+                    ) {
+                        val matchingStub = boundaryDrafts.firstOrNull { stub ->
+                            isZeroValueStub(stub) &&
+                                stub.sourcePage == batchStartPage - 1 &&
+                                stub.transactionType.equals(adjusted.transactionType, ignoreCase = true) &&
+                                (stub.tradeDate == null || adjusted.tradeDate == null || stub.tradeDate == adjusted.tradeDate) &&
+                                (
+                                    (!stub.isin.isNullOrBlank() && stub.isin.equals(adjusted.isin, ignoreCase = true)) ||
+                                        AssetNameNormalizer.normalize(stub.assetName) == AssetNameNormalizer.normalize(adjusted.assetName)
+                                    )
+                        }
+                        if (matchingStub != null) {
+                            stubIdsToDelete.add(matchingStub.id)
+                            boundaryDrafts.remove(matchingStub)
+                        }
+                    }
+
                     newDrafts.add(adjusted)
                     if (batchEndPage == null || adjusted.sourcePage == null || adjusted.sourcePage >= batchEndPage) {
+                        newEndBoundaryDrafts.add(adjusted)
                         newEndBoundarySignatures.add(sig)
                     }
                 }
             }
+            boundaryDrafts.clear()
+            boundaryDrafts.addAll(newEndBoundaryDrafts)
             boundarySignatures.clear()
             boundarySignatures.addAll(newEndBoundarySignatures)
-            return newDrafts
+            return NormalizedBatchResult(newDrafts = newDrafts, stubIdsToDelete = stubIdsToDelete)
         }
 
         if (hasSidecarText) {
@@ -958,6 +1006,8 @@ class DocumentRepositoryImpl @Inject constructor(
                     pageCount = totalPages,
                     status = DocumentStatus.PROCESSING.name,
                 )
+            } else if (document.status != DocumentStatus.PROCESSING.name) {
+                documentDao.updateStatusAndError(documentId, DocumentStatus.PROCESSING.name, null)
             }
 
             if (isResuming && activeCarryOver.isEmpty()) {
@@ -971,113 +1021,153 @@ class DocumentRepositoryImpl @Inject constructor(
 
             var currentPage = startPage
             var lastBatchStart = startPage.coerceAtMost(totalPages)
-            var lastBatchEnd = document.processedPages.coerceAtMost(totalPages)
+            var lastBatchEnd = if (isResuming) document.processedPages.coerceAtMost(totalPages) else 0
             var accumulatedNewDrafts = 0
             var lastFlaggedCount = 0
 
-            while (currentPage <= totalPages) {
-                currentCoroutineContext().ensureActive()
-                val lookaheadPages = activeStore.readPagesRange(
-                    documentId = documentId,
-                    pageRange = currentPage..minOf(currentPage + 6, totalPages),
-                )
-                val batchEndPage = selectSmartBatchEndPage(
-                    batchStartPage = currentPage,
-                    totalPages = totalPages,
-                    pagesByNumber = lookaheadPages,
-                )
-                val batchPages = (currentPage..batchEndPage).map { pageNum ->
-                    pageNum to lookaheadPages[pageNum].orEmpty()
-                }
-                val batchText = formatBatchPages(batchPages)
-
-                lastBatchStart = currentPage
-                lastBatchEnd = batchEndPage
-
-                val newDrafts: List<DraftTransactionEntity>
-                if (batchText.isBlank()) {
-                    newDrafts = emptyList()
-                    activeCarryOver = activeCarryOver.copy(incompleteTailText = "")
-                } else {
-                    val aiResult = invokeAiChunk(
-                        chunkText = batchText,
-                        priorContext = activeCarryOver,
-                        pagesInChunk = batchPages,
-                        depth = 0,
+            try {
+                while (currentPage <= totalPages) {
+                    currentCoroutineContext().ensureActive()
+                    val lookaheadPages = activeStore.readPagesRange(
+                        documentId = documentId,
+                        pageRange = currentPage..minOf(currentPage + 5, totalPages),
                     )
-                    newDrafts = normalizeAndFilterBatchDrafts(
-                        rawDrafts = aiResult.drafts,
-                        priorContext = activeCarryOver,
-                        defaultSourcePage = currentPage,
-                        batchEndPage = batchEndPage,
+                    val batchEndPage = selectSmartBatchEndPage(
+                        batchStartPage = currentPage,
+                        totalPages = totalPages,
+                        pagesByNumber = lookaheadPages,
                     )
-                    activeCarryOver = mergeCarryOverContext(activeCarryOver, aiResult.carryOverContext)
-                }
-
-                if (newDrafts.isNotEmpty()) {
-                    newDrafts.chunked(INSERT_BATCH_SIZE).forEach { batch ->
-                        draftTransactionDao.insertAll(batch)
+                    val batchPages = (currentPage..batchEndPage).map { pageNum ->
+                        pageNum to lookaheadPages[pageNum].orEmpty()
                     }
-                    accumulatedNewDrafts += newDrafts.size
-                    totalExistingDraftCount += newDrafts.size
-                }
+                    val batchText = formatBatchPages(batchPages)
 
-                val contextJson = activeCarryOver.toJson().takeUnless { activeCarryOver.isEmpty() }
-                documentDao.updateExtractionProgress(
-                    id = documentId,
-                    processedPages = batchEndPage,
-                    pageCount = totalPages,
-                    status = DocumentStatus.PROCESSING.name,
-                )
-                documentDao.updateCarryOverContext(documentId, contextJson)
-                onProgress?.invoke("AI_EXTRACT", batchEndPage, totalPages)
+                    lastBatchStart = currentPage
+                    lastBatchEnd = batchEndPage
 
-                lastFlaggedCount = newDrafts.count(::isDraftFlaggedForReview)
-                val finishedAll = batchEndPage >= totalPages
-                currentPage = batchEndPage + 1
+                    val newDrafts: List<DraftTransactionEntity>
+                    val stubIdsToDelete: List<String>
+                    if (batchText.isBlank()) {
+                        newDrafts = emptyList()
+                        stubIdsToDelete = emptyList()
+                        activeCarryOver = activeCarryOver.copy(
+                            incompleteTailText = "",
+                            fallbackTailLines = "",
+                        )
+                    } else {
+                        val aiResult = invokeAiChunk(
+                            chunkText = batchText,
+                            priorContext = activeCarryOver,
+                            pagesInChunk = batchPages,
+                            depth = 0,
+                        )
+                        val normalized = normalizeAndFilterBatchDrafts(
+                            rawDrafts = aiResult.drafts,
+                            priorContext = activeCarryOver,
+                            defaultSourcePage = currentPage,
+                            batchStartPage = currentPage,
+                            batchEndPage = batchEndPage,
+                        )
+                        newDrafts = normalized.newDrafts
+                        stubIdsToDelete = normalized.stubIdsToDelete
 
-                if (!finishedAll && mode == AiRunMode.SINGLE_BATCH) {
-                    documentDao.updateAiBatchProgress(
+                        val merged = mergeCarryOverContext(activeCarryOver, aiResult.carryOverContext)
+                        val trailingLines = extractTrailingContentLines(lookaheadPages[batchEndPage].orEmpty())
+                        val boundarySummaries = buildBoundarySummaries(newDrafts, activeCarryOver.recentBoundaryTransactions)
+                        activeCarryOver = merged.copy(
+                            fallbackTailLines = if (merged.incompleteTailText.isBlank()) trailingLines else "",
+                            recentBoundaryTransactions = boundarySummaries,
+                        )
+                    }
+
+                    if (stubIdsToDelete.isNotEmpty()) {
+                        draftTransactionDao.deleteByIds(stubIdsToDelete)
+                        totalExistingDraftCount = (totalExistingDraftCount - stubIdsToDelete.size).coerceAtLeast(0)
+                    }
+                    if (newDrafts.isNotEmpty()) {
+                        newDrafts.chunked(INSERT_BATCH_SIZE).forEach { batch ->
+                            draftTransactionDao.insertAll(batch)
+                        }
+                        accumulatedNewDrafts += newDrafts.size
+                        totalExistingDraftCount += newDrafts.size
+                    }
+
+                    val contextJson = activeCarryOver.toJson().takeUnless { activeCarryOver.isEmpty() }
+                    documentDao.updateExtractionProgress(
                         id = documentId,
                         processedPages = batchEndPage,
                         pageCount = totalPages,
-                        status = DocumentStatus.AI_PAUSED.name,
+                        status = DocumentStatus.PROCESSING.name,
+                    )
+                    documentDao.updateCarryOverContext(documentId, contextJson)
+                    onProgress?.invoke("AI_EXTRACT", batchEndPage, totalPages)
+
+                    lastFlaggedCount = newDrafts.count(::isDraftFlaggedForReview)
+                    val finishedAll = batchEndPage >= totalPages
+                    currentPage = batchEndPage + 1
+
+                    if (!finishedAll && mode == AiRunMode.SINGLE_BATCH) {
+                        documentDao.updateAiBatchProgress(
+                            id = documentId,
+                            processedPages = batchEndPage,
+                            pageCount = totalPages,
+                            status = DocumentStatus.AI_PAUSED.name,
+                            carryOverContextJson = contextJson,
+                            error = null,
+                        )
+                        return@withContext AiBatchProcessResult(
+                            startPage = lastBatchStart,
+                            endPage = batchEndPage,
+                            totalPages = totalPages,
+                            newDraftsCount = accumulatedNewDrafts,
+                            flaggedDraftCount = lastFlaggedCount,
+                            carryOverContext = activeCarryOver,
+                            stopReason = AiBatchStopReason.PAUSED_AFTER_BATCH,
+                        )
+                    }
+
+                    if (!finishedAll && mode == AiRunMode.AUTO_UNTIL_REVIEW_OR_END && lastFlaggedCount > 0) {
+                        val pauseReason =
+                            "Paused at page $batchEndPage of $totalPages: $lastFlaggedCount row(s) flagged for review (low confidence or amount mismatch)."
+                        documentDao.updateAiBatchProgress(
+                            id = documentId,
+                            processedPages = batchEndPage,
+                            pageCount = totalPages,
+                            status = DocumentStatus.AI_PAUSED.name,
+                            carryOverContextJson = contextJson,
+                            error = pauseReason,
+                        )
+                        return@withContext AiBatchProcessResult(
+                            startPage = lastBatchStart,
+                            endPage = batchEndPage,
+                            totalPages = totalPages,
+                            newDraftsCount = accumulatedNewDrafts,
+                            flaggedDraftCount = lastFlaggedCount,
+                            carryOverContext = activeCarryOver,
+                            stopReason = AiBatchStopReason.AUTO_PAUSED_NEEDS_REVIEW,
+                            message = pauseReason,
+                        )
+                    }
+                }
+            } catch (ce: CancellationException) {
+                withContext(NonCancellable) {
+                    val contextJson = activeCarryOver.toJson().takeUnless { activeCarryOver.isEmpty() }
+                    val pausedAt = (currentPage - 1).coerceIn(0, totalPages)
+                    val revertStatus = if (pausedAt > 0) {
+                        DocumentStatus.AI_PAUSED.name
+                    } else {
+                        DocumentStatus.OCR_COMPLETE.name
+                    }
+                    documentDao.updateAiBatchProgress(
+                        id = documentId,
+                        processedPages = pausedAt,
+                        pageCount = totalPages,
+                        status = revertStatus,
                         carryOverContextJson = contextJson,
                         error = null,
                     )
-                    return@withContext AiBatchProcessResult(
-                        startPage = lastBatchStart,
-                        endPage = batchEndPage,
-                        totalPages = totalPages,
-                        newDraftsCount = accumulatedNewDrafts,
-                        flaggedDraftCount = lastFlaggedCount,
-                        carryOverContext = activeCarryOver,
-                        stopReason = AiBatchStopReason.PAUSED_AFTER_BATCH,
-                    )
                 }
-
-                if (!finishedAll && mode == AiRunMode.AUTO_UNTIL_REVIEW_OR_END && lastFlaggedCount > 0) {
-                    val pauseReason =
-                        "Paused at page $batchEndPage of $totalPages: $lastFlaggedCount row(s) flagged for review (low confidence or amount mismatch)."
-                    documentDao.updateAiBatchProgress(
-                        id = documentId,
-                        processedPages = batchEndPage,
-                        pageCount = totalPages,
-                        status = DocumentStatus.AI_PAUSED.name,
-                        carryOverContextJson = contextJson,
-                        error = pauseReason,
-                    )
-                    return@withContext AiBatchProcessResult(
-                        startPage = lastBatchStart,
-                        endPage = batchEndPage,
-                        totalPages = totalPages,
-                        newDraftsCount = accumulatedNewDrafts,
-                        flaggedDraftCount = lastFlaggedCount,
-                        carryOverContext = activeCarryOver,
-                        stopReason = AiBatchStopReason.AUTO_PAUSED_NEEDS_REVIEW,
-                        message = pauseReason,
-                    )
-                }
+                throw ce
             }
 
             if (totalExistingDraftCount == 0) {
@@ -1115,12 +1205,14 @@ class DocumentRepositoryImpl @Inject constructor(
                     pagesInChunk = emptyList(),
                     depth = 0,
                 )
-                val newDrafts = normalizeAndFilterBatchDrafts(
+                val normalized = normalizeAndFilterBatchDrafts(
                     rawDrafts = aiResult.drafts,
                     priorContext = activeCarryOver,
                     defaultSourcePage = null,
+                    batchStartPage = null,
                     batchEndPage = null,
                 )
+                val newDrafts = normalized.newDrafts
                 activeCarryOver = mergeCarryOverContext(activeCarryOver, aiResult.carryOverContext)
                 if (newDrafts.isNotEmpty()) {
                     newDrafts.chunked(INSERT_BATCH_SIZE).forEach { batch ->
@@ -1447,6 +1539,49 @@ class DocumentRepositoryImpl @Inject constructor(
         }
     }
 
+    override suspend fun enqueueAiBatch(documentId: String) = withContext(Dispatchers.IO) {
+        val document = documentDao.getDocumentById(documentId) ?: return@withContext
+        documentDao.updateStatusAndError(documentId, DocumentStatus.PROCESSING.name, null)
+        if (importScheduler != null) {
+            importScheduler.enqueueAiBatch(document.id, document.fileSize)
+        } else {
+            applicationScope.launch {
+                runCatching { processNextAiBatch(documentId) }
+            }
+        }
+    }
+
+    override suspend fun enqueueAiAutoProcess(documentId: String) = withContext(Dispatchers.IO) {
+        val document = documentDao.getDocumentById(documentId) ?: return@withContext
+        documentDao.updateStatusAndError(documentId, DocumentStatus.PROCESSING.name, null)
+        if (importScheduler != null) {
+            importScheduler.enqueueAiAutoProcess(document.id, document.fileSize)
+        } else {
+            applicationScope.launch {
+                runCatching { autoProcessRemainingAiBatches(documentId) }
+            }
+        }
+    }
+
+    override suspend fun cancelAiProcessing(documentId: String) = withContext(Dispatchers.IO) {
+        importScheduler?.cancelImportWork(documentId)
+        val doc = documentDao.getDocumentById(documentId) ?: return@withContext
+        if (doc.status == DocumentStatus.PROCESSING.name) {
+            val revertStatus = if (doc.processedPages > 0) {
+                DocumentStatus.AI_PAUSED.name
+            } else {
+                DocumentStatus.OCR_COMPLETE.name
+            }
+            documentDao.updateStatusAndError(documentId, revertStatus, null)
+        }
+    }
+
+    override suspend fun hasGeminiApiKey(): Boolean = withContext(Dispatchers.IO) {
+        settingsRepository.getGeminiApiKey().trim().isNotBlank()
+    }
+
+    override fun hasBackgroundScheduler(): Boolean = importScheduler != null
+
     override suspend fun recoverInterruptedImports() = withContext(Dispatchers.IO) {
         migrateOversizedLegacyTextIfNeeded()
         val stuckDocuments = documentDao.getDocumentsByStatuses(
@@ -1529,11 +1664,6 @@ class DocumentRepositoryImpl @Inject constructor(
         }
     }
 
-    private enum class StreamingParserMode {
-        CAS,
-        BROKER,
-    }
-
     internal suspend fun processFileLocally(
         document: DocumentEntity,
         file: File,
@@ -1549,20 +1679,6 @@ class DocumentRepositoryImpl @Inject constructor(
 
         return try {
             draftTransactionDao.deleteByDocumentId(document.id)
-
-            val casState = CasParseState()
-            val brokerState = BrokerParseState()
-            var detectedMode: StreamingParserMode? = null
-            val draftBatch = ArrayList<DraftTransactionEntity>(DRAFT_INSERT_BATCH_SIZE)
-            var totalDraftsInserted = 0
-
-            suspend fun flushDraftBatch() {
-                if (draftBatch.isNotEmpty()) {
-                    draftTransactionDao.insertAll(draftBatch.toList())
-                    totalDraftsInserted += draftBatch.size
-                    draftBatch.clear()
-                }
-            }
 
             val sidecarWriter = store?.openWriter(document.id)
 
@@ -1591,64 +1707,6 @@ class DocumentRepositoryImpl @Inject constructor(
 
                 if (page.text.isNotBlank()) {
                     hasNonBlankText = true
-                }
-
-                when (detectedMode) {
-                    StreamingParserMode.CAS -> {
-                        val pageDrafts = casStatementParser.parsePage(
-                            pageText = page.text,
-                            pageNumber = page.pageNumber,
-                            documentId = document.id,
-                            state = casState,
-                        )
-                        if (pageDrafts.isNotEmpty()) {
-                            draftBatch.addAll(pageDrafts)
-                        }
-                    }
-                    StreamingParserMode.BROKER -> {
-                        val pageDrafts = brokerStatementParser.parsePage(
-                            pageText = page.text,
-                            pageNumber = page.pageNumber,
-                            documentId = document.id,
-                            state = brokerState,
-                            defaultAssetClass = document.getAssetClassEnum(),
-                        )
-                        if (pageDrafts.isNotEmpty()) {
-                            draftBatch.addAll(pageDrafts)
-                        }
-                    }
-                    null -> {
-                        val casPageDrafts = casStatementParser.parsePage(
-                            pageText = page.text,
-                            pageNumber = page.pageNumber,
-                            documentId = document.id,
-                            state = casState,
-                        )
-                        val brokerPageDrafts = brokerStatementParser.parsePage(
-                            pageText = page.text,
-                            pageNumber = page.pageNumber,
-                            documentId = document.id,
-                            state = brokerState,
-                            defaultAssetClass = document.getAssetClassEnum(),
-                        )
-                        if (casPageDrafts.isNotEmpty() && casState.hasSeenCasSignal && !brokerState.hasBrokerSignal) {
-                            detectedMode = StreamingParserMode.CAS
-                            draftBatch.addAll(casPageDrafts)
-                        } else if (brokerPageDrafts.isNotEmpty() && brokerState.hasBrokerSignal) {
-                            detectedMode = StreamingParserMode.BROKER
-                            draftBatch.addAll(brokerPageDrafts)
-                        } else if (casPageDrafts.isNotEmpty() && casState.hasSeenCasSignal) {
-                            detectedMode = StreamingParserMode.CAS
-                            draftBatch.addAll(casPageDrafts)
-                        } else if (brokerPageDrafts.isNotEmpty() && !casState.hasSeenCasSignal) {
-                            detectedMode = StreamingParserMode.BROKER
-                            draftBatch.addAll(brokerPageDrafts)
-                        }
-                    }
-                }
-
-                if (draftBatch.size >= DRAFT_INSERT_BATCH_SIZE) {
-                    flushDraftBatch()
                 }
 
                 if (page.pageNumber == 1 || page.pageNumber % PROGRESS_UPDATE_INTERVAL_PAGES == 0 || page.pageNumber == page.totalPages) {
@@ -1682,8 +1740,6 @@ class DocumentRepositoryImpl @Inject constructor(
                 runCatching { sidecarWriter?.close() }
             }
 
-            flushDraftBatch()
-
             if (!hasNonBlankText) {
                 store?.delete(document.id)
                 val emptyMessage = if (ocrLimitExceeded) {
@@ -1711,37 +1767,7 @@ class DocumentRepositoryImpl @Inject constructor(
                 null
             }
 
-            if (totalDraftsInserted > 0) {
-                documentDao.updateExtractionFileResult(
-                    id = document.id,
-                    extractedTextPath = textPath,
-                    previewText = previewText,
-                    pageCount = totalPages,
-                    processedPages = totalPages,
-                    status = DocumentStatus.AI_COMPLETE.name,
-                    error = warningMsg,
-                )
-                return Result.success(Unit)
-            }
-
-            // Tier 3: Offline Table Auto-Extraction Pipeline (streaming, no orphaned CSVs)
-            val tableDrafts = extractDraftsFromTablesLocally(file, document, password, writeCsv = false)
-            if (tableDrafts.isNotEmpty()) {
-                tableDrafts.chunked(DRAFT_INSERT_BATCH_SIZE).forEach { batch ->
-                    draftTransactionDao.insertAll(batch)
-                }
-                documentDao.updateExtractionFileResult(
-                    id = document.id,
-                    extractedTextPath = textPath,
-                    previewText = previewText,
-                    pageCount = totalPages,
-                    processedPages = totalPages,
-                    status = DocumentStatus.AI_COMPLETE.name,
-                    error = warningMsg,
-                )
-                return Result.success(Unit)
-            }
-
+            // All PDFs and Images use Gemini AI for record identification (never local CSV-style parsing)
             documentDao.updateExtractionFileResult(
                 id = document.id,
                 extractedTextPath = textPath,
@@ -1782,85 +1808,6 @@ class DocumentRepositoryImpl @Inject constructor(
                 )
             }
             Result.failure(exception)
-        }
-    }
-
-    private suspend fun extractDraftsFromTablesLocally(
-        file: File,
-        document: DocumentEntity,
-        password: String?,
-        writeCsv: Boolean = false,
-    ): List<DraftTransactionEntity> {
-        val pipeline = localTableExtractionPipeline ?: return emptyList()
-        return try {
-            val tables = pipeline.extractTablesFromDocument(
-                file = file,
-                fileName = document.fileName,
-                password = password,
-                writeCsv = writeCsv,
-            )
-            if (tables.isEmpty()) return emptyList()
-
-            val table = tables.first()
-            if (table.rows.size < 2) return emptyList()
-
-            val headerIndex = table.rows.indexOfFirst { row ->
-                val line = row.joinToString(" ").lowercase()
-                (line.contains("date") || line.contains("time")) &&
-                    (line.contains("symbol") || line.contains("scrip") || line.contains("stock") ||
-                        line.contains("security") || line.contains("instrument") || line.contains("asset") ||
-                        line.contains("description")) &&
-                    (line.contains("qty") || line.contains("quantity") || line.contains("shares") ||
-                        line.contains("units") || line.contains("price") || line.contains("rate") ||
-                        line.contains("amount") || line.contains("value"))
-            }
-
-            if (headerIndex >= 0) {
-                val headers = table.rows[headerIndex]
-                val dataRows = table.rows.drop(headerIndex + 1)
-                val structuredTable = StructuredTable(headers, dataRows)
-
-                val dateCol = headers.firstOrNull { it.contains("date", ignoreCase = true) }
-                val assetCol = headers.firstOrNull {
-                    it.contains("symbol", ignoreCase = true) || it.contains("scrip", ignoreCase = true) ||
-                        it.contains("stock", ignoreCase = true) || it.contains("security", ignoreCase = true) ||
-                        it.contains("instrument", ignoreCase = true) || it.contains("description", ignoreCase = true)
-                }
-                val typeCol = headers.firstOrNull {
-                    it.contains("type", ignoreCase = true) || it.contains("action", ignoreCase = true) ||
-                        it.contains("buy/sell", ignoreCase = true) || it.equals("b/s", ignoreCase = true)
-                }
-                val qtyCol = headers.firstOrNull {
-                    it.contains("qty", ignoreCase = true) || it.contains("quantity", ignoreCase = true) ||
-                        it.contains("shares", ignoreCase = true) || it.contains("units", ignoreCase = true)
-                }
-                val priceCol = headers.firstOrNull {
-                    it.contains("price", ignoreCase = true) || it.contains("rate", ignoreCase = true) ||
-                        it.contains("nav", ignoreCase = true)
-                }
-                val amtCol = headers.firstOrNull {
-                    it.contains("amount", ignoreCase = true) || it.contains("value", ignoreCase = true) ||
-                        it.contains("total", ignoreCase = true)
-                }
-
-                if (dateCol != null && assetCol != null && (qtyCol != null || amtCol != null)) {
-                    val mapping = ColumnMappingEntity(
-                        brokerName = document.fileName.substringBeforeLast('.'),
-                        assetColumn = assetCol,
-                        typeColumn = typeCol.orEmpty(),
-                        quantityColumn = qtyCol.orEmpty(),
-                        priceColumn = priceCol.orEmpty(),
-                        amountColumn = amtCol.orEmpty(),
-                        dateColumn = dateCol,
-                        headerRowNumber = headerIndex + 1,
-                    )
-                    createMappedDrafts(document, structuredTable, mapping)
-                } else emptyList()
-            } else emptyList()
-        } catch (ce: CancellationException) {
-            throw ce
-        } catch (_: Exception) {
-            emptyList()
         }
     }
 
@@ -2053,30 +2000,51 @@ class DocumentRepositoryImpl @Inject constructor(
 
         val p4 = batchStartPage + 3
         val p5 = batchStartPage + 4
-        val p6 = (batchStartPage + 5).coerceAtMost(totalPages)
 
         val text4 = pagesByNumber[p4].orEmpty()
         val text5 = pagesByNumber[p5].orEmpty()
-        val text6 = pagesByNumber[p6].orEmpty()
         val nextAfter5 = pagesByNumber[p5 + 1].orEmpty()
-        val nextAfter6 = pagesByNumber[p6 + 1].orEmpty()
 
+        // Strictly cap at 5 pages per Gemini request; snap to 4 if a clean section break lands there
         if (hasClosingBreak(text5) || (p5 + 1 <= totalPages && startsWithNewSection(nextAfter5))) {
             return p5
         }
         if (hasClosingBreak(text4) || startsWithNewSection(text5)) {
             return p4
         }
-        if (p6 > p5 && (hasClosingBreak(text6) || (p6 + 1 <= totalPages && startsWithNewSection(nextAfter6)))) {
-            return p6
-        }
         if (hasSectionBreakMarker(text4) && !hasSectionBreakMarker(text5)) {
             return p4
         }
-        if (p6 > p5 && hasSectionBreakMarker(text6) && !hasSectionBreakMarker(text5)) {
-            return p6
-        }
         return p5
+    }
+
+    private fun extractTrailingContentLines(pageText: String, maxLines: Int = 4): String {
+        if (pageText.isBlank()) return ""
+        val filtered = pageText.lineSequence()
+            .map { it.trim() }
+            .filter { line ->
+                line.isNotBlank() &&
+                    !line.startsWith("Page ", ignoreCase = true) &&
+                    !line.startsWith("***") &&
+                    !line.equals("Continued", ignoreCase = true)
+            }
+            .toList()
+        if (filtered.isEmpty()) return ""
+        return filtered.takeLast(maxLines).joinToString("\n")
+    }
+
+    private fun buildBoundarySummaries(
+        newDrafts: List<DraftTransactionEntity>,
+        fallbackPrevious: List<String>,
+        maxItems: Int = 3,
+    ): List<String> {
+        if (newDrafts.isEmpty()) return fallbackPrevious
+        return newDrafts.takeLast(maxItems).map { d ->
+            val dateStr = d.tradeDate?.let {
+                LocalDate.ofEpochDay(Math.floorDiv(it, MILLIS_PER_DAY)).toString()
+            } ?: "NO_DATE"
+            "$dateStr | ${d.transactionType} | ${d.assetName} | Qty ${d.quantity} | Net ${d.netAmount}"
+        }
     }
 
     private fun hasClosingBreak(text: String): Boolean =
@@ -2154,14 +2122,28 @@ class DocumentRepositoryImpl @Inject constructor(
             folioChanged -> next.activeBroker.ifBlank { prior.activeBroker }
             else -> prior.activeBroker
         }
+        val resolvedAssetClass = when {
+            next.activeAssetClass.isNotBlank() -> next.activeAssetClass
+            amcChanged -> ""
+            else -> prior.activeAssetClass
+        }
+        val resolvedAccountId = when {
+            next.activeAccountId.isNotBlank() -> next.activeAccountId
+            amcChanged -> ""
+            else -> prior.activeAccountId
+        }
         return AiCarryOverContext(
             activeAmc = resolvedAmc,
             activeScheme = resolvedScheme,
             activeIsin = resolvedIsin,
             activeFolio = resolvedFolio,
             activeBroker = resolvedBroker,
+            activeAssetClass = resolvedAssetClass,
+            activeAccountId = resolvedAccountId,
             activeColumnHeaders = next.activeColumnHeaders.ifEmpty { prior.activeColumnHeaders },
             incompleteTailText = next.incompleteTailText,
+            fallbackTailLines = next.fallbackTailLines,
+            recentBoundaryTransactions = next.recentBoundaryTransactions,
         )
     }
 

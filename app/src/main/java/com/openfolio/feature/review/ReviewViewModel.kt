@@ -81,6 +81,7 @@ class ReviewViewModel @Inject constructor(
 
     private var draftsJob: Job? = null
     private var documentJob: Job? = null
+    private var aiActionJob: Job? = null
 
     fun loadDocument(documentId: String) {
         draftsJob?.cancel()
@@ -111,12 +112,25 @@ class ReviewViewModel @Inject constructor(
                     _isPasswordProtected.value = true
                 }
                 documentJob = viewModelScope.launch {
+                    var prevStatus = document.status
                     documentRepository.observeDocumentById(documentId).collect { updated ->
                         if (updated != null) {
                             _uiState.value = ReviewUiState.Loaded(updated)
                             if (updated.extractedText == "[PASSWORD_PROTECTED]") {
                                 _isPasswordProtected.value = true
                             }
+                            if (prevStatus == DocumentStatus.PROCESSING.name &&
+                                updated.status != DocumentStatus.PROCESSING.name
+                            ) {
+                                _batchBannerMessage.value = when (updated.status) {
+                                    DocumentStatus.AI_PAUSED.name -> updated.extractionError
+                                        ?: "Batch complete (Page ${updated.processedPages} of ${updated.pageCount}). Review drafts, then continue."
+                                    DocumentStatus.AI_COMPLETE.name ->
+                                        if (updated.pageCount > 1) "All ${updated.pageCount} pages extracted. Review and save to portfolio." else null
+                                    else -> _batchBannerMessage.value
+                                }
+                            }
+                            prevStatus = updated.status
                         }
                     }
                 }
@@ -173,28 +187,91 @@ class ReviewViewModel @Inject constructor(
 
     fun onProcessWithAi() {
         val document = (uiState.value as? ReviewUiState.Loaded)?.document ?: return
-        if (_actionState.value == ReviewActionState.ProcessingAi) return
+        if (_actionState.value == ReviewActionState.ProcessingAi ||
+            document.status == DocumentStatus.PROCESSING.name
+        ) {
+            return
+        }
         val canResume = document.status == DocumentStatus.FAILED.name ||
             document.status == DocumentStatus.AI_PAUSED.name
         if (_drafts.value.isNotEmpty() && !canResume) return
-        runAiBatchAction(document) {
-            documentRepository.processNextAiBatch(document.id)
+        if (documentRepository.hasBackgroundScheduler()) {
+            enqueueBackgroundAi(document, autoAll = false)
+        } else {
+            runAiBatchAction(document) {
+                documentRepository.processNextAiBatch(document.id)
+            }
         }
     }
 
     fun onProcessNextAiBatch() {
         val document = (uiState.value as? ReviewUiState.Loaded)?.document ?: return
-        if (_actionState.value == ReviewActionState.ProcessingAi) return
-        runAiBatchAction(document) {
-            documentRepository.processNextAiBatch(document.id)
+        if (_actionState.value == ReviewActionState.ProcessingAi ||
+            document.status == DocumentStatus.PROCESSING.name
+        ) {
+            return
+        }
+        if (documentRepository.hasBackgroundScheduler()) {
+            enqueueBackgroundAi(document, autoAll = false)
+        } else {
+            runAiBatchAction(document) {
+                documentRepository.processNextAiBatch(document.id)
+            }
         }
     }
 
     fun onAutoProcessRemainingAi() {
         val document = (uiState.value as? ReviewUiState.Loaded)?.document ?: return
-        if (_actionState.value == ReviewActionState.ProcessingAi) return
-        runAiBatchAction(document) {
-            documentRepository.autoProcessRemainingAiBatches(document.id)
+        if (_actionState.value == ReviewActionState.ProcessingAi ||
+            document.status == DocumentStatus.PROCESSING.name
+        ) {
+            return
+        }
+        if (documentRepository.hasBackgroundScheduler()) {
+            enqueueBackgroundAi(document, autoAll = true)
+        } else {
+            runAiBatchAction(document) {
+                documentRepository.autoProcessRemainingAiBatches(document.id)
+            }
+        }
+    }
+
+    fun onCancelAiProcessing() {
+        val document = (uiState.value as? ReviewUiState.Loaded)?.document ?: return
+        aiActionJob?.cancel()
+        aiActionJob = null
+        if (_actionState.value == ReviewActionState.ProcessingAi) {
+            _actionState.value = ReviewActionState.Idle
+        }
+        viewModelScope.launch {
+            documentRepository.cancelAiProcessing(document.id)
+        }
+    }
+
+    private fun enqueueBackgroundAi(document: DocumentEntity, autoAll: Boolean) {
+        val allowedStatuses = setOf(
+            DocumentStatus.OCR_COMPLETE.name,
+            DocumentStatus.AI_PAUSED.name,
+            DocumentStatus.AI_COMPLETE.name,
+            DocumentStatus.FAILED.name,
+        )
+        if (document.status !in allowedStatuses) {
+            val message = "Wait for page text extraction to finish before starting Gemini AI."
+            _errorMessage.value = message
+            _actionState.value = ReviewActionState.Error(message)
+            return
+        }
+        viewModelScope.launch {
+            if (!documentRepository.hasGeminiApiKey()) {
+                _actionState.value = ReviewActionState.MissingApiKey
+                return@launch
+            }
+            _batchBannerMessage.value = null
+            if (autoAll) {
+                documentRepository.enqueueAiAutoProcess(document.id)
+            } else {
+                documentRepository.enqueueAiBatch(document.id)
+            }
         }
     }
 
@@ -214,7 +291,7 @@ class ReviewViewModel @Inject constructor(
             _actionState.value = ReviewActionState.Error(message)
             return
         }
-        viewModelScope.launch {
+        aiActionJob = viewModelScope.launch {
             _actionState.value = ReviewActionState.ProcessingAi
             _batchBannerMessage.value = null
             try {
@@ -278,6 +355,9 @@ class ReviewViewModel @Inject constructor(
                 _unlockedPassword.value = password.trim()
                 _isPasswordProtected.value = false
                 _actionState.value = ReviewActionState.Idle
+                if (documentRepository.hasBackgroundScheduler() && documentRepository.hasGeminiApiKey()) {
+                    documentRepository.enqueueAiBatch(document.id)
+                }
             } else {
                 _actionState.value = ReviewActionState.Idle
                 _passwordError.value = result.exceptionOrNull()?.message?.takeIf { it.isNotBlank() }

@@ -517,4 +517,37 @@ class GeminiAiProviderTest {
         assertEquals("gemini-2.5-pro", contextProvider.resolveModelName("gemini-2.5-pro"))
         assertEquals("gemini-2.5-flash", contextProvider.resolveModelName(null))
     }
+
+    @Test
+    fun carryOverContextRoundTripsMultiAssetAndBoundaryFieldsAndBuildsPrompt() {
+        val context = AiCarryOverContext(
+            activeAmc = "Axis Mutual Fund",
+            activeScheme = "Axis Nifty 50 Index Bond Fund",
+            activeIsin = "INF846K01EW2",
+            activeFolio = "9102938/44",
+            activeBroker = "KFintech",
+            activeAssetClass = "BOND",
+            activeAccountId = "acc-primary-01",
+            activeColumnHeaders = listOf("Date", "Nature", "Units", "NAV", "Amount"),
+            incompleteTailText = "29-Mar-2024 Purchase",
+            fallbackTailLines = "30-Mar-2024 Stamp Duty 0.50",
+            recentBoundaryTransactions = listOf("2024-03-28|BUY|Axis Nifty|10|1000.00"),
+        )
+
+        val serialized = context.toJson()
+        val restored = AiCarryOverContext.fromJson(serialized)
+        assertEquals(context, restored)
+
+        val prompt = restored!!.toPromptPrefix()
+        assertTrue(prompt.contains("Active Asset Class: BOND"))
+        assertTrue(prompt.contains("Active Account / Demat ID: acc-primary-01"))
+        assertTrue(prompt.contains("Incomplete Tail Text from Previous Batch"))
+        assertTrue(prompt.contains("29-Mar-2024 Purchase"))
+        assertTrue(prompt.contains("Already Extracted Boundary Rows from Previous Batch"))
+        assertTrue(prompt.contains("2024-03-28|BUY|Axis Nifty|10|1000.00"))
+
+        val fallbackOnlyPrompt = restored.copy(incompleteTailText = "").toPromptPrefix()
+        assertTrue(fallbackOnlyPrompt.contains("Trailing Lines from Previous Page"))
+        assertTrue(fallbackOnlyPrompt.contains("30-Mar-2024 Stamp Duty 0.50"))
+    }
 }

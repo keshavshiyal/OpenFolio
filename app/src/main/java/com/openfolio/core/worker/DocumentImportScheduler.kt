@@ -16,6 +16,12 @@ interface DocumentImportScheduler {
 
     fun enqueueAiExtract(documentId: String, fileSize: Long = 0L)
 
+    fun enqueueAiBatch(documentId: String, fileSize: Long = 0L) {}
+
+    fun enqueueAiAutoProcess(documentId: String, fileSize: Long = 0L) {}
+
+    fun cancelImportWork(documentId: String) {}
+
     suspend fun isImportWorkActive(documentId: String): Boolean
 }
 
@@ -38,6 +44,28 @@ class WorkManagerDocumentImportScheduler @Inject constructor(
             mode = DocumentImportWorker.MODE_AI_EXTRACT,
             fileSize = fileSize,
         )
+    }
+
+    override fun enqueueAiBatch(documentId: String, fileSize: Long) {
+        enqueue(
+            documentId = documentId,
+            mode = DocumentImportWorker.MODE_AI_BATCH,
+            fileSize = fileSize,
+        )
+    }
+
+    override fun enqueueAiAutoProcess(documentId: String, fileSize: Long) {
+        enqueue(
+            documentId = documentId,
+            mode = DocumentImportWorker.MODE_AI_AUTO,
+            fileSize = fileSize,
+        )
+    }
+
+    override fun cancelImportWork(documentId: String) {
+        runCatching {
+            WorkManager.getInstance(context).cancelUniqueWork(uniqueWorkName(documentId))
+        }
     }
 
     override suspend fun isImportWorkActive(documentId: String): Boolean = withContext(Dispatchers.IO) {

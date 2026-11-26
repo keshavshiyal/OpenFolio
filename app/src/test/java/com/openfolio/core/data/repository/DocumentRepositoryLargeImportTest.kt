@@ -589,26 +589,26 @@ class DocumentRepositoryLargeImportTest {
     }
 
     @Test
-    fun selectSmartBatchEndPageSnapsToSectionBreaksOnPage4Or6AndDefaultsTo5() {
+    fun selectSmartBatchEndPageStrictlyCapsAt5AndSnapsToSectionBreaksOnPage4() {
         val repository = createRepository()
 
-        val plainPages = (1..10).associateWith { page -> "Transaction row on page $page" }
-        assertEquals(5, repository.selectSmartBatchEndPage(1, 10, plainPages))
+        val plainPages = (1..12).associateWith { page -> "Transaction row on page $page" }
+        assertEquals(5, repository.selectSmartBatchEndPage(1, 12, plainPages))
 
         val closingOnPage4 = plainPages.toMutableMap().apply {
             this[4] = "12-Mar-2024 SIP 5000\nClosing Unit Balance: 150.250"
         }
-        assertEquals(4, repository.selectSmartBatchEndPage(1, 10, closingOnPage4))
+        assertEquals(4, repository.selectSmartBatchEndPage(1, 12, closingOnPage4))
 
         val newFolioOnPage5Top = plainPages.toMutableMap().apply {
             this[5] = "Folio No: 987654/32\nSBI Bluechip Fund ISIN: INF200K01QX4"
         }
-        assertEquals(4, repository.selectSmartBatchEndPage(1, 10, newFolioOnPage5Top))
+        assertEquals(4, repository.selectSmartBatchEndPage(1, 12, newFolioOnPage5Top))
 
         val closingOnPage6 = plainPages.toMutableMap().apply {
             this[6] = "15-Mar-2024 SIP 5000\nClosing Unit Balance: 220.000"
         }
-        assertEquals(6, repository.selectSmartBatchEndPage(1, 10, closingOnPage6))
+        assertEquals(5, repository.selectSmartBatchEndPage(1, 12, closingOnPage6))
     }
 
     @Test
@@ -1093,6 +1093,307 @@ class DocumentRepositoryLargeImportTest {
             error = null,
         )
         Unit
+    }
+
+    @Test
+    fun processFileLocallyRoutesCasPdfToOcrCompleteWithoutOfflineDrafts(): Unit = runBlocking {
+        val docId = "doc-cas-route-ai"
+        val documentDao = mock<DocumentDao>()
+        val draftDao = mock<DraftTransactionDao>()
+        val textExtractor = mock<DocumentTextExtractor>()
+        val filesDir = tempFolder.newFolder("route_ai_files")
+        val context = mock<Context>()
+        whenever(context.filesDir).thenReturn(filesDir)
+        val store = ExtractedTextStore(context)
+
+        val pdfFile = tempFolder.newFile("cams_cas_statement.pdf")
+        val casLikeContent = """
+            Computer Age Management Services (CAMS)
+            Consolidated Account Statement
+            Folio No: 10293847 / 55
+            HDFC Mid-Cap Opportunities Fund - Direct Plan - Growth (ISIN: INF179K01CR2)
+            Opening Unit Balance: 100.000
+            05-Apr-2024 Purchase 10000.00 50.0000 200.0000 150.0000
+            Closing Unit Balance: 150.000
+        """.trimIndent()
+        whenever(textExtractor.extractText(pdfFile, "cams_cas_statement.pdf", null)).thenReturn(casLikeContent)
+
+        val doc = DocumentEntity(
+            id = docId,
+            fileName = "cams_cas_statement.pdf",
+            localPath = pdfFile.absolutePath,
+            fileHash = "hash-cas-route",
+            fileSize = pdfFile.length(),
+            importDate = 1700000000000L,
+            status = DocumentStatus.PENDING_OCR.name,
+        )
+        val repository = createRepository(
+            documentDao = documentDao,
+            draftTransactionDao = draftDao,
+            documentTextExtractor = textExtractor,
+            extractedTextStore = store,
+        )
+
+        val result = repository.processFileLocally(doc, pdfFile)
+        assertTrue(result.isSuccess)
+        verify(draftDao).deleteByDocumentId(docId)
+        verify(draftDao, never()).insertAll(any())
+        verify(documentDao).updateExtractionFileResult(
+            id = eq(docId),
+            extractedTextPath = eq(store.pathFor(docId)),
+            previewText = anyOrNull(),
+            pageCount = eq(1),
+            processedPages = eq(0),
+            status = eq(DocumentStatus.OCR_COMPLETE.name),
+            error = isNull(),
+        )
+        assertTrue(store.readPagesRange(docId, 1..1)[1].orEmpty().contains("INF179K01CR2"))
+    }
+
+    @Test
+    fun processNextAiBatchHandlesMultiAssetContinuationFallbackTailAndZeroValueStub(): Unit = runBlocking {
+        val docId = "doc-bond-split-stub"
+        val filesDir = tempFolder.newFolder("bond_split_files")
+        val context = mock<Context>()
+        whenever(context.filesDir).thenReturn(filesDir)
+        val store = ExtractedTextStore(context)
+
+        store.openWriter(docId).use { writer ->
+            for (p in 1..10) {
+                val pageText = when (p) {
+                    1 -> "NSDL Consolidated Demat & Bond Statement\nClient ID: 10020030\nDate | Security | Qty | Price | Amount"
+                    5 -> "30-Mar-2024 Complete Row BUY NHAI Bond 10 @ 1000.00 = 10000.00\n31-Mar-2024 BUY NHAI Tax Free Bond 2027 INE906B07FG1"
+                    6 -> "25 units @ 1050.00 Net: 26250.00\n02-Apr-2024 SELL REC Bond 2026 INE020B08AA1 10 @ 1020.00 = 10200.00"
+                    else -> "Bond activity page $p"
+                }
+                store.writePage(writer, p, pageText)
+            }
+            writer.flush()
+        }
+
+        val documentDao = mock<DocumentDao>()
+        val draftDao = mock<DraftTransactionDao>()
+        val settings = mock<SettingsRepository>()
+        var currentDoc = DocumentEntity(
+            id = docId,
+            fileName = "bond_statement_10p.pdf",
+            localPath = "/tmp/bond_statement_10p.pdf",
+            fileHash = "hash-bond-10",
+            fileSize = 10_000L,
+            importDate = 1700000000000L,
+            status = DocumentStatus.OCR_COMPLETE.name,
+            extractedTextPath = store.pathFor(docId),
+            pageCount = 10,
+            processedPages = 0,
+            assetClass = AssetClass.OTHER.name,
+        )
+        val savedDrafts = mutableListOf<DraftTransactionEntity>()
+
+        whenever(documentDao.getDocumentById(docId)).thenAnswer { currentDoc }
+        whenever(documentDao.updateExtractionProgress(eq(docId), any(), any(), any())).thenAnswer { inv ->
+            currentDoc = currentDoc.copy(
+                processedPages = inv.getArgument(1),
+                pageCount = inv.getArgument(2),
+                status = inv.getArgument(3),
+            )
+            Unit
+        }
+        whenever(documentDao.updateAiBatchProgress(eq(docId), any(), any(), any(), anyOrNull(), anyOrNull())).thenAnswer { inv ->
+            currentDoc = currentDoc.copy(
+                processedPages = inv.getArgument(1),
+                pageCount = inv.getArgument(2),
+                status = inv.getArgument(3),
+                carryOverContextJson = inv.getArgument(4),
+                extractionError = inv.getArgument(5),
+            )
+            Unit
+        }
+        whenever(documentDao.updateStatus(eq(docId), any())).thenAnswer { inv ->
+            currentDoc = currentDoc.copy(status = inv.getArgument(1))
+            Unit
+        }
+        whenever(draftDao.getByDocumentIdOnce(docId)).thenAnswer { savedDrafts.toList() }
+        whenever(draftDao.insertAll(any())).thenAnswer { inv ->
+            savedDrafts.addAll(inv.getArgument<List<DraftTransactionEntity>>(0))
+            Unit
+        }
+        whenever(draftDao.deleteByIds(any())).thenAnswer { inv ->
+            val ids = inv.getArgument<List<String>>(0).toSet()
+            savedDrafts.removeAll { it.id in ids }
+            Unit
+        }
+        whenever(settings.getGeminiApiKey()).thenReturn("api-key")
+        whenever(settings.getGeminiModelName()).thenReturn("gemini-2.5-flash")
+
+        val seenContexts = mutableListOf<AiCarryOverContext?>()
+        var batchCall = 0
+        val fakeAi = object : ContextualAiProvider {
+            override suspend fun extractTransactions(rawText: String, apiKey: String, documentId: String) =
+                extractTransactionsWithContext(rawText, apiKey, documentId).map { it.drafts }
+
+            override suspend fun extractTransactionsDetailed(rawText: String, apiKey: String, documentId: String) =
+                extractTransactionsWithContext(rawText, apiKey, documentId)
+
+            override suspend fun extractTransactionsWithContext(
+                rawText: String,
+                apiKey: String,
+                documentId: String,
+                priorContext: AiCarryOverContext?,
+                modelName: String?,
+            ): Result<AiExtractionBatchResult> {
+                seenContexts.add(priorContext)
+                batchCall++
+                return if (batchCall == 1) {
+                    val march31Epoch = LocalDate.of(2024, 3, 31)
+                        .atStartOfDay(ZoneOffset.UTC)
+                        .toInstant()
+                        .toEpochMilli()
+                    // Notice Batch 1 returns empty incompleteTailText -> repository injects deterministic fallbackTailLines!
+                    Result.success(
+                        AiExtractionBatchResult(
+                            drafts = listOf(
+                                DraftTransactionEntity(
+                                    id = "stub-page5",
+                                    documentId = documentId,
+                                    assetName = "NHAI Tax Free Bond 2027",
+                                    assetClass = "BOND",
+                                    transactionType = "BUY",
+                                    quantity = "0",
+                                    price = "0",
+                                    netAmount = "0",
+                                    tradeDate = march31Epoch,
+                                    isin = "INE906B07FG1",
+                                    broker = "NSDL",
+                                    sourcePage = 5,
+                                    confidence = 60,
+                                ),
+                            ),
+                            carryOverContext = AiCarryOverContext(
+                                activeBroker = "NSDL",
+                                activeAssetClass = "BOND",
+                                activeAccountId = "NSDL-10020030",
+                                activeIsin = "INE906B07FG1",
+                                activeScheme = "NHAI Tax Free Bond 2027",
+                                incompleteTailText = "",
+                            ),
+                        ),
+                    )
+                } else {
+                    val march31Epoch = LocalDate.of(2024, 3, 31)
+                        .atStartOfDay(ZoneOffset.UTC)
+                        .toInstant()
+                        .toEpochMilli()
+                    // Batch 2 completes the page 5->6 split row (omitting assetClass & broker to test carry-over)
+                    Result.success(
+                        AiExtractionBatchResult(
+                            drafts = listOf(
+                                DraftTransactionEntity(
+                                    id = "complete-page6",
+                                    documentId = documentId,
+                                    assetName = "Unknown",
+                                    assetClass = "",
+                                    transactionType = "BUY",
+                                    quantity = "25",
+                                    price = "1050.00",
+                                    netAmount = "26250.00",
+                                    tradeDate = march31Epoch,
+                                    isin = "",
+                                    broker = null,
+                                    sourcePage = 6,
+                                    confidence = 96,
+                                ),
+                            ),
+                            carryOverContext = AiCarryOverContext(
+                                activeBroker = "NSDL",
+                                activeAssetClass = "BOND",
+                            ),
+                        ),
+                    )
+                }
+            }
+        }
+
+        val repository = createRepository(
+            documentDao = documentDao,
+            draftTransactionDao = draftDao,
+            settingsRepository = settings,
+            aiProvider = fakeAi,
+            extractedTextStore = store,
+        )
+
+        val batch1 = repository.processNextAiBatch(docId)
+        assertEquals(1, batch1.startPage)
+        assertEquals(5, batch1.endPage)
+        assertEquals(AiBatchStopReason.PAUSED_AFTER_BATCH, batch1.stopReason)
+        assertTrue(batch1.carryOverContext.fallbackTailLines.contains("NHAI Tax Free Bond 2027"))
+        assertTrue(batch1.carryOverContext.recentBoundaryTransactions.any {
+            it.contains("NHAI Tax Free Bond 2027") && it.contains("2024-03-31")
+        })
+
+        val batch2 = repository.processNextAiBatch(docId)
+        assertEquals(6, batch2.startPage)
+        assertEquals(10, batch2.endPage)
+        assertEquals(AiBatchStopReason.COMPLETED_ALL_PAGES, batch2.stopReason)
+
+        val secondPrior = seenContexts[1]
+        assertEquals("BOND", secondPrior?.activeAssetClass)
+        assertEquals("NSDL-10020030", secondPrior?.activeAccountId)
+        assertTrue(secondPrior?.fallbackTailLines?.contains("INE906B07FG1") == true)
+        assertTrue(secondPrior?.recentBoundaryTransactions?.isNotEmpty() == true)
+
+        verify(draftDao).deleteByIds(listOf("stub-page5"))
+        assertEquals(1, savedDrafts.size)
+        val completed = savedDrafts.single()
+        assertEquals("BOND", completed.assetClass)
+        assertEquals("NSDL", completed.broker)
+        assertEquals("INE906B07FG1", completed.isin)
+        assertEquals("NHAI Tax Free Bond 2027", completed.assetName)
+        assertEquals("25", completed.quantity)
+        assertEquals("26250.00", completed.netAmount)
+    }
+
+    @Test
+    fun cancelAiProcessingCancelsWorkAndRevertsProcessingStatus(): Unit = runBlocking {
+        val docId = "doc-cancel-ai"
+        val documentDao = mock<DocumentDao>()
+        val scheduler = mock<DocumentImportScheduler>()
+
+        whenever(documentDao.getDocumentById(docId)).thenReturn(
+            DocumentEntity(
+                id = docId,
+                fileName = "large.pdf",
+                localPath = "/tmp/large.pdf",
+                fileHash = "h",
+                fileSize = 100L,
+                importDate = 1000L,
+                status = DocumentStatus.PROCESSING.name,
+                processedPages = 5,
+                pageCount = 15,
+            ),
+            DocumentEntity(
+                id = docId,
+                fileName = "large.pdf",
+                localPath = "/tmp/large.pdf",
+                fileHash = "h",
+                fileSize = 100L,
+                importDate = 1000L,
+                status = DocumentStatus.PROCESSING.name,
+                processedPages = 0,
+                pageCount = 15,
+            ),
+        )
+
+        val repository = createRepository(
+            documentDao = documentDao,
+            importScheduler = scheduler,
+        )
+
+        repository.cancelAiProcessing(docId)
+        verify(scheduler).cancelImportWork(docId)
+        verify(documentDao).updateStatusAndError(docId, DocumentStatus.AI_PAUSED.name, null)
+
+        repository.cancelAiProcessing(docId)
+        verify(documentDao).updateStatusAndError(docId, DocumentStatus.OCR_COMPLETE.name, null)
     }
 
     private fun createRepository(

@@ -612,6 +612,28 @@ class ReviewViewModelTest {
             }
             return unlockResult
         }
+
+        var backgroundSchedulerEnabled = false
+        var geminiApiKeyPresent = true
+        val enqueuedBatchDocIds = mutableListOf<String>()
+        val enqueuedAutoDocIds = mutableListOf<String>()
+        val cancelledDocIds = mutableListOf<String>()
+
+        override fun hasBackgroundScheduler(): Boolean = backgroundSchedulerEnabled
+
+        override suspend fun hasGeminiApiKey(): Boolean = geminiApiKeyPresent
+
+        override suspend fun enqueueAiBatch(documentId: String) {
+            enqueuedBatchDocIds.add(documentId)
+        }
+
+        override suspend fun enqueueAiAutoProcess(documentId: String) {
+            enqueuedAutoDocIds.add(documentId)
+        }
+
+        override suspend fun cancelAiProcessing(documentId: String) {
+            cancelledDocIds.add(documentId)
+        }
     }
 
     @Test
@@ -786,5 +808,45 @@ class ReviewViewModelTest {
         viewModel.saveConfirmed()
         testScheduler.advanceUntilIdle()
         assertTrue(viewModel.actionState.value is ReviewActionState.Saved)
+    }
+
+    @Test
+    fun nonBlockingBackgroundAiChecksApiKeyEnqueuesWorkAndSupportsCancellation() = runTest {
+        val multiPageDoc = document.copy(
+            id = "doc-bg-ai",
+            pageCount = 12,
+            processedPages = 0,
+            status = DocumentStatus.OCR_COMPLETE.name,
+        )
+        repository.document = multiPageDoc
+        repository.backgroundSchedulerEnabled = true
+        repository.geminiApiKeyPresent = false
+
+        viewModel.loadDocument(multiPageDoc.id)
+        testScheduler.advanceUntilIdle()
+
+        // Without API key -> MissingApiKey dialog state, nothing enqueued
+        viewModel.onProcessWithAi()
+        testScheduler.advanceUntilIdle()
+        assertEquals(ReviewActionState.MissingApiKey, viewModel.actionState.value)
+        assertTrue(repository.enqueuedBatchDocIds.isEmpty())
+
+        viewModel.dismissMissingApiKeyDialog()
+        assertEquals(ReviewActionState.Idle, viewModel.actionState.value)
+
+        // With API key -> non-blocking batch enqueue & auto-process enqueue & pause/cancel
+        repository.geminiApiKeyPresent = true
+        viewModel.onProcessWithAi()
+        testScheduler.advanceUntilIdle()
+        assertEquals(listOf(multiPageDoc.id), repository.enqueuedBatchDocIds)
+        assertEquals(ReviewActionState.Idle, viewModel.actionState.value)
+
+        viewModel.onAutoProcessRemainingAi()
+        testScheduler.advanceUntilIdle()
+        assertEquals(listOf(multiPageDoc.id), repository.enqueuedAutoDocIds)
+
+        viewModel.onCancelAiProcessing()
+        testScheduler.advanceUntilIdle()
+        assertEquals(listOf(multiPageDoc.id), repository.cancelledDocIds)
     }
 }

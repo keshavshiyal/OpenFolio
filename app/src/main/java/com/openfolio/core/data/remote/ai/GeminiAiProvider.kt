@@ -312,6 +312,8 @@ class GeminiAiProvider internal constructor(
                 activeIsin = ctxObj.optString("activeIsin", "").trim(),
                 activeFolio = ctxObj.optString("activeFolio", "").trim(),
                 activeBroker = ctxObj.optString("activeBroker", "").trim(),
+                activeAssetClass = ctxObj.optString("activeAssetClass", "").trim().uppercase(),
+                activeAccountId = ctxObj.optString("activeAccountId", "").trim(),
                 activeColumnHeaders = headers,
                 incompleteTailText = ctxObj.optString("incompleteTailText", "").trim(),
             )
@@ -321,6 +323,7 @@ class GeminiAiProvider internal constructor(
             activeScheme = last.assetName,
             activeIsin = last.isin.orEmpty(),
             activeBroker = last.broker.orEmpty(),
+            activeAssetClass = last.assetClass,
         )
     }
 
@@ -458,35 +461,41 @@ class GeminiAiProvider internal constructor(
         private const val INITIAL_RETRY_DELAY_MS = 2_000L
         private const val MAX_RETRY_DELAY_MS = 30_000L
         private val ALLOWED_ASSET_CLASSES = setOf(
-            "STOCK", "MUTUAL_FUND", "BOND", "FD", "HOUSE", "LAND", "GOLD", "CRYPTO",
+            "STOCK", "MUTUAL_FUND", "BOND", "SGB", "FD", "HOUSE", "LAND", "VEHICLE", "GOLD", "CRYPTO", "CASH", "OTHER",
         )
 
         fun buildSystemPrompt(today: String = LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE)): String =
             """
             You are an expert financial parser. Extract all transactions and holdings from the provided text exhaustively. Return ONLY a valid JSON object without markdown formatting like ```json.
 
-            CRITICAL: If the provided text does not contain financial transactions, stock holdings, or bank statements (e.g., it is a random letter, invoice, or unrelated document), you MUST return: {"transactions": [], "carryOverContext": {"activeAmc": "", "activeScheme": "", "activeIsin": "", "activeFolio": "", "activeBroker": "", "activeColumnHeaders": [], "incompleteTailText": ""}}.
+            CRITICAL: If the provided text does not contain financial transactions, stock holdings, or bank statements (e.g., it is a random letter, invoice, or unrelated document), you MUST return: {"transactions": [], "carryOverContext": {"activeAmc": "", "activeScheme": "", "activeIsin": "", "activeFolio": "", "activeBroker": "", "activeAssetClass": "", "activeAccountId": "", "activeColumnHeaders": [], "incompleteTailText": ""}}.
 
             Output JSON schema:
             {
               "transactions": [ ... ],
               "carryOverContext": {
-                "activeAmc": "Active Mutual Fund / AMC name at end of these pages (or empty)",
-                "activeScheme": "Active MF scheme or security name at end of these pages (or empty)",
+                "activeAmc": "Active Mutual Fund / AMC / Issuer name at end of these pages (or empty)",
+                "activeScheme": "Active MF scheme, stock, bond, FD, or asset name at end of these pages (or empty)",
                 "activeIsin": "Active 12-char ISIN at end of these pages (or empty)",
                 "activeFolio": "Active Folio No at end of these pages (or empty)",
                 "activeBroker": "Active Broker / Depository name (or empty)",
+                "activeAssetClass": "Active assetClass at end of these pages (or empty)",
+                "activeAccountId": "Active Demat / Account / Client ID at end of these pages (or empty)",
                 "activeColumnHeaders": ["Column1", "Column2"],
-                "incompleteTailText": "Any incomplete split row or trailing scheme header cut off at the bottom of the last page, else empty"
+                "incompleteTailText": "Any incomplete split transaction row or trailing header cut off at the bottom of the last page, else empty"
               }
             }
 
-            If a CARRY-OVER CONTEXT FROM PREVIOUS PAGES block is prepended, inherit activeAmc, activeScheme, activeIsin, activeFolio, activeBroker, and activeColumnHeaders for leading rows until a new header supersedes them, and complete any incompleteTailText row using the start of the first page below.
+            Cross-page and multi-batch continuation rules:
+            1. If a CARRY-OVER CONTEXT FROM PREVIOUS PAGES block is prepended, inherit activeAmc, activeScheme, activeIsin, activeFolio, activeBroker, activeAssetClass, activeAccountId, and activeColumnHeaders for leading rows until a new header supersedes them.
+            2. If incompleteTailText or Trailing Lines from Previous Page are provided and the top of the first page below completes a split transaction row (e.g., date/asset on previous page and quantity/price/amount on the first page here, or multi-line wrapped narration across pages), merge them into ONE complete transaction.
+            3. Do NOT re-emit any transaction listed under Already Extracted Boundary Rows unless it lacked numbers/date on the previous page and is only now completed here.
+            4. If the final transaction at the very bottom of the last page in this batch is cut off mid-row (missing amounts, quantity, or date), do NOT emit an incomplete zero-amount draft; instead copy its exact trailing lines into carryOverContext.incompleteTailText so the next batch completes it.
 
             Each transaction object inside "transactions" MUST include:
             - assetName (string): Full name or trading symbol of the asset/security.
-            - assetClass (string): Category of asset. Allowed values: STOCK, MUTUAL_FUND, BOND, FD, HOUSE, LAND, GOLD, CRYPTO. Default to STOCK if uncertain.
-            - transactionType (string): BUY, SELL, DIVIDEND, INTEREST, FEE, TAX, or CHARGE. For holdings statements, use BUY.
+            - assetClass (string): Category of asset. Allowed values: STOCK, MUTUAL_FUND, BOND, SGB, FD, HOUSE, LAND, VEHICLE, GOLD, CRYPTO, CASH, OTHER. Default to STOCK if uncertain.
+            - transactionType (string): BUY, SELL, DIVIDEND, INTEREST, FEE, TAX, CHARGE, TRANSFER_IN, TRANSFER_OUT, SPLIT, or BONUS. For holdings statements, use BUY.
             - quantity (string): Numeric quantity of shares/units as a string (e.g., "10", "144.8"). Never output floating point approximations or scientific notation.
             - price (string): Price per share/unit or average cost basis as a string.
             - netAmount (string): Total transaction amount or current/invested value as a string.

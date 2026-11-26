@@ -4,6 +4,7 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -59,12 +60,14 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.openfolio.R
 import com.openfolio.core.data.local.entity.AssetClass
 import com.openfolio.core.data.local.entity.TransactionEntity
 import com.openfolio.core.data.local.entity.TransactionType
@@ -179,7 +182,19 @@ fun HomeScreen(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                title = { Text("OpenFolio") },
+                title = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Image(
+                            painter = painterResource(id = R.drawable.ic_openfolio_logo),
+                            contentDescription = "OpenFolio logo",
+                            modifier = Modifier.size(28.dp),
+                        )
+                        Text("OpenFolio")
+                    }
+                },
                 windowInsets = TopAppBarDefaults.windowInsets,
                 actions = {
                     IconButton(onClick = onToggleValues) {
@@ -264,6 +279,7 @@ fun HomeScreen(
                         secondaryActionLabel = "Add Manually",
                         onSecondaryAction = { showManualTransactionDialog = true },
                         showTitle = false,
+                        showLogo = true,
                     )
                 }
             }

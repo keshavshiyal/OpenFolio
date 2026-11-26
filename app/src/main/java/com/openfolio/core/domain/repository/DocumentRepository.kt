@@ -125,6 +125,16 @@ interface DocumentRepository {
 
     suspend fun enqueueAiExtraction(documentId: String) {}
 
+    suspend fun enqueueAiBatch(documentId: String) {}
+
+    suspend fun enqueueAiAutoProcess(documentId: String) {}
+
+    suspend fun cancelAiProcessing(documentId: String) {}
+
+    suspend fun hasGeminiApiKey(): Boolean = false
+
+    fun hasBackgroundScheduler(): Boolean = false
+
     suspend fun recoverInterruptedImports() {}
 
     suspend fun deleteDocument(documentId: String) {}
