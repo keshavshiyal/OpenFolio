@@ -57,6 +57,7 @@ class ConvertersTest {
 
         assertEquals("OCR_COMPLETE", converters.fromExtractionStatus(ExtractionStatus.OCR_COMPLETE))
         assertEquals(ExtractionStatus.OCR_COMPLETE, converters.toExtractionStatus("OCR_COMPLETE"))
+        assertEquals(ExtractionStatus.AI_PAUSED, converters.toExtractionStatus("AI_PAUSED"))
         assertEquals(ExtractionStatus.PROCESSING, converters.toExtractionStatus("PROCESSING"))
         assertEquals(ExtractionStatus.FAILED, converters.toExtractionStatus("FAILED"))
         assertEquals(ExtractionStatus.READY_FOR_MAPPING, converters.toExtractionStatus("READY_FOR_MAPPING"))

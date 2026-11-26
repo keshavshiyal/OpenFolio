@@ -87,4 +87,27 @@ class ExtractedTextStoreTest {
         val store = ExtractedTextStore(tempFolder.newFolder("extracted_text_security"))
         store.fileFor("../escape")
     }
+
+    @Test
+    fun readPagesRangeAndAltPageMarkerWorkMemorySafely() {
+        val store = ExtractedTextStore(tempFolder.newFolder("extracted_text_range"))
+        val docId = "doc-range"
+
+        val content = buildString {
+            for (page in 1..12) {
+                appendLine("<<<PAGE:$page>>>")
+                appendLine("Line on page $page")
+            }
+        }
+        store.openWriter(docId).use { writer ->
+            writer.write(content)
+            writer.flush()
+        }
+
+        assertEquals(12, store.getMaxPageNumber(docId))
+        val slice = store.readPagesRange(docId, 5..9)
+        assertEquals(setOf(5, 6, 7, 8, 9), slice.keys)
+        assertEquals("Line on page 5", slice[5])
+        assertEquals("Line on page 9", slice[9])
+    }
 }

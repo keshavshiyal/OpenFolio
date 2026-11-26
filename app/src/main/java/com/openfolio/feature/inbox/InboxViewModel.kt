@@ -20,6 +20,9 @@ class InboxViewModel @Inject constructor(
     private val _documents = MutableStateFlow<List<DocumentEntity>>(emptyList())
     val documents: StateFlow<List<DocumentEntity>> = _documents.asStateFlow()
 
+    private val _actionMessage = MutableStateFlow<String?>(null)
+    val actionMessage: StateFlow<String?> = _actionMessage.asStateFlow()
+
     init {
         viewModelScope.launch {
             documentRepository.getAllDocuments().collect { documents ->
@@ -36,10 +39,27 @@ class InboxViewModel @Inject constructor(
                         documentRepository.retryLocalExtraction(document.id)
                     }
                 }
-                DocumentStatus.FAILED.name -> {
+                DocumentStatus.FAILED.name,
+                DocumentStatus.AI_PAUSED.name -> {
                     documentRepository.enqueueAiExtraction(document.id)
                 }
             }
         }
+    }
+
+    fun rollbackImport(documentId: String) {
+        viewModelScope.launch {
+            try {
+                val result = documentRepository.rollbackDocumentImport(documentId)
+                _actionMessage.value =
+                    "Undid import: removed ${result.deletedTransactionCount} transaction(s) and recalculated ${result.recalculatedAssetCount} asset(s)."
+            } catch (t: Throwable) {
+                _actionMessage.value = t.message ?: "Unable to undo import."
+            }
+        }
+    }
+
+    fun clearActionMessage() {
+        _actionMessage.value = null
     }
 }

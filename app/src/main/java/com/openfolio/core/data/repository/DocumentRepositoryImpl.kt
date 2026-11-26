@@ -24,11 +24,15 @@ import com.openfolio.core.data.local.entity.DraftTransactionEntity
 import com.openfolio.core.data.local.entity.TransactionEntity
 import com.openfolio.core.data.local.entity.TransactionStatus
 import com.openfolio.core.data.local.entity.TransactionType
+import com.openfolio.core.data.remote.ai.AiCarryOverContext
 import com.openfolio.core.data.remote.ai.AiExtractionBatchResult
 import com.openfolio.core.data.remote.ai.AiProvider
+import com.openfolio.core.data.remote.ai.ContextualAiProvider
 import com.openfolio.core.data.remote.ai.TruncationAwareAiProvider
 import com.openfolio.core.di.ApplicationScope
 import com.openfolio.core.domain.calculator.FifoCostBasisCalculator
+import com.openfolio.core.domain.repository.AiBatchProcessResult
+import com.openfolio.core.domain.repository.AiBatchStopReason
 import com.openfolio.core.domain.repository.AiExtractionException
 import com.openfolio.core.domain.repository.DocumentRepository
 import com.openfolio.core.domain.repository.DuplicateDocumentException
@@ -36,6 +40,7 @@ import com.openfolio.core.domain.repository.DuplicateMatchInfo
 import com.openfolio.core.domain.repository.EmptyExtractedTextException
 import com.openfolio.core.domain.repository.MissingApiKeyException
 import com.openfolio.core.domain.repository.NoFinancialDataException
+import com.openfolio.core.domain.repository.RollbackImportResult
 import com.openfolio.core.domain.repository.SaveDraftTransactionsResult
 import com.openfolio.core.tableextraction.LocalTableExtractionPipeline
 import com.openfolio.core.utils.AssetNameNormalizer
@@ -450,11 +455,6 @@ class DocumentRepositoryImpl @Inject constructor(
         val drafts = draftTransactionDao.getByDocumentIdOnce(documentId)
         if (drafts.isEmpty()) return@withContext emptyMap()
 
-        val existingTxns = transactionDao.getAllOnce().filter { it.documentId != documentId }
-        if (existingTxns.isEmpty()) return@withContext emptyMap()
-
-        val existingByFingerprint = existingTxns.associateBy { it.fingerprint }
-        val existingByAssetAndDate = existingTxns.groupBy { it.assetId to it.tradeDate }
         val existingAssets = database.assetDao().getAllOnce().toMutableList()
         val assetIndex = AssetMatcherIndex(existingAssets)
         val resultMap = HashMap<String, DuplicateMatchInfo>(drafts.size)
@@ -465,6 +465,7 @@ class DocumentRepositoryImpl @Inject constructor(
             LocalDate.now()
         }
 
+        val prepared = ArrayList<PreparedDraft>(drafts.size)
         for (draft in drafts) {
             val resolvedTradeDate = draft.tradeDate?.let {
                 LocalDate.ofEpochDay(Math.floorDiv(it, MILLIS_PER_DAY))
@@ -485,6 +486,11 @@ class DocumentRepositoryImpl @Inject constructor(
                 ticker != null -> ticker.uppercase()
                 else -> AssetNameNormalizer.normalize(draft.assetName)
             }
+            val draftAssetClass = try {
+                AssetClass.valueOf(draft.assetClass.trim().uppercase())
+            } catch (_: Exception) {
+                document.getAssetClassEnum()
+            }
             val fingerprint = createTransactionFingerprint(
                 assetId = assetId,
                 isin = isin,
@@ -498,31 +504,78 @@ class DocumentRepositoryImpl @Inject constructor(
                 broker = draft.broker,
             )
 
-            // 1. O(1) exact fingerprint match
-            val fingerprintMatch = existingByFingerprint[fingerprint]
+            prepared.add(
+                PreparedDraft(
+                    draft = draft,
+                    resolvedTradeDate = resolvedTradeDate,
+                    isin = isin,
+                    ticker = ticker,
+                    assetId = assetId,
+                    draftAssetClass = draftAssetClass,
+                    fingerprint = fingerprint,
+                    matchedAssetBeforeInsert = matchedAsset,
+                ),
+            )
+        }
+
+        // Pass 1: Batched indexed fingerprint lookup (WHERE fingerprint IN (:fingerprints))
+        val existingByFingerprint = HashMap<String, TransactionEntity>(prepared.size)
+        prepared.asSequence()
+            .map { it.fingerprint }
+            .distinct()
+            .chunked(FINGERPRINT_QUERY_BATCH_SIZE)
+            .forEach { batch ->
+                for (tx in transactionDao.getByFingerprints(batch)) {
+                    if (tx.documentId != documentId) {
+                        existingByFingerprint.putIfAbsent(tx.fingerprint, tx)
+                    }
+                }
+            }
+
+        val remainingForSemanticCheck = ArrayList<PreparedDraft>()
+        for (item in prepared) {
+            val fingerprintMatch = existingByFingerprint[item.fingerprint]
             if (fingerprintMatch != null) {
-                resultMap[draft.id] = DuplicateMatchInfo(
+                resultMap[item.draft.id] = DuplicateMatchInfo(
                     isDuplicate = true,
                     matchingTransactionId = fingerprintMatch.id,
                     matchingTradeDate = fingerprintMatch.tradeDate.toString(),
                     reason = "Exact match with existing transaction on ${fingerprintMatch.tradeDate}",
                 )
-                continue
+            } else {
+                remainingForSemanticCheck.add(item)
+            }
+        }
+
+        if (remainingForSemanticCheck.isEmpty()) {
+            return@withContext resultMap
+        }
+
+        // Pass 2: Batched asset-scoped lookup only for non-fingerprint-matched drafts
+        val candidateByAssetAndDate = HashMap<Pair<String, LocalDate>, MutableList<TransactionEntity>>()
+        remainingForSemanticCheck.asSequence()
+            .map { it.assetId }
+            .filter(String::isNotBlank)
+            .distinct()
+            .chunked(FINGERPRINT_QUERY_BATCH_SIZE)
+            .forEach { assetBatch ->
+                for (tx in transactionDao.getByAssetIds(assetBatch)) {
+                    if (tx.documentId != documentId) {
+                        candidateByAssetAndDate
+                            .getOrPut(tx.assetId to tx.tradeDate) { mutableListOf() }
+                            .add(tx)
+                    }
+                }
             }
 
-            // 2. O(1) indexed semantic content match for identical holding/transaction
-            val candidates = existingByAssetAndDate[assetId to resolvedTradeDate].orEmpty()
+        for (item in remainingForSemanticCheck) {
+            val draft = item.draft
+            val candidates = candidateByAssetAndDate[item.assetId to item.resolvedTradeDate].orEmpty()
             if (candidates.isEmpty()) continue
 
-            val draftQty = runCatching {
-                BigDecimal(draft.quantity.replace(",", "").replace("₹", "").trim())
-            }.getOrNull()
-            val draftNet = runCatching {
-                BigDecimal(draft.netAmount.replace(",", "").replace("₹", "").trim())
-            }.getOrNull()
-            val draftPrice = runCatching {
-                BigDecimal(draft.price.replace(",", "").replace("₹", "").trim())
-            }.getOrNull()
+            val draftQty = parseCleanBigDecimal(draft.quantity)
+            val draftNet = parseCleanBigDecimal(draft.netAmount)
+            val draftPrice = parseCleanBigDecimal(draft.price)
 
             val contentMatch = candidates.firstOrNull { ex ->
                 val typeMatches = ex.type.name.equals(draft.transactionType, ignoreCase = true)
@@ -567,20 +620,129 @@ class DocumentRepositoryImpl @Inject constructor(
             documentDao.updateStatus(documentId, status)
         }
 
+    override suspend fun updateCarryOverContext(
+        documentId: String,
+        context: AiCarryOverContext,
+    ) = withContext(Dispatchers.IO) {
+        documentDao.updateCarryOverContext(
+            id = documentId,
+            carryOverContextJson = context.toJson().takeUnless { context.isEmpty() },
+        )
+    }
+
+    override suspend fun updateDocumentAssetClass(
+        documentId: String,
+        assetClass: AssetClass,
+    ) = withContext(Dispatchers.IO) {
+        documentDao.updateAssetClass(documentId, assetClass.name)
+    }
+
+    override suspend fun rollbackDocumentImport(
+        documentId: String,
+    ): RollbackImportResult = withContext(Dispatchers.IO) {
+        inDbTransaction {
+            val document = requireNotNull(documentDao.getDocumentById(documentId)) {
+                "Document not found: $documentId"
+            }
+            val committedTxns = transactionDao.getByDocumentIdOnce(documentId)
+            val affectedAssetIds = committedTxns.map { it.assetId }.distinct()
+
+            if (committedTxns.isNotEmpty()) {
+                transactionDao.deleteByDocumentId(documentId)
+            }
+
+            val lotDao = runCatching { database.lotDao() }.getOrNull()
+            for (assetId in affectedAssetIds) {
+                val remainingTxns = transactionDao.getByAssetIdOnce(assetId)
+                val fifoResult = FifoCostBasisCalculator.calculate(assetId, remainingTxns)
+
+                lotDao?.deleteByAssetId(assetId)
+                if (fifoResult.lots.isNotEmpty()) {
+                    lotDao?.insertAll(fifoResult.lots)
+                }
+
+                database.assetDao().updateAggregates(
+                    assetId = assetId,
+                    qty = fifoResult.totalQuantity,
+                    invested = fifoResult.totalInvested,
+                    avgCost = fifoResult.averageCost,
+                    realizedPnL = fifoResult.realizedPnL,
+                    timestamp = System.currentTimeMillis(),
+                )
+                val currentAsset = database.assetDao().getById(assetId)
+                if (currentAsset != null && currentAsset.status != fifoResult.status) {
+                    database.assetDao().update(currentAsset.copy(status = fifoResult.status))
+                }
+            }
+
+            draftTransactionDao.deleteByDocumentId(documentId)
+
+            val extension = document.fileName.substringAfterLast('.', "").lowercase()
+            val hasText = (extractedTextStore != null &&
+                (document.extractedTextPath != null || extractedTextStore.hasText(documentId)) &&
+                extractedTextStore.hasText(documentId)) ||
+                (!document.extractedText.isNullOrBlank() && document.extractedText != PASSWORD_PROTECTED_MARKER)
+            val restoredStatus = when {
+                extension in STRUCTURED_EXTENSIONS -> DocumentStatus.READY_FOR_MAPPING.name
+                hasText -> DocumentStatus.OCR_COMPLETE.name
+                else -> DocumentStatus.PENDING_OCR.name
+            }
+
+            documentDao.updateAiBatchProgress(
+                id = documentId,
+                processedPages = 0,
+                pageCount = document.pageCount,
+                status = restoredStatus,
+                carryOverContextJson = null,
+                error = null,
+            )
+
+            RollbackImportResult(
+                deletedTransactionCount = committedTxns.size,
+                recalculatedAssetCount = affectedAssetIds.size,
+            )
+        }
+    }
+
+    private enum class AiRunMode {
+        SINGLE_BATCH,
+        AUTO_UNTIL_REVIEW_OR_END,
+        ALL_PAGES,
+    }
+
     override suspend fun processDocumentWithAi(documentId: String) {
         processDocumentWithAi(documentId, onProgress = null)
     }
 
-    @OptIn(ExperimentalSerializationApi::class)
     override suspend fun processDocumentWithAi(
         documentId: String,
         onProgress: (suspend (stage: String, current: Int, total: Int) -> Unit)?,
-    ) = withContext(Dispatchers.IO) {
+    ) {
+        runAiBatches(documentId, AiRunMode.ALL_PAGES, onProgress)
+    }
+
+    override suspend fun processNextAiBatch(
+        documentId: String,
+        onProgress: (suspend (stage: String, current: Int, total: Int) -> Unit)?,
+    ): AiBatchProcessResult = runAiBatches(documentId, AiRunMode.SINGLE_BATCH, onProgress)
+
+    override suspend fun autoProcessRemainingAiBatches(
+        documentId: String,
+        onProgress: (suspend (stage: String, current: Int, total: Int) -> Unit)?,
+    ): AiBatchProcessResult = runAiBatches(documentId, AiRunMode.AUTO_UNTIL_REVIEW_OR_END, onProgress)
+
+    @OptIn(ExperimentalSerializationApi::class)
+    private suspend fun runAiBatches(
+        documentId: String,
+        mode: AiRunMode,
+        onProgress: (suspend (stage: String, current: Int, total: Int) -> Unit)?,
+    ): AiBatchProcessResult = withContext(Dispatchers.IO) {
         val document = requireNotNull(documentDao.getDocumentById(documentId)) {
             "Document not found: $documentId"
         }
         val allowedStatuses = setOf(
             DocumentStatus.OCR_COMPLETE.name,
+            DocumentStatus.AI_PAUSED.name,
             DocumentStatus.AI_COMPLETE.name,
             DocumentStatus.PROCESSING.name,
             DocumentStatus.FAILED.name,
@@ -604,39 +766,63 @@ class DocumentRepositoryImpl @Inject constructor(
         if (apiKey.isBlank()) {
             throw MissingApiKeyException()
         }
+        val configuredModelName = runCatching { settingsRepository.getGeminiModelName() }
+            .getOrNull()
+            ?.takeIf(String::isNotBlank)
 
-        val isResuming = (document.status == DocumentStatus.PROCESSING.name ||
-            document.status == DocumentStatus.FAILED.name) &&
-            document.processedPages > 0
+        val isResuming = document.status in setOf(
+            DocumentStatus.AI_PAUSED.name,
+            DocumentStatus.PROCESSING.name,
+            DocumentStatus.FAILED.name,
+        ) && document.processedPages > 0
+
         val startPage = if (isResuming) (document.processedPages + 1).coerceAtLeast(1) else 1
 
-        val seenDraftSignatures = mutableSetOf<String>()
-        var existingDraftCount = 0
-        if (isResuming) {
-            val priorDrafts = draftTransactionDao.getByDocumentIdOnce(documentId)
-            existingDraftCount = priorDrafts.size
-            for (d in priorDrafts) {
-                seenDraftSignatures.add(buildDraftSignature(d))
-            }
+        val priorDrafts = if (isResuming) {
+            draftTransactionDao.getByDocumentIdOnce(documentId)
+        } else {
+            emptyList()
         }
+        var totalExistingDraftCount = priorDrafts.size
+        val boundarySignatures = priorDrafts
+            .filter { it.sourcePage == null || it.sourcePage >= (startPage - 1) }
+            .mapTo(HashSet()) { buildDraftSignature(it) }
 
-        var newlyInsertedDraftCount = 0
+        var activeCarryOver = AiCarryOverContext.fromJson(document.carryOverContextJson)
+            ?: AiCarryOverContext()
 
-        suspend fun invokeAiChunk(chunkText: String, depth: Int): List<DraftTransactionEntity> {
+        suspend fun invokeAiChunk(
+            chunkText: String,
+            priorContext: AiCarryOverContext,
+            pagesInChunk: List<Pair<Int, String>>,
+            depth: Int,
+        ): AiExtractionBatchResult {
             currentCoroutineContext().ensureActive()
             val batchResult: AiExtractionBatchResult = try {
-                val res = if (aiProvider is TruncationAwareAiProvider) {
-                    aiProvider.extractTransactionsDetailed(
+                val res = when (aiProvider) {
+                    is ContextualAiProvider -> aiProvider.extractTransactionsWithContext(
                         rawText = chunkText,
                         apiKey = apiKey,
                         documentId = documentId,
+                        priorContext = priorContext,
+                        modelName = configuredModelName,
                     )
-                } else {
-                    aiProvider.extractTransactions(
-                        rawText = chunkText,
-                        apiKey = apiKey,
-                        documentId = documentId,
-                    ).map { AiExtractionBatchResult(it, wasTruncated = false) }
+                    is TruncationAwareAiProvider -> {
+                        val promptText = buildPromptWithContext(chunkText, priorContext)
+                        aiProvider.extractTransactionsDetailed(
+                            rawText = promptText,
+                            apiKey = apiKey,
+                            documentId = documentId,
+                        )
+                    }
+                    else -> {
+                        val promptText = buildPromptWithContext(chunkText, priorContext)
+                        aiProvider.extractTransactions(
+                            rawText = promptText,
+                            apiKey = apiKey,
+                            documentId = documentId,
+                        ).map { AiExtractionBatchResult(it, wasTruncated = false) }
+                    }
                 }
                 res.getOrThrow()
             } catch (e: MissingFieldException) {
@@ -657,88 +843,113 @@ class DocumentRepositoryImpl @Inject constructor(
             }
 
             if (batchResult.wasTruncated && depth < MAX_TRUNCATION_SPLIT_DEPTH) {
+                if (pagesInChunk.size > 1) {
+                    val mid = pagesInChunk.size / 2
+                    val firstPages = pagesInChunk.subList(0, mid)
+                    val secondPages = pagesInChunk.subList(mid, pagesInChunk.size)
+                    val firstText = formatBatchPages(firstPages)
+                    val firstRes = if (firstText.isNotBlank()) {
+                        invokeAiChunk(firstText, priorContext, firstPages, depth + 1)
+                    } else {
+                        AiExtractionBatchResult(emptyList(), false, priorContext)
+                    }
+                    val midContext = mergeCarryOverContext(priorContext, firstRes.carryOverContext)
+                    val secondText = formatBatchPages(secondPages)
+                    val secondRes = if (secondText.isNotBlank()) {
+                        invokeAiChunk(secondText, midContext, secondPages, depth + 1)
+                    } else {
+                        AiExtractionBatchResult(emptyList(), false, midContext)
+                    }
+                    return AiExtractionBatchResult(
+                        drafts = firstRes.drafts + secondRes.drafts,
+                        wasTruncated = false,
+                        carryOverContext = mergeCarryOverContext(midContext, secondRes.carryOverContext),
+                    )
+                }
+
                 val lines = chunkText.lineSequence().filter { it.isNotBlank() }.toList()
                 if (lines.size > MIN_LINES_TO_SPLIT_ON_TRUNCATION) {
                     val mid = lines.size / 2
                     val firstHalf = lines.subList(0, mid).joinToString("\n")
                     val secondHalf = lines.subList(mid, lines.size).joinToString("\n")
-                    val combined = mutableListOf<DraftTransactionEntity>()
-                    if (firstHalf.isNotBlank()) combined.addAll(invokeAiChunk(firstHalf, depth + 1))
-                    if (secondHalf.isNotBlank()) combined.addAll(invokeAiChunk(secondHalf, depth + 1))
-                    return combined
+                    val firstRes = if (firstHalf.isNotBlank()) {
+                        invokeAiChunk(firstHalf, priorContext, emptyList(), depth + 1)
+                    } else {
+                        AiExtractionBatchResult(emptyList(), false, priorContext)
+                    }
+                    val midContext = mergeCarryOverContext(priorContext, firstRes.carryOverContext)
+                    val secondRes = if (secondHalf.isNotBlank()) {
+                        invokeAiChunk(secondHalf, midContext, emptyList(), depth + 1)
+                    } else {
+                        AiExtractionBatchResult(emptyList(), false, midContext)
+                    }
+                    return AiExtractionBatchResult(
+                        drafts = firstRes.drafts + secondRes.drafts,
+                        wasTruncated = false,
+                        carryOverContext = mergeCarryOverContext(midContext, secondRes.carryOverContext),
+                    )
                 }
             }
-            return batchResult.drafts
+            return batchResult
         }
 
-        suspend fun processChunkAndCheckpoint(
-            chunkText: String,
-            sourcePage: Int?,
-            checkpointPage: Int?,
-            totalPages: Int,
-        ) {
-            if (chunkText.isBlank()) {
-                if (checkpointPage != null && checkpointPage > 0) {
-                    documentDao.updateExtractionProgress(
-                        id = documentId,
-                        processedPages = checkpointPage,
-                        pageCount = totalPages,
-                        status = DocumentStatus.PROCESSING.name,
-                    )
-                    onProgress?.invoke("AI_EXTRACT", checkpointPage, totalPages)
-                }
-                return
-            }
-
-            val rawDrafts = invokeAiChunk(chunkText, depth = 0)
+        fun normalizeAndFilterBatchDrafts(
+            rawDrafts: List<DraftTransactionEntity>,
+            priorContext: AiCarryOverContext,
+            defaultSourcePage: Int?,
+            batchEndPage: Int?,
+        ): List<DraftTransactionEntity> {
             val newDrafts = ArrayList<DraftTransactionEntity>(rawDrafts.size)
+            val newEndBoundarySignatures = HashSet<String>()
             for (rawDraft in rawDrafts) {
                 val adjustedClass = if (rawDraft.assetClass == "STOCK" && document.assetClass != "STOCK") {
                     document.assetClass
                 } else {
                     rawDraft.assetClass
                 }
-                val adjusted = if (adjustedClass != rawDraft.assetClass || (sourcePage != null && rawDraft.sourcePage == null)) {
-                    rawDraft.copy(
-                        assetClass = adjustedClass,
-                        sourcePage = rawDraft.sourcePage ?: sourcePage,
-                    )
+                val adjustedBroker = rawDraft.broker?.takeIf(String::isNotBlank)
+                    ?: priorContext.activeBroker.takeIf(String::isNotBlank)
+                val adjustedIsin = rawDraft.isin?.takeIf(String::isNotBlank)
+                    ?: priorContext.activeIsin.takeIf { isin ->
+                        isin.isNotBlank() && (
+                            rawDraft.assetName.contains(priorContext.activeScheme, ignoreCase = true) ||
+                                priorContext.activeScheme.contains(rawDraft.assetName, ignoreCase = true) ||
+                                rawDraft.assetName.equals("Mutual Fund", ignoreCase = true)
+                            )
+                    }
+                val adjustedAssetName = if (
+                    rawDraft.assetName.equals("Mutual Fund", ignoreCase = true) &&
+                    priorContext.activeScheme.isNotBlank()
+                ) {
+                    priorContext.activeScheme
                 } else {
-                    rawDraft
+                    rawDraft.assetName
                 }
-                if (seenDraftSignatures.add(buildDraftSignature(adjusted))) {
-                    newDrafts.add(adjusted)
-                }
-            }
 
-            if (newDrafts.isNotEmpty()) {
-                newDrafts.chunked(INSERT_BATCH_SIZE).forEach { batch ->
-                    draftTransactionDao.insertAll(batch)
-                }
-                newlyInsertedDraftCount += newDrafts.size
-            }
-
-            if (checkpointPage != null && checkpointPage > 0) {
-                documentDao.updateExtractionProgress(
-                    id = documentId,
-                    processedPages = checkpointPage,
-                    pageCount = totalPages,
-                    status = DocumentStatus.PROCESSING.name,
+                val adjusted = rawDraft.copy(
+                    assetName = adjustedAssetName,
+                    assetClass = adjustedClass,
+                    broker = adjustedBroker,
+                    isin = adjustedIsin,
+                    sourcePage = rawDraft.sourcePage ?: defaultSourcePage,
                 )
-                onProgress?.invoke("AI_EXTRACT", checkpointPage, totalPages)
+                val sig = buildDraftSignature(adjusted)
+                if (sig !in boundarySignatures) {
+                    newDrafts.add(adjusted)
+                    if (batchEndPage == null || adjusted.sourcePage == null || adjusted.sourcePage >= batchEndPage) {
+                        newEndBoundarySignatures.add(sig)
+                    }
+                }
             }
+            boundarySignatures.clear()
+            boundarySignatures.addAll(newEndBoundarySignatures)
+            return newDrafts
         }
 
         if (hasSidecarText) {
             val activeStore = checkNotNull(store)
-            var totalPages = document.pageCount
-            if (totalPages <= 0) {
-                var counted = 0
-                activeStore.forEachPage(documentId) { pageNumber, _ ->
-                    if (pageNumber > counted) counted = pageNumber
-                }
-                totalPages = counted.coerceAtLeast(1)
-            }
+            val totalPages = document.pageCount.takeIf { it > 0 }
+                ?: activeStore.getMaxPageNumber(documentId).coerceAtLeast(1)
 
             if (!isResuming) {
                 documentDao.updateExtractionProgress(
@@ -749,133 +960,195 @@ class DocumentRepositoryImpl @Inject constructor(
                 )
             }
 
-            if (startPage <= totalPages) {
-                val chunkBuilder = StringBuilder()
-                var chunkLineCount = 0
-                var chunkStartPage = -1
-                var chunkEndPage = -1
-                var lastContextHeader: String? = null
+            if (isResuming && activeCarryOver.isEmpty()) {
+                activeCarryOver = bootstrapCarryOverContextFromPriorPages(
+                    store = activeStore,
+                    documentId = documentId,
+                    untilPage = startPage,
+                    priorDrafts = priorDrafts,
+                )
+            }
 
-                suspend fun flushChunk(checkpointEndPage: Int?) {
-                    if (chunkBuilder.isEmpty()) {
-                        if (checkpointEndPage != null && checkpointEndPage > 0) {
-                            documentDao.updateExtractionProgress(
-                                id = documentId,
-                                processedPages = checkpointEndPage,
-                                pageCount = totalPages,
-                                status = DocumentStatus.PROCESSING.name,
-                            )
-                            onProgress?.invoke("AI_EXTRACT", checkpointEndPage, totalPages)
-                        }
-                        return
+            var currentPage = startPage
+            var lastBatchStart = startPage.coerceAtMost(totalPages)
+            var lastBatchEnd = document.processedPages.coerceAtMost(totalPages)
+            var accumulatedNewDrafts = 0
+            var lastFlaggedCount = 0
+
+            while (currentPage <= totalPages) {
+                currentCoroutineContext().ensureActive()
+                val lookaheadPages = activeStore.readPagesRange(
+                    documentId = documentId,
+                    pageRange = currentPage..minOf(currentPage + 6, totalPages),
+                )
+                val batchEndPage = selectSmartBatchEndPage(
+                    batchStartPage = currentPage,
+                    totalPages = totalPages,
+                    pagesByNumber = lookaheadPages,
+                )
+                val batchPages = (currentPage..batchEndPage).map { pageNum ->
+                    pageNum to lookaheadPages[pageNum].orEmpty()
+                }
+                val batchText = formatBatchPages(batchPages)
+
+                lastBatchStart = currentPage
+                lastBatchEnd = batchEndPage
+
+                val newDrafts: List<DraftTransactionEntity>
+                if (batchText.isBlank()) {
+                    newDrafts = emptyList()
+                    activeCarryOver = activeCarryOver.copy(incompleteTailText = "")
+                } else {
+                    val aiResult = invokeAiChunk(
+                        chunkText = batchText,
+                        priorContext = activeCarryOver,
+                        pagesInChunk = batchPages,
+                        depth = 0,
+                    )
+                    newDrafts = normalizeAndFilterBatchDrafts(
+                        rawDrafts = aiResult.drafts,
+                        priorContext = activeCarryOver,
+                        defaultSourcePage = currentPage,
+                        batchEndPage = batchEndPage,
+                    )
+                    activeCarryOver = mergeCarryOverContext(activeCarryOver, aiResult.carryOverContext)
+                }
+
+                if (newDrafts.isNotEmpty()) {
+                    newDrafts.chunked(INSERT_BATCH_SIZE).forEach { batch ->
+                        draftTransactionDao.insertAll(batch)
                     }
-                    val text = chunkBuilder.toString().trim()
-                    val srcPage = if (chunkStartPage > 0) chunkStartPage else null
-                    chunkBuilder.setLength(0)
-                    chunkLineCount = 0
-                    chunkStartPage = -1
-                    processChunkAndCheckpoint(
-                        chunkText = text,
-                        sourcePage = srcPage,
-                        checkpointPage = checkpointEndPage,
+                    accumulatedNewDrafts += newDrafts.size
+                    totalExistingDraftCount += newDrafts.size
+                }
+
+                val contextJson = activeCarryOver.toJson().takeUnless { activeCarryOver.isEmpty() }
+                documentDao.updateExtractionProgress(
+                    id = documentId,
+                    processedPages = batchEndPage,
+                    pageCount = totalPages,
+                    status = DocumentStatus.PROCESSING.name,
+                )
+                documentDao.updateCarryOverContext(documentId, contextJson)
+                onProgress?.invoke("AI_EXTRACT", batchEndPage, totalPages)
+
+                lastFlaggedCount = newDrafts.count(::isDraftFlaggedForReview)
+                val finishedAll = batchEndPage >= totalPages
+                currentPage = batchEndPage + 1
+
+                if (!finishedAll && mode == AiRunMode.SINGLE_BATCH) {
+                    documentDao.updateAiBatchProgress(
+                        id = documentId,
+                        processedPages = batchEndPage,
+                        pageCount = totalPages,
+                        status = DocumentStatus.AI_PAUSED.name,
+                        carryOverContextJson = contextJson,
+                        error = null,
+                    )
+                    return@withContext AiBatchProcessResult(
+                        startPage = lastBatchStart,
+                        endPage = batchEndPage,
                         totalPages = totalPages,
+                        newDraftsCount = accumulatedNewDrafts,
+                        flaggedDraftCount = lastFlaggedCount,
+                        carryOverContext = activeCarryOver,
+                        stopReason = AiBatchStopReason.PAUSED_AFTER_BATCH,
                     )
                 }
 
-                activeStore.forEachPage(documentId) { pageNumber, pageText ->
-                    currentCoroutineContext().ensureActive()
-                    val pageLines = pageText.lineSequence()
-                        .map { it.trim() }
-                        .filter { it.isNotBlank() }
-                        .toList()
-
-                    if (pageNumber < startPage) {
-                        for (line in pageLines) {
-                            if (isContextHeaderLine(line)) {
-                                lastContextHeader = line
-                            }
-                        }
-                        return@forEachPage
-                    }
-
-                    if (pageLines.isEmpty()) {
-                        if (chunkBuilder.isEmpty()) {
-                            chunkEndPage = pageNumber
-                            flushChunk(checkpointEndPage = pageNumber)
-                        } else {
-                            chunkEndPage = pageNumber
-                        }
-                        return@forEachPage
-                    }
-
-                    val estimatedPageChars = pageLines.sumOf { it.length + 1 }
-                    if (chunkBuilder.isNotEmpty() &&
-                        (chunkLineCount + pageLines.size > AI_CHUNK_MAX_LINES ||
-                            chunkBuilder.length + estimatedPageChars > AI_CHUNK_SIZE)
-                    ) {
-                        flushChunk(checkpointEndPage = chunkEndPage.takeIf { it > 0 })
-                    }
-
-                    for (line in pageLines) {
-                        if (chunkBuilder.isNotEmpty() &&
-                            (chunkLineCount >= AI_CHUNK_MAX_LINES ||
-                                chunkBuilder.length + line.length + 1 > AI_CHUNK_SIZE)
-                        ) {
-                            // Mid-page split: do not advance checkpointPage past this page yet
-                            flushChunk(checkpointEndPage = null)
-                        }
-
-                        if (chunkBuilder.isEmpty()) {
-                            chunkStartPage = pageNumber
-                            val ctx = lastContextHeader
-                            if (ctx != null && !line.equals(ctx, ignoreCase = true)) {
-                                chunkBuilder.append(ctx).append('\n')
-                                chunkLineCount++
-                            }
-                        }
-
-                        chunkBuilder.append(line).append('\n')
-                        chunkLineCount++
-                        chunkEndPage = pageNumber
-
-                        if (isContextHeaderLine(line)) {
-                            lastContextHeader = line
-                        }
-                    }
+                if (!finishedAll && mode == AiRunMode.AUTO_UNTIL_REVIEW_OR_END && lastFlaggedCount > 0) {
+                    val pauseReason =
+                        "Paused at page $batchEndPage of $totalPages: $lastFlaggedCount row(s) flagged for review (low confidence or amount mismatch)."
+                    documentDao.updateAiBatchProgress(
+                        id = documentId,
+                        processedPages = batchEndPage,
+                        pageCount = totalPages,
+                        status = DocumentStatus.AI_PAUSED.name,
+                        carryOverContextJson = contextJson,
+                        error = pauseReason,
+                    )
+                    return@withContext AiBatchProcessResult(
+                        startPage = lastBatchStart,
+                        endPage = batchEndPage,
+                        totalPages = totalPages,
+                        newDraftsCount = accumulatedNewDrafts,
+                        flaggedDraftCount = lastFlaggedCount,
+                        carryOverContext = activeCarryOver,
+                        stopReason = AiBatchStopReason.AUTO_PAUSED_NEEDS_REVIEW,
+                        message = pauseReason,
+                    )
                 }
-
-                flushChunk(checkpointEndPage = chunkEndPage.takeIf { it > 0 } ?: totalPages)
             }
+
+            if (totalExistingDraftCount == 0) {
+                throw NoFinancialDataException()
+            }
+
+            documentDao.updateStatus(documentId, DocumentStatus.AI_COMPLETE.name)
+            if (document.extractionError != null) {
+                documentDao.updateStatusAndError(documentId, DocumentStatus.AI_COMPLETE.name, null)
+            }
+            return@withContext AiBatchProcessResult(
+                startPage = lastBatchStart,
+                endPage = totalPages,
+                totalPages = totalPages,
+                newDraftsCount = accumulatedNewDrafts,
+                flaggedDraftCount = lastFlaggedCount,
+                carryOverContext = activeCarryOver,
+                stopReason = AiBatchStopReason.COMPLETED_ALL_PAGES,
+            )
         } else {
             val nonEmptyLineCount = legacyText.lineSequence().count { it.isNotBlank() }
-            if (legacyText.length <= AI_CHUNK_SIZE && nonEmptyLineCount <= AI_CHUNK_MAX_LINES) {
-                processChunkAndCheckpoint(
-                    chunkText = legacyText,
-                    sourcePage = null,
-                    checkpointPage = null,
-                    totalPages = 1,
-                )
+            val chunks = if (legacyText.length <= AI_CHUNK_SIZE && nonEmptyLineCount <= AI_CHUNK_MAX_LINES) {
+                listOf(legacyText)
             } else {
-                val chunks = splitIntoLineBoundedChunks(legacyText, AI_CHUNK_SIZE, AI_CHUNK_MAX_LINES)
-                require(chunks.isNotEmpty()) { "No extracted text is available to process." }
-                for (chunk in chunks) {
-                    processChunkAndCheckpoint(
-                        chunkText = chunk,
-                        sourcePage = null,
-                        checkpointPage = null,
-                        totalPages = 1,
-                    )
+                splitIntoLineBoundedChunks(legacyText, AI_CHUNK_SIZE, AI_CHUNK_MAX_LINES)
+            }
+            require(chunks.isNotEmpty()) { "No extracted text is available to process." }
+
+            var accumulatedNewDrafts = 0
+            var lastFlaggedCount = 0
+            for (chunk in chunks) {
+                val aiResult = invokeAiChunk(
+                    chunkText = chunk,
+                    priorContext = activeCarryOver,
+                    pagesInChunk = emptyList(),
+                    depth = 0,
+                )
+                val newDrafts = normalizeAndFilterBatchDrafts(
+                    rawDrafts = aiResult.drafts,
+                    priorContext = activeCarryOver,
+                    defaultSourcePage = null,
+                    batchEndPage = null,
+                )
+                activeCarryOver = mergeCarryOverContext(activeCarryOver, aiResult.carryOverContext)
+                if (newDrafts.isNotEmpty()) {
+                    newDrafts.chunked(INSERT_BATCH_SIZE).forEach { batch ->
+                        draftTransactionDao.insertAll(batch)
+                    }
+                    accumulatedNewDrafts += newDrafts.size
+                    totalExistingDraftCount += newDrafts.size
+                    lastFlaggedCount += newDrafts.count(::isDraftFlaggedForReview)
                 }
             }
-        }
 
-        if (newlyInsertedDraftCount + existingDraftCount == 0) {
-            throw NoFinancialDataException()
-        }
+            if (totalExistingDraftCount == 0) {
+                throw NoFinancialDataException()
+            }
 
-        documentDao.updateStatus(documentId, DocumentStatus.AI_COMPLETE.name)
-        if (document.extractionError != null) {
-            documentDao.updateStatusAndError(documentId, DocumentStatus.AI_COMPLETE.name, null)
+            documentDao.updateStatus(documentId, DocumentStatus.AI_COMPLETE.name)
+            if (document.extractionError != null) {
+                documentDao.updateStatusAndError(documentId, DocumentStatus.AI_COMPLETE.name, null)
+            }
+            return@withContext AiBatchProcessResult(
+                startPage = 1,
+                endPage = 1,
+                totalPages = 1,
+                newDraftsCount = accumulatedNewDrafts,
+                flaggedDraftCount = lastFlaggedCount,
+                carryOverContext = activeCarryOver,
+                stopReason = AiBatchStopReason.COMPLETED_ALL_PAGES,
+            )
         }
     }
 
@@ -1474,7 +1747,7 @@ class DocumentRepositoryImpl @Inject constructor(
                 extractedTextPath = textPath,
                 previewText = previewText,
                 pageCount = totalPages,
-                processedPages = totalPages,
+                processedPages = 0,
                 status = DocumentStatus.OCR_COMPLETE.name,
                 error = warningMsg,
             )
@@ -1770,15 +2043,209 @@ class DocumentRepositoryImpl @Inject constructor(
         }
     }
 
-    private fun buildDraftSignature(draft: DraftTransactionEntity): String = listOf(
-        AssetNameNormalizer.normalize(draft.assetName),
-        draft.transactionType.trim().uppercase(),
-        draft.tradeDate?.toString().orEmpty(),
-        draft.quantity.replace(",", "").trim(),
-        draft.netAmount.replace(",", "").trim(),
-        draft.broker?.trim()?.uppercase().orEmpty(),
-        draft.isin?.trim()?.uppercase().orEmpty(),
-    ).joinToString("|")
+    internal fun selectSmartBatchEndPage(
+        batchStartPage: Int,
+        totalPages: Int,
+        pagesByNumber: Map<Int, String>,
+    ): Int {
+        val remaining = totalPages - batchStartPage + 1
+        if (remaining <= DEFAULT_AI_BATCH_PAGES) return totalPages
+
+        val p4 = batchStartPage + 3
+        val p5 = batchStartPage + 4
+        val p6 = (batchStartPage + 5).coerceAtMost(totalPages)
+
+        val text4 = pagesByNumber[p4].orEmpty()
+        val text5 = pagesByNumber[p5].orEmpty()
+        val text6 = pagesByNumber[p6].orEmpty()
+        val nextAfter5 = pagesByNumber[p5 + 1].orEmpty()
+        val nextAfter6 = pagesByNumber[p6 + 1].orEmpty()
+
+        if (hasClosingBreak(text5) || (p5 + 1 <= totalPages && startsWithNewSection(nextAfter5))) {
+            return p5
+        }
+        if (hasClosingBreak(text4) || startsWithNewSection(text5)) {
+            return p4
+        }
+        if (p6 > p5 && (hasClosingBreak(text6) || (p6 + 1 <= totalPages && startsWithNewSection(nextAfter6)))) {
+            return p6
+        }
+        if (hasSectionBreakMarker(text4) && !hasSectionBreakMarker(text5)) {
+            return p4
+        }
+        if (p6 > p5 && hasSectionBreakMarker(text6) && !hasSectionBreakMarker(text5)) {
+            return p6
+        }
+        return p5
+    }
+
+    private fun hasClosingBreak(text: String): Boolean =
+        text.contains("Closing Unit Balance", ignoreCase = true)
+
+    private fun hasSectionBreakMarker(text: String): Boolean =
+        text.contains("Closing Unit Balance", ignoreCase = true) ||
+            text.contains("Folio No", ignoreCase = true) ||
+            text.contains("ISIN:", ignoreCase = true) ||
+            text.contains("ISIN :", ignoreCase = true)
+
+    private fun startsWithNewSection(text: String): Boolean {
+        val leadingLines = text.lineSequence().map { it.trim() }.filter { it.isNotBlank() }.take(6)
+        return leadingLines.any { line ->
+            line.contains("Folio No", ignoreCase = true) ||
+                line.contains("ISIN:", ignoreCase = true) ||
+                line.contains("ISIN :", ignoreCase = true)
+        }
+    }
+
+    private fun formatBatchPages(pages: List<Pair<Int, String>>): String = buildString {
+        for ((pageNum, pageText) in pages) {
+            val trimmed = pageText.trim()
+            if (trimmed.isNotEmpty()) {
+                if (isNotEmpty()) append("\n\n")
+                append("--- PAGE ").append(pageNum).append(" ---\n")
+                append(trimmed)
+            }
+        }
+    }
+
+    private fun buildPromptWithContext(
+        chunkText: String,
+        priorContext: AiCarryOverContext,
+    ): String {
+        val prefix = priorContext.toPromptPrefix()
+        return if (prefix.isNotBlank()) "$prefix\n\n$chunkText" else chunkText
+    }
+
+    private fun mergeCarryOverContext(
+        prior: AiCarryOverContext,
+        next: AiCarryOverContext,
+    ): AiCarryOverContext {
+        if (next.isEmpty()) {
+            return prior.copy(incompleteTailText = "")
+        }
+        val amcChanged = next.activeAmc.isNotBlank() &&
+            prior.activeAmc.isNotBlank() &&
+            !next.activeAmc.equals(prior.activeAmc, ignoreCase = true)
+        val schemeChanged = next.activeScheme.isNotBlank() &&
+            prior.activeScheme.isNotBlank() &&
+            !next.activeScheme.equals(prior.activeScheme, ignoreCase = true)
+        val folioChanged = next.activeFolio.isNotBlank() &&
+            prior.activeFolio.isNotBlank() &&
+            !next.activeFolio.equals(prior.activeFolio, ignoreCase = true)
+
+        val resolvedAmc = next.activeAmc.ifBlank { prior.activeAmc }
+        val resolvedScheme = when {
+            next.activeScheme.isNotBlank() -> next.activeScheme
+            amcChanged -> ""
+            else -> prior.activeScheme
+        }
+        val resolvedIsin = when {
+            next.activeIsin.isNotBlank() -> next.activeIsin
+            schemeChanged || amcChanged -> ""
+            else -> prior.activeIsin
+        }
+        val resolvedFolio = when {
+            next.activeFolio.isNotBlank() -> next.activeFolio
+            amcChanged -> ""
+            else -> prior.activeFolio
+        }
+        val resolvedBroker = when {
+            next.activeBroker.isNotBlank() -> next.activeBroker
+            folioChanged -> next.activeBroker.ifBlank { prior.activeBroker }
+            else -> prior.activeBroker
+        }
+        return AiCarryOverContext(
+            activeAmc = resolvedAmc,
+            activeScheme = resolvedScheme,
+            activeIsin = resolvedIsin,
+            activeFolio = resolvedFolio,
+            activeBroker = resolvedBroker,
+            activeColumnHeaders = next.activeColumnHeaders.ifEmpty { prior.activeColumnHeaders },
+            incompleteTailText = next.incompleteTailText,
+        )
+    }
+
+    private fun bootstrapCarryOverContextFromPriorPages(
+        store: ExtractedTextStore,
+        documentId: String,
+        untilPage: Int,
+        priorDrafts: List<DraftTransactionEntity>,
+    ): AiCarryOverContext {
+        var amc = ""
+        var scheme = ""
+        var isin = ""
+        var folio = ""
+        store.forEachPage(documentId) { pageNumber, pageText ->
+            if (pageNumber >= untilPage) return@forEachPage
+            for (rawLine in pageText.lineSequence()) {
+                val line = rawLine.trim()
+                if (line.isBlank()) continue
+                val extractedIsin = AssetNameNormalizer.extractIsin(line)
+                if (extractedIsin != null) {
+                    isin = extractedIsin
+                }
+                if (line.contains("Folio No", ignoreCase = true)) {
+                    folio = line.substringAfter(":", line).trim()
+                } else if (line.contains("Mutual Fund", ignoreCase = true) && line.length < 90) {
+                    amc = line
+                } else if (isContextHeaderLine(line)) {
+                    scheme = line
+                }
+            }
+        }
+        val lastDraft = priorDrafts.lastOrNull()
+        return AiCarryOverContext(
+            activeAmc = amc,
+            activeScheme = scheme.ifBlank { lastDraft?.assetName.orEmpty() },
+            activeIsin = isin.ifBlank { lastDraft?.isin.orEmpty() },
+            activeFolio = folio,
+            activeBroker = lastDraft?.broker.orEmpty(),
+        )
+    }
+
+    internal fun isDraftFlaggedForReview(draft: DraftTransactionEntity): Boolean =
+        draft.confidence < LOW_CONFIDENCE_REVIEW_THRESHOLD || hasMathMismatch(draft)
+
+    internal fun hasMathMismatch(draft: DraftTransactionEntity): Boolean {
+        val type = draft.transactionType.trim().uppercase()
+        if (type !in setOf("BUY", "SELL", "TRANSFER_IN", "TRANSFER_OUT")) return false
+        val qty = parseCleanBigDecimal(draft.quantity)?.abs() ?: return true
+        val price = parseCleanBigDecimal(draft.price)?.abs() ?: return true
+        val net = parseCleanBigDecimal(draft.netAmount)?.abs() ?: return true
+        if (qty.compareTo(BigDecimal.ZERO) <= 0 ||
+            price.compareTo(BigDecimal.ZERO) <= 0 ||
+            net.compareTo(BigDecimal.ZERO) <= 0
+        ) {
+            return false
+        }
+        val expected = qty.multiply(price)
+        val diff = expected.subtract(net).abs()
+        val tolerance = maxOf(
+            BigDecimal("1.00"),
+            expected.multiply(BigDecimal("0.05")),
+        )
+        return diff > tolerance
+    }
+
+    private fun parseCleanBigDecimal(raw: String): BigDecimal? = runCatching {
+        BigDecimal(raw.replace(",", "").replace("₹", "").trim())
+    }.getOrNull()
+
+    private fun buildDraftSignature(draft: DraftTransactionEntity): String {
+        val normQty = parseCleanBigDecimal(draft.quantity)?.stripTrailingZeros()?.toPlainString()
+            ?: draft.quantity.replace(",", "").trim()
+        val normNet = parseCleanBigDecimal(draft.netAmount)?.setScale(2, RoundingMode.HALF_UP)?.toPlainString()
+            ?: draft.netAmount.replace(",", "").trim()
+        return listOf(
+            AssetNameNormalizer.normalize(draft.assetName),
+            draft.transactionType.trim().uppercase(),
+            draft.tradeDate?.toString().orEmpty(),
+            normQty,
+            normNet,
+            draft.broker?.trim()?.uppercase().orEmpty(),
+            draft.isin?.trim()?.uppercase().orEmpty(),
+        ).joinToString("|")
+    }
 
     private fun isContextHeaderLine(line: String): Boolean {
         if (line.length > 160) return false
@@ -1921,6 +2388,8 @@ class DocumentRepositoryImpl @Inject constructor(
         const val LEGACY_SLICE_SIZE = 100_000
         const val MAX_TRUNCATION_SPLIT_DEPTH = 2
         const val MIN_LINES_TO_SPLIT_ON_TRUNCATION = 10
+        const val DEFAULT_AI_BATCH_PAGES = 5
+        const val LOW_CONFIDENCE_REVIEW_THRESHOLD = 80
         const val MILLIS_PER_DAY = 86_400_000L
         val SUPPORTED_EXTENSIONS = setOf("pdf", "csv", "xlsx", "png", "jpg", "jpeg")
         val STRUCTURED_EXTENSIONS = setOf("csv", "xlsx")

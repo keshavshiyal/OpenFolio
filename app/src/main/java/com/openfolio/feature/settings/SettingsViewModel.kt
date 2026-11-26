@@ -27,6 +27,7 @@ import javax.inject.Inject
 
 data class SettingsUiState(
     val apiKey: String = "",
+    val modelName: String = SettingsRepository.DEFAULT_GEMINI_MODEL_NAME,
     val isKeyVisible: Boolean = false,
     val isSaving: Boolean = false,
     val isExporting: Boolean = false,
@@ -63,6 +64,12 @@ class SettingsViewModel @Inject constructor(
                 _uiState.value = _uiState.value.copy(apiKey = key)
             }
         }
+        viewModelScope.launch {
+            val modelFlow: StateFlow<String>? = settingsRepository.geminiModelNameFlow
+            modelFlow?.collect { model ->
+                _uiState.value = _uiState.value.copy(modelName = model)
+            }
+        }
         loadDatabaseSummary()
     }
 
@@ -85,6 +92,10 @@ class SettingsViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(apiKey = newKey)
     }
 
+    fun onModelNameChange(newModelName: String) {
+        _uiState.value = _uiState.value.copy(modelName = newModelName)
+    }
+
     fun toggleKeyVisibility() {
         _uiState.value = _uiState.value.copy(isKeyVisible = !_uiState.value.isKeyVisible)
     }
@@ -94,6 +105,9 @@ class SettingsViewModel @Inject constructor(
             _uiState.value = _uiState.value.copy(isSaving = true)
             try {
                 settingsRepository.setGeminiApiKey(_uiState.value.apiKey)
+                val resolvedModel = _uiState.value.modelName.trim()
+                    .ifBlank { SettingsRepository.DEFAULT_GEMINI_MODEL_NAME }
+                settingsRepository.setGeminiModelName(resolvedModel)
                 _events.emit(SettingsEvent.ShowSnackbar("API key saved securely."))
             } catch (t: Throwable) {
                 _events.emit(SettingsEvent.ShowSnackbar(t.message ?: "Failed to save key."))

@@ -46,6 +46,18 @@ interface TransactionDao {
     @Query("SELECT fingerprint FROM txn WHERE fingerprint IN (:fingerprints)")
     suspend fun getExistingFingerprints(fingerprints: List<String>): List<String>
 
+    @Query("SELECT * FROM txn WHERE fingerprint IN (:fingerprints)")
+    suspend fun getByFingerprints(fingerprints: List<String>): List<TransactionEntity>
+
+    @Query("SELECT * FROM txn WHERE assetId IN (:assetIds)")
+    suspend fun getByAssetIds(assetIds: List<String>): List<TransactionEntity>
+
+    @Query("SELECT * FROM txn WHERE documentId = :documentId")
+    suspend fun getByDocumentIdOnce(documentId: String): List<TransactionEntity>
+
+    @Query("DELETE FROM txn WHERE documentId = :documentId")
+    suspend fun deleteByDocumentId(documentId: String): Int
+
     @Query("SELECT * FROM txn WHERE id = :id LIMIT 1")
     suspend fun getById(id: String): TransactionEntity?
 

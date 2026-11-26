@@ -80,6 +80,33 @@ class ExtractedTextStore internal constructor(
         }
     }
 
+    fun readPagesRange(documentId: String, pageRange: IntRange): Map<Int, String> {
+        if (pageRange.isEmpty()) return emptyMap()
+        val result = LinkedHashMap<Int, String>()
+        forEachPage(documentId) { pageNumber, pageText ->
+            if (pageNumber in pageRange) {
+                result[pageNumber] = pageText
+            }
+        }
+        return result
+    }
+
+    fun getMaxPageNumber(documentId: String): Int {
+        val file = fileFor(documentId)
+        if (!file.exists()) return 0
+        var maxPage = 0
+        BufferedReader(InputStreamReader(FileInputStream(file), Charsets.UTF_8), BUFFER_SIZE).use { reader ->
+            while (true) {
+                val line = reader.readLine() ?: break
+                val parsed = parsePageMarker(line)
+                if (parsed != null && parsed > maxPage) {
+                    maxPage = parsed
+                }
+            }
+        }
+        return maxPage
+    }
+
     fun readSample(documentId: String, maxChars: Int = 16_000): String {
         if (maxChars <= 0) return ""
         val file = fileFor(documentId)
@@ -143,16 +170,19 @@ class ExtractedTextStore internal constructor(
 
     @PublishedApi
     internal fun parsePageMarker(line: String): Int? {
-        if (!line.startsWith(PAGE_MARKER_PREFIX) || !line.endsWith(PAGE_MARKER_SUFFIX)) {
-            return null
+        val prefix = when {
+            line.startsWith(PAGE_MARKER_PREFIX) && line.endsWith(PAGE_MARKER_SUFFIX) -> PAGE_MARKER_PREFIX
+            line.startsWith(ALT_PAGE_MARKER_PREFIX) && line.endsWith(PAGE_MARKER_SUFFIX) -> ALT_PAGE_MARKER_PREFIX
+            else -> return null
         }
-        val numPart = line.substring(PAGE_MARKER_PREFIX.length, line.length - PAGE_MARKER_SUFFIX.length)
+        val numPart = line.substring(prefix.length, line.length - PAGE_MARKER_SUFFIX.length)
         return numPart.toIntOrNull()?.takeIf { it > 0 }
     }
 
     companion object {
         const val DIRECTORY_NAME = "extracted_text"
         const val PAGE_MARKER_PREFIX = "<<<OPENFOLIO_PAGE:"
+        const val ALT_PAGE_MARKER_PREFIX = "<<<PAGE:"
         const val PAGE_MARKER_SUFFIX = ">>>"
         const val BUFFER_SIZE = 32 * 1024
     }

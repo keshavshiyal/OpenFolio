@@ -36,11 +36,13 @@ class SettingsViewModelTest {
     private val context = mock<Context>()
     private val contentResolver = mock<ContentResolver>()
     private val apiKeyFlow = MutableStateFlow("initial-key")
+    private val modelNameFlow = MutableStateFlow(SettingsRepository.DEFAULT_GEMINI_MODEL_NAME)
 
     @Before
     fun setUp() = runTest {
         Dispatchers.setMain(testDispatcher)
         whenever(repository.geminiApiKeyFlow).thenReturn(apiKeyFlow)
+        whenever(repository.geminiModelNameFlow).thenReturn(modelNameFlow)
         whenever(context.contentResolver).thenReturn(contentResolver)
         whenever(databaseExporter.getExportMetadata()).thenReturn(
             DatabaseExportMetadata(
@@ -97,6 +99,7 @@ class SettingsViewModelTest {
         advanceUntilIdle()
 
         viewModel.onApiKeyChange("saved-key")
+        viewModel.onModelNameChange("gemini-2.5-pro")
         val events = mutableListOf<SettingsEvent>()
         val job = launch { viewModel.events.collect { events.add(it) } }
 
@@ -104,6 +107,7 @@ class SettingsViewModelTest {
         advanceUntilIdle()
 
         verify(repository).setGeminiApiKey("saved-key")
+        verify(repository).setGeminiModelName("gemini-2.5-pro")
         assertEquals(1, events.size)
         assertTrue(events[0] is SettingsEvent.ShowSnackbar)
         assertEquals("API key saved securely.", (events[0] as SettingsEvent.ShowSnackbar).message)

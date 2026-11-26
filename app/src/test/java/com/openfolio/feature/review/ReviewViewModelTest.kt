@@ -2,10 +2,14 @@ package com.openfolio.feature.review
 
 import android.content.Context
 import android.net.Uri
+import com.openfolio.core.data.local.entity.AssetClass
 import com.openfolio.core.data.local.entity.DocumentEntity
 import com.openfolio.core.data.local.entity.DocumentStatus
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
 import com.openfolio.core.data.local.entity.ColumnMappingEntity
+import com.openfolio.core.data.remote.ai.AiCarryOverContext
+import com.openfolio.core.domain.repository.AiBatchProcessResult
+import com.openfolio.core.domain.repository.AiBatchStopReason
 import com.openfolio.core.domain.repository.AiExtractionException
 import com.openfolio.core.domain.repository.DocumentRepository
 import com.openfolio.core.domain.repository.EmptyExtractedTextException
@@ -467,6 +471,73 @@ class ReviewViewModelTest {
             processDocumentWithMockAi(documentId)
         }
 
+        var nextBatchResultOverride: AiBatchProcessResult? = null
+        var nextBatchDraftsToInsert: List<DraftTransactionEntity> = emptyList()
+        var autoProcessResultOverride: AiBatchProcessResult? = null
+        var updatedCarryOverContexts = mutableListOf<AiCarryOverContext>()
+        var updatedAssetClasses = mutableListOf<AssetClass>()
+
+        override suspend fun processNextAiBatch(
+            documentId: String,
+            onProgress: (suspend (stage: String, current: Int, total: Int) -> Unit)?,
+        ): AiBatchProcessResult {
+            nextBatchResultOverride?.let { overrideResult ->
+                throwExceptionOnAi?.let { throw it }
+                aiProcessCallCount++
+                if (nextBatchDraftsToInsert.isNotEmpty()) {
+                    drafts.value = drafts.value + nextBatchDraftsToInsert
+                }
+                document = document?.copy(
+                    processedPages = overrideResult.endPage,
+                    pageCount = overrideResult.totalPages,
+                    status = if (overrideResult.stopReason == AiBatchStopReason.COMPLETED_ALL_PAGES) {
+                        DocumentStatus.AI_COMPLETE.name
+                    } else {
+                        DocumentStatus.AI_PAUSED.name
+                    },
+                    carryOverContextJson = overrideResult.carryOverContext.toJson()
+                        .takeUnless { overrideResult.carryOverContext.isEmpty() },
+                    extractionError = overrideResult.message,
+                )
+                return overrideResult
+            }
+            return super.processNextAiBatch(documentId, onProgress)
+        }
+
+        override suspend fun autoProcessRemainingAiBatches(
+            documentId: String,
+            onProgress: (suspend (stage: String, current: Int, total: Int) -> Unit)?,
+        ): AiBatchProcessResult {
+            autoProcessResultOverride?.let { overrideResult ->
+                throwExceptionOnAi?.let { throw it }
+                aiProcessCallCount++
+                document = document?.copy(
+                    processedPages = overrideResult.endPage,
+                    pageCount = overrideResult.totalPages,
+                    status = if (overrideResult.stopReason == AiBatchStopReason.COMPLETED_ALL_PAGES) {
+                        DocumentStatus.AI_COMPLETE.name
+                    } else {
+                        DocumentStatus.AI_PAUSED.name
+                    },
+                    carryOverContextJson = overrideResult.carryOverContext.toJson()
+                        .takeUnless { overrideResult.carryOverContext.isEmpty() },
+                    extractionError = overrideResult.message,
+                )
+                return overrideResult
+            }
+            return super.autoProcessRemainingAiBatches(documentId, onProgress)
+        }
+
+        override suspend fun updateCarryOverContext(documentId: String, context: AiCarryOverContext) {
+            updatedCarryOverContexts.add(context)
+            document = document?.copy(carryOverContextJson = context.toJson())
+        }
+
+        override suspend fun updateDocumentAssetClass(documentId: String, assetClass: AssetClass) {
+            updatedAssetClasses.add(assetClass)
+            document = document?.copy(assetClass = assetClass.name)
+        }
+
         override suspend fun processDocumentWithMockAi(documentId: String) {
             aiProcessCallCount++
             insertDraftTransactionsIfEmpty(
@@ -628,5 +699,92 @@ class ReviewViewModelTest {
         testScheduler.advanceUntilIdle()
 
         assertEquals(1, repository.aiProcessCallCount)
+    }
+
+    @Test
+    fun batch1PauseUpdatesCarryOverOnUserFixAndGatesCommitUntilAllPagesFinish() = runTest {
+        val multiPageDoc = document.copy(
+            status = DocumentStatus.OCR_COMPLETE.name,
+            pageCount = 15,
+            processedPages = 0,
+        )
+        repository.document = multiPageDoc
+        val ctx1 = AiCarryOverContext(
+            activeAmc = "HDFC Mutual Fund",
+            activeScheme = "HDFC Top 100",
+            activeIsin = "INF179K01BE2",
+            activeBroker = "CAMS",
+        )
+        repository.nextBatchResultOverride = AiBatchProcessResult(
+            startPage = 1,
+            endPage = 5,
+            totalPages = 15,
+            newDraftsCount = 1,
+            flaggedDraftCount = 0,
+            carryOverContext = ctx1,
+            stopReason = AiBatchStopReason.PAUSED_AFTER_BATCH,
+        )
+        val batch1Draft = DraftTransactionEntity(
+            id = "b1-draft",
+            documentId = multiPageDoc.id,
+            assetName = "HDFC Top 100",
+            transactionType = "BUY",
+            quantity = "10",
+            price = "100",
+            netAmount = "1000",
+            confidence = 95,
+            assetClass = "STOCK",
+            broker = "CAMS",
+        )
+        repository.nextBatchDraftsToInsert = listOf(batch1Draft)
+        viewModel.loadDocument(multiPageDoc.id)
+        testScheduler.advanceUntilIdle()
+
+        viewModel.onProcessWithAi()
+        testScheduler.advanceUntilIdle()
+
+        val loadedAfterBatch1 = (viewModel.uiState.value as ReviewUiState.Loaded).document
+        assertEquals(DocumentStatus.AI_PAUSED.name, loadedAfterBatch1.status)
+        assertEquals(5, loadedAfterBatch1.processedPages)
+        assertTrue(viewModel.batchBannerMessage.value?.contains("Pages 1–5 of 15") == true)
+
+        // Commit is blocked while pages remain staged/pending
+        viewModel.saveConfirmed()
+        assertNull(repository.lastSavedSelectedIds)
+        assertTrue(viewModel.errorMessage.value?.contains("Finish all 15 pages") == true)
+
+        // User fixes scheme name, asset class, and broker -> updates carryOverContext & doc assetClass
+        viewModel.saveDraft(
+            draftId = batch1Draft.id,
+            assetName = "HDFC Top 100 Fund - Direct Plan",
+            transactionType = "BUY",
+            quantity = "10",
+            price = "100",
+            netAmount = "1000",
+            assetClass = "MUTUAL_FUND",
+            broker = "MFCentral",
+        )
+        testScheduler.advanceUntilIdle()
+
+        assertEquals("HDFC Top 100 Fund - Direct Plan", repository.updatedCarryOverContexts.last().activeScheme)
+        assertEquals("MFCentral", repository.updatedCarryOverContexts.last().activeBroker)
+        assertEquals(AssetClass.MUTUAL_FUND, repository.updatedAssetClasses.last())
+
+        // Auto-process finishes remaining pages, unlocking final commit
+        repository.autoProcessResultOverride = AiBatchProcessResult(
+            startPage = 6,
+            endPage = 15,
+            totalPages = 15,
+            newDraftsCount = 2,
+            flaggedDraftCount = 0,
+            carryOverContext = repository.updatedCarryOverContexts.last(),
+            stopReason = AiBatchStopReason.COMPLETED_ALL_PAGES,
+        )
+        viewModel.onAutoProcessRemainingAi()
+        testScheduler.advanceUntilIdle()
+
+        viewModel.saveConfirmed()
+        testScheduler.advanceUntilIdle()
+        assertTrue(viewModel.actionState.value is ReviewActionState.Saved)
     }
 }

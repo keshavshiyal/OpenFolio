@@ -11,6 +11,7 @@ data class CasParseState(
     var currentAmc: String = "",
     var currentScheme: String = "",
     var currentIsin: String? = null,
+    var currentFolio: String = "",
     var hasSeenCasSignal: Boolean = false,
 )
 
@@ -143,7 +144,14 @@ class CasStatementParser @Inject constructor() {
                 continue
             }
 
-            // 3. Detect Scheme + ISIN line (in digital CAS PDFs, scheme lines contain ISIN: INF...)
+            // 3. Track Folio Number without emitting a draft
+            val folioMatch = folioRegex.find(line)
+            if (folioMatch != null && !datePrefixRegex.containsMatchIn(line)) {
+                state.currentFolio = folioMatch.groupValues.getOrElse(1) { "" }.trim()
+                state.hasSeenCasSignal = true
+            }
+
+            // 4. Detect Scheme + ISIN line (in digital CAS PDFs, scheme lines contain ISIN: INF...)
             val foundIsin = AssetNameNormalizer.extractIsin(line)
             if (foundIsin != null && !datePrefixRegex.containsMatchIn(line)) {
                 state.currentIsin = foundIsin

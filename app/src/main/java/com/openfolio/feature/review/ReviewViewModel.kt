@@ -7,6 +7,9 @@ import com.openfolio.core.data.local.entity.ColumnMappingEntity
 import com.openfolio.core.data.local.entity.DocumentEntity
 import com.openfolio.core.data.local.entity.DocumentStatus
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
+import com.openfolio.core.data.remote.ai.AiCarryOverContext
+import com.openfolio.core.domain.repository.AiBatchProcessResult
+import com.openfolio.core.domain.repository.AiBatchStopReason
 import com.openfolio.core.domain.repository.AiExtractionException
 import com.openfolio.core.domain.repository.DocumentRepository
 import com.openfolio.core.domain.repository.EmptyExtractedTextException
@@ -16,8 +19,10 @@ import com.openfolio.core.domain.repository.SaveDraftTransactionsResult
 import com.openfolio.core.tableextraction.CsvTableGenerator
 import com.openfolio.core.tableextraction.ExtractedTable
 import com.openfolio.core.tableextraction.LocalTableExtractionPipeline
+import com.openfolio.core.utils.AssetNameNormalizer
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.io.File
+import java.math.BigDecimal
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -71,6 +76,9 @@ class ReviewViewModel @Inject constructor(
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
+    private val _batchBannerMessage = MutableStateFlow<String?>(null)
+    val batchBannerMessage: StateFlow<String?> = _batchBannerMessage.asStateFlow()
+
     private var draftsJob: Job? = null
     private var documentJob: Job? = null
 
@@ -90,6 +98,7 @@ class ReviewViewModel @Inject constructor(
         _passwordError.value = null
         _actionState.value = ReviewActionState.Idle
         _errorMessage.value = null
+        _batchBannerMessage.value = null
         viewModelScope.launch {
             try {
                 val document = documentRepository.getDocumentById(documentId)
@@ -134,6 +143,7 @@ class ReviewViewModel @Inject constructor(
                                 isDuplicate = isDup,
                                 duplicateReason = dupInfo?.reason,
                                 isSelected = isSelected,
+                                isFlagged = isDraftFlaggedForReview(item),
                             )
                         }
 
@@ -164,10 +174,37 @@ class ReviewViewModel @Inject constructor(
     fun onProcessWithAi() {
         val document = (uiState.value as? ReviewUiState.Loaded)?.document ?: return
         if (_actionState.value == ReviewActionState.ProcessingAi) return
-        val canResumeFailed = document.status == DocumentStatus.FAILED.name
-        if (_drafts.value.isNotEmpty() && !canResumeFailed) return
+        val canResume = document.status == DocumentStatus.FAILED.name ||
+            document.status == DocumentStatus.AI_PAUSED.name
+        if (_drafts.value.isNotEmpty() && !canResume) return
+        runAiBatchAction(document) {
+            documentRepository.processNextAiBatch(document.id)
+        }
+    }
+
+    fun onProcessNextAiBatch() {
+        val document = (uiState.value as? ReviewUiState.Loaded)?.document ?: return
+        if (_actionState.value == ReviewActionState.ProcessingAi) return
+        runAiBatchAction(document) {
+            documentRepository.processNextAiBatch(document.id)
+        }
+    }
+
+    fun onAutoProcessRemainingAi() {
+        val document = (uiState.value as? ReviewUiState.Loaded)?.document ?: return
+        if (_actionState.value == ReviewActionState.ProcessingAi) return
+        runAiBatchAction(document) {
+            documentRepository.autoProcessRemainingAiBatches(document.id)
+        }
+    }
+
+    private fun runAiBatchAction(
+        document: DocumentEntity,
+        block: suspend () -> AiBatchProcessResult,
+    ) {
         val allowedStatuses = setOf(
             DocumentStatus.OCR_COMPLETE.name,
+            DocumentStatus.AI_PAUSED.name,
             DocumentStatus.AI_COMPLETE.name,
             DocumentStatus.FAILED.name,
         )
@@ -179,8 +216,20 @@ class ReviewViewModel @Inject constructor(
         }
         viewModelScope.launch {
             _actionState.value = ReviewActionState.ProcessingAi
+            _batchBannerMessage.value = null
             try {
-                documentRepository.processDocumentWithAi(document.id)
+                val result = block()
+                documentRepository.getDocumentById(document.id)?.let { updated ->
+                    _uiState.value = ReviewUiState.Loaded(updated)
+                }
+                _batchBannerMessage.value = when (result.stopReason) {
+                    AiBatchStopReason.PAUSED_AFTER_BATCH ->
+                        "Batch complete (Pages ${result.startPage}–${result.endPage} of ${result.totalPages}). Review drafts, then continue."
+                    AiBatchStopReason.AUTO_PAUSED_NEEDS_REVIEW ->
+                        result.message ?: "Paused at page ${result.endPage} of ${result.totalPages}: flagged rows need review."
+                    AiBatchStopReason.COMPLETED_ALL_PAGES ->
+                        if (result.totalPages > 1) "All ${result.totalPages} pages extracted. Review and save to portfolio." else null
+                }
                 _actionState.value = ReviewActionState.Idle
             } catch (e: CancellationException) {
                 _actionState.value = ReviewActionState.Idle
@@ -363,21 +412,23 @@ class ReviewViewModel @Inject constructor(
         price: String,
         netAmount: String,
         assetClass: String? = null,
+        broker: String? = null,
     ) {
-        val documentId = (uiState.value as? ReviewUiState.Loaded)?.document?.id ?: return
+        val loadedDoc = (uiState.value as? ReviewUiState.Loaded)?.document ?: return
+        val documentId = loadedDoc.id
         viewModelScope.launch {
             runAction(ReviewActionState.Saving) {
                 require(assetName.isNotBlank()) { "Asset name is required." }
                 require(transactionType in SUPPORTED_TRANSACTION_TYPES) {
                     "Choose a valid transaction type."
                 }
-                require(quantity.toBigDecimalOrNull() != null && quantity.toBigDecimal() > java.math.BigDecimal.ZERO) {
+                require(quantity.toBigDecimalOrNull() != null && quantity.toBigDecimal() > BigDecimal.ZERO) {
                     "Quantity must be a positive number."
                 }
-                require(price.toBigDecimalOrNull() != null && price.toBigDecimal() >= java.math.BigDecimal.ZERO) {
+                require(price.toBigDecimalOrNull() != null && price.toBigDecimal() >= BigDecimal.ZERO) {
                     "Price must be a valid non-negative number."
                 }
-                require(netAmount.toBigDecimalOrNull() != null && netAmount.toBigDecimal() >= java.math.BigDecimal.ZERO) {
+                require(netAmount.toBigDecimalOrNull() != null && netAmount.toBigDecimal() >= BigDecimal.ZERO) {
                     "Amount must be a valid non-negative number."
                 }
                 val previous = draftId?.let { id ->
@@ -385,8 +436,10 @@ class ReviewViewModel @Inject constructor(
                 }
                 val resolvedAssetClass = assetClass
                     ?: previous?.assetClass
-                    ?: (uiState.value as? ReviewUiState.Loaded)?.document?.assetClass
-                    ?: "STOCK"
+                    ?: loadedDoc.assetClass
+                val resolvedBroker = broker?.trim()?.takeIf(String::isNotBlank)
+                    ?: if (broker == null) previous?.broker else null
+                val resolvedIsin = AssetNameNormalizer.extractIsin(assetName) ?: previous?.isin
                 val draft = DraftTransactionEntity(
                     id = previous?.id ?: java.util.UUID.randomUUID().toString(),
                     documentId = documentId,
@@ -395,28 +448,79 @@ class ReviewViewModel @Inject constructor(
                     quantity = quantity.trim(),
                     price = price.trim(),
                     netAmount = netAmount.trim(),
-                    confidence = previous?.confidence ?: 100,
+                    confidence = if (previous == null) 100 else maxOf(previous.confidence, 95),
                     isAccepted = previous?.isAccepted ?: false,
                     isManual = true,
                     tradeDate = previous?.tradeDate,
                     assetClass = resolvedAssetClass,
+                    broker = resolvedBroker,
+                    isin = resolvedIsin,
+                    ticker = previous?.ticker,
+                    sourcePage = previous?.sourcePage,
                 )
                 if (previous == null) {
                     documentRepository.insertDraftTransaction(draft)
                 } else {
                     documentRepository.updateDraftTransaction(draft)
                 }
+
+                syncCarryOverContextAfterEdit(
+                    document = loadedDoc,
+                    previous = previous,
+                    updated = draft,
+                )
             }
         }
     }
 
+    private suspend fun syncCarryOverContextAfterEdit(
+        document: DocumentEntity,
+        previous: DraftTransactionEntity?,
+        updated: DraftTransactionEntity,
+    ) {
+        val existingCtx = AiCarryOverContext.fromJson(document.carryOverContextJson) ?: AiCarryOverContext()
+        val schemeChanged = previous == null ||
+            !updated.assetName.equals(previous.assetName, ignoreCase = true) ||
+            previous.assetName.equals(existingCtx.activeScheme, ignoreCase = true)
+        val brokerChanged = updated.broker != null && updated.broker != previous?.broker
+
+        val nextCtx = existingCtx.copy(
+            activeScheme = if (schemeChanged && updated.assetName.isNotBlank()) {
+                updated.assetName
+            } else {
+                existingCtx.activeScheme
+            },
+            activeIsin = updated.isin ?: existingCtx.activeIsin,
+            activeBroker = if (brokerChanged) {
+                updated.broker.orEmpty()
+            } else {
+                existingCtx.activeBroker.ifBlank { updated.broker.orEmpty() }
+            },
+        )
+        if (nextCtx != existingCtx && !nextCtx.isEmpty()) {
+            documentRepository.updateCarryOverContext(document.id, nextCtx)
+        }
+        if (updated.assetClass != document.assetClass &&
+            (previous == null || updated.assetClass != previous.assetClass)
+        ) {
+            runCatching { AssetClass.valueOf(updated.assetClass.trim().uppercase()) }
+                .getOrNull()
+                ?.let { documentRepository.updateDocumentAssetClass(document.id, it) }
+        }
+    }
+
     fun updateAllDraftsAssetClass(newAssetClass: AssetClass) {
+        val document = (uiState.value as? ReviewUiState.Loaded)?.document
         viewModelScope.launch {
             val currentDrafts = _drafts.value
             for (draft in currentDrafts) {
                 if (draft.assetClass != newAssetClass.name) {
                     documentRepository.updateDraftTransaction(draft.copy(assetClass = newAssetClass.name))
                 }
+            }
+            if (document != null && document.assetClass != newAssetClass.name) {
+                documentRepository.updateDocumentAssetClass(document.id, newAssetClass)
+                _uiState.value = ReviewUiState.Loaded(document.copy(assetClass = newAssetClass.name))
             }
         }
     }
@@ -458,8 +562,20 @@ class ReviewViewModel @Inject constructor(
     }
 
     fun saveConfirmed(overrideDuplicates: Boolean = false) {
-        val documentId = (uiState.value as? ReviewUiState.Loaded)?.document?.id ?: return
+        val document = (uiState.value as? ReviewUiState.Loaded)?.document ?: return
+        val documentId = document.id
         if (_drafts.value.isEmpty()) return
+        val isBatchPending = document.pageCount > 0 &&
+            document.processedPages in 1 until document.pageCount &&
+            document.status in setOf(
+                DocumentStatus.AI_PAUSED.name,
+                DocumentStatus.PROCESSING.name,
+                DocumentStatus.FAILED.name,
+            )
+        if (isBatchPending) {
+            _errorMessage.value = "Finish all ${document.pageCount} pages before committing to portfolio."
+            return
+        }
 
         val currentItems = _draftReviewItems.value
         val selectedItems = currentItems.filter { it.isSelected }
@@ -537,6 +653,25 @@ class ReviewViewModel @Inject constructor(
         }
     }
 
+    private fun isDraftFlaggedForReview(draft: DraftTransactionEntity): Boolean {
+        if (draft.confidence < 80) return true
+        val type = draft.transactionType.trim().uppercase()
+        if (type !in setOf("BUY", "SELL", "TRANSFER_IN", "TRANSFER_OUT")) return false
+        val qty = draft.quantity.replace(",", "").replace("₹", "").trim().toBigDecimalOrNull()?.abs() ?: return true
+        val price = draft.price.replace(",", "").replace("₹", "").trim().toBigDecimalOrNull()?.abs() ?: return true
+        val net = draft.netAmount.replace(",", "").replace("₹", "").trim().toBigDecimalOrNull()?.abs() ?: return true
+        if (qty.compareTo(BigDecimal.ZERO) <= 0 ||
+            price.compareTo(BigDecimal.ZERO) <= 0 ||
+            net.compareTo(BigDecimal.ZERO) <= 0
+        ) {
+            return false
+        }
+        val expected = qty.multiply(price)
+        val diff = expected.subtract(net).abs()
+        val tolerance = maxOf(BigDecimal("1.00"), expected.multiply(BigDecimal("0.05")))
+        return diff > tolerance
+    }
+
     private companion object {
         val SUPPORTED_TRANSACTION_TYPES = setOf("BUY", "SELL", "DIVIDEND", "INTEREST", "FEE", "TAX")
     }
@@ -567,4 +702,5 @@ data class DraftReviewItem(
     val isDuplicate: Boolean = false,
     val duplicateReason: String? = null,
     val isSelected: Boolean = !isDuplicate,
+    val isFlagged: Boolean = false,
 )

@@ -17,16 +17,21 @@ import com.openfolio.core.data.local.dao.TransactionDao
 import com.openfolio.core.data.local.entity.AccountEntity
 import com.openfolio.core.data.local.entity.AssetClass
 import com.openfolio.core.data.local.entity.AssetEntity
+import com.openfolio.core.data.local.entity.AssetStatus
 import com.openfolio.core.data.local.entity.ColumnMappingEntity
 import com.openfolio.core.data.local.entity.DocumentEntity
 import com.openfolio.core.data.local.entity.DocumentStatus
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
+import com.openfolio.core.data.local.entity.LotEntity
 import com.openfolio.core.data.local.entity.TransactionEntity
 import com.openfolio.core.data.local.entity.TransactionStatus
 import com.openfolio.core.data.local.entity.TransactionType
+import com.openfolio.core.data.remote.ai.AiCarryOverContext
 import com.openfolio.core.data.remote.ai.AiExtractionBatchResult
 import com.openfolio.core.data.remote.ai.AiProvider
+import com.openfolio.core.data.remote.ai.ContextualAiProvider
 import com.openfolio.core.data.remote.ai.TruncationAwareAiProvider
+import com.openfolio.core.domain.repository.AiBatchStopReason
 import com.openfolio.core.domain.repository.DuplicateDocumentException
 import com.openfolio.core.utils.DocumentTextExtractor
 import com.openfolio.core.utils.StructuredFileParser
@@ -284,7 +289,16 @@ class DocumentRepositoryLargeImportTest {
                 broker = "Zerodha",
             )
         }
-        whenever(txnDao.getAllOnce()).thenReturn(existingTxns)
+        whenever(txnDao.getByFingerprints(any())).thenAnswer { inv ->
+            val fps = inv.getArgument<List<String>>(0).toSet()
+            assertTrue("Fingerprint batch must be <= 500", fps.size <= 500)
+            existingTxns.filter { it.fingerprint in fps }
+        }
+        whenever(txnDao.getByAssetIds(any())).thenAnswer { inv ->
+            val assetIds = inv.getArgument<List<String>>(0).toSet()
+            assertTrue("Asset batch must be <= 500", assetIds.size <= 500)
+            existingTxns.filter { it.assetId in assetIds }
+        }
 
         val drafts = mutableListOf<DraftTransactionEntity>()
         // 20 exact fingerprint duplicates
@@ -362,6 +376,10 @@ class DocumentRepositoryLargeImportTest {
         assertTrue((0 until 20).all { duplicates["dup-exact-$it"]?.isDuplicate == true })
         assertTrue((20 until 30).all { duplicates["dup-sem-$it"]?.isDuplicate == true })
         assertTrue((0 until 70).none { duplicates.containsKey("unique-$it") })
+        verify(txnDao, never()).getAllOnce()
+        verify(txnDao).getByFingerprints(any())
+        verify(txnDao).getByAssetIds(any())
+        Unit
     }
 
     @Test
@@ -568,6 +586,513 @@ class DocumentRepositoryLargeImportTest {
         assertEquals(3, draftCaptor.firstValue.single().sourcePage)
         verify(documentDao).updateExtractionProgress(docId, 4, 4, DocumentStatus.PROCESSING.name)
         verify(documentDao).updateStatus(docId, DocumentStatus.AI_COMPLETE.name)
+    }
+
+    @Test
+    fun selectSmartBatchEndPageSnapsToSectionBreaksOnPage4Or6AndDefaultsTo5() {
+        val repository = createRepository()
+
+        val plainPages = (1..10).associateWith { page -> "Transaction row on page $page" }
+        assertEquals(5, repository.selectSmartBatchEndPage(1, 10, plainPages))
+
+        val closingOnPage4 = plainPages.toMutableMap().apply {
+            this[4] = "12-Mar-2024 SIP 5000\nClosing Unit Balance: 150.250"
+        }
+        assertEquals(4, repository.selectSmartBatchEndPage(1, 10, closingOnPage4))
+
+        val newFolioOnPage5Top = plainPages.toMutableMap().apply {
+            this[5] = "Folio No: 987654/32\nSBI Bluechip Fund ISIN: INF200K01QX4"
+        }
+        assertEquals(4, repository.selectSmartBatchEndPage(1, 10, newFolioOnPage5Top))
+
+        val closingOnPage6 = plainPages.toMutableMap().apply {
+            this[6] = "15-Mar-2024 SIP 5000\nClosing Unit Balance: 220.000"
+        }
+        assertEquals(6, repository.selectSmartBatchEndPage(1, 10, closingOnPage6))
+    }
+
+    @Test
+    fun statefulFivePageBatchesPauseAfterBatch1PropagateCarryOverContextAndDeduplicateBoundary() = runBlocking {
+        val docId = "doc-stateful-12"
+        val documentDao = mock<DocumentDao>()
+        val draftDao = mock<DraftTransactionDao>()
+        val settings = mock<SettingsRepository>()
+        val store = ExtractedTextStore(tempFolder.newFolder("extracted_text_stateful"))
+
+        store.openWriter(docId).use { writer ->
+            for (p in 1..12) {
+                val text = when (p) {
+                    1 -> "HDFC Mutual Fund\nFolio No: 123456/78\nHDFC Top 100 Fund ISIN: INF179K01BE2\n01-Jan-2024 SIP 5000 50 100"
+                    5 -> "01-May-2024 SIP 5000 50 100\n05-May-2024 SIP 2500"
+                    6 -> "25 100\n01-Jun-2024 SIP 5000 50 100"
+                    else -> "01-Feb-2024 SIP 5000 50 100 (Page $p)"
+                }
+                store.writePage(writer, p, text)
+            }
+            writer.flush()
+        }
+
+        var currentDoc = DocumentEntity(
+            id = docId,
+            fileName = "cas_12_pages.pdf",
+            localPath = "/tmp/cas_12_pages.pdf",
+            fileHash = "hash-12",
+            fileSize = 12_000L,
+            importDate = 1700000000000L,
+            status = DocumentStatus.OCR_COMPLETE.name,
+            extractedTextPath = store.pathFor(docId),
+            pageCount = 12,
+            processedPages = 0,
+            assetClass = AssetClass.MUTUAL_FUND.name,
+        )
+        val savedDrafts = mutableListOf<DraftTransactionEntity>()
+
+        whenever(documentDao.getDocumentById(docId)).thenAnswer { currentDoc }
+        whenever(documentDao.updateExtractionProgress(eq(docId), any(), any(), any())).thenAnswer { inv ->
+            currentDoc = currentDoc.copy(
+                processedPages = inv.getArgument(1),
+                pageCount = inv.getArgument(2),
+                status = inv.getArgument(3),
+            )
+            Unit
+        }
+        whenever(documentDao.updateCarryOverContext(eq(docId), anyOrNull())).thenAnswer { inv ->
+            currentDoc = currentDoc.copy(carryOverContextJson = inv.getArgument(1))
+            Unit
+        }
+        whenever(documentDao.updateAiBatchProgress(eq(docId), any(), any(), any(), anyOrNull(), anyOrNull())).thenAnswer { inv ->
+            currentDoc = currentDoc.copy(
+                processedPages = inv.getArgument(1),
+                pageCount = inv.getArgument(2),
+                status = inv.getArgument(3),
+                carryOverContextJson = inv.getArgument(4),
+                extractionError = inv.getArgument(5),
+            )
+            Unit
+        }
+        whenever(documentDao.updateStatus(eq(docId), any())).thenAnswer { inv ->
+            currentDoc = currentDoc.copy(status = inv.getArgument(1))
+            Unit
+        }
+        whenever(draftDao.getByDocumentIdOnce(docId)).thenAnswer { savedDrafts.toList() }
+        whenever(draftDao.insertAll(any())).thenAnswer { inv ->
+            savedDrafts.addAll(inv.getArgument<List<DraftTransactionEntity>>(0))
+            Unit
+        }
+        whenever(settings.getGeminiApiKey()).thenReturn("api-key")
+        whenever(settings.getGeminiModelName()).thenReturn("gemini-2.5-flash")
+
+        val seenContexts = mutableListOf<AiCarryOverContext?>()
+        val fakeContextualAi = object : ContextualAiProvider {
+            override suspend fun extractTransactions(rawText: String, apiKey: String, documentId: String) =
+                extractTransactionsWithContext(rawText, apiKey, documentId).map { it.drafts }
+
+            override suspend fun extractTransactionsDetailed(rawText: String, apiKey: String, documentId: String) =
+                extractTransactionsWithContext(rawText, apiKey, documentId)
+
+            override suspend fun extractTransactionsWithContext(
+                rawText: String,
+                apiKey: String,
+                documentId: String,
+                priorContext: AiCarryOverContext?,
+                modelName: String?,
+            ): Result<AiExtractionBatchResult> {
+                seenContexts.add(priorContext)
+                return when {
+                    rawText.contains("--- PAGE 1 ---") -> Result.success(
+                        AiExtractionBatchResult(
+                            drafts = listOf(
+                                DraftTransactionEntity(
+                                    id = "b1-1",
+                                    documentId = documentId,
+                                    assetName = "HDFC Top 100 Fund",
+                                    transactionType = "BUY",
+                                    quantity = "50",
+                                    price = "100",
+                                    netAmount = "5000",
+                                    confidence = 96,
+                                    tradeDate = 1704067200000L,
+                                    assetClass = "MUTUAL_FUND",
+                                    broker = "CAMS",
+                                    isin = "INF179K01BE2",
+                                    sourcePage = 5,
+                                ),
+                            ),
+                            carryOverContext = AiCarryOverContext(
+                                activeAmc = "HDFC Mutual Fund",
+                                activeScheme = "HDFC Top 100 Fund",
+                                activeIsin = "INF179K01BE2",
+                                activeFolio = "123456/78",
+                                activeBroker = "CAMS",
+                                activeColumnHeaders = listOf("Date", "Transaction", "Amount", "Units", "NAV"),
+                                incompleteTailText = "05-May-2024 SIP 2500",
+                            ),
+                        ),
+                    )
+                    rawText.contains("--- PAGE 6 ---") -> Result.success(
+                        AiExtractionBatchResult(
+                            drafts = listOf(
+                                // Boundary duplicate of b1-1 from page 5
+                                DraftTransactionEntity(
+                                    id = "b2-dup",
+                                    documentId = documentId,
+                                    assetName = "HDFC Top 100 Fund",
+                                    transactionType = "BUY",
+                                    quantity = "50.00",
+                                    price = "100.00",
+                                    netAmount = "5000.00",
+                                    confidence = 96,
+                                    tradeDate = 1704067200000L,
+                                    assetClass = "MUTUAL_FUND",
+                                    broker = "CAMS",
+                                    isin = "INF179K01BE2",
+                                    sourcePage = 6,
+                                ),
+                                // New completed split row from tail text
+                                DraftTransactionEntity(
+                                    id = "b2-new",
+                                    documentId = documentId,
+                                    assetName = "HDFC Top 100 Fund",
+                                    transactionType = "BUY",
+                                    quantity = "25",
+                                    price = "100",
+                                    netAmount = "2500",
+                                    confidence = 95,
+                                    tradeDate = 1714867200000L,
+                                    assetClass = "MUTUAL_FUND",
+                                    broker = "CAMS",
+                                    isin = "INF179K01BE2",
+                                    sourcePage = 6,
+                                ),
+                            ),
+                            carryOverContext = AiCarryOverContext(
+                                activeAmc = "HDFC Mutual Fund",
+                                activeScheme = "HDFC Top 100 Fund",
+                                activeIsin = "INF179K01BE2",
+                                activeFolio = "123456/78",
+                                activeBroker = "CAMS",
+                            ),
+                        ),
+                    )
+                    else -> Result.success(
+                        AiExtractionBatchResult(
+                            drafts = listOf(
+                                DraftTransactionEntity(
+                                    id = "b3-1",
+                                    documentId = documentId,
+                                    assetName = "HDFC Top 100 Fund",
+                                    transactionType = "BUY",
+                                    quantity = "50",
+                                    price = "100",
+                                    netAmount = "5000",
+                                    confidence = 96,
+                                    tradeDate = 1717200000000L,
+                                    assetClass = "MUTUAL_FUND",
+                                    broker = "CAMS",
+                                    isin = "INF179K01BE2",
+                                    sourcePage = 11,
+                                ),
+                            ),
+                        ),
+                    )
+                }
+            }
+        }
+
+        val repository = createRepository(
+            documentDao = documentDao,
+            draftTransactionDao = draftDao,
+            settingsRepository = settings,
+            aiProvider = fakeContextualAi,
+            extractedTextStore = store,
+        )
+
+        // Batch 1 (Pages 1-5) pauses cleanly
+        val batch1 = repository.processNextAiBatch(docId)
+        assertEquals(AiBatchStopReason.PAUSED_AFTER_BATCH, batch1.stopReason)
+        assertEquals(1, batch1.startPage)
+        assertEquals(5, batch1.endPage)
+        assertEquals(DocumentStatus.AI_PAUSED.name, currentDoc.status)
+        assertEquals(5, currentDoc.processedPages)
+        assertTrue(currentDoc.carryOverContextJson?.contains("INF179K01BE2") == true)
+        assertEquals(1, savedDrafts.size)
+
+        // Batch 2 (Pages 6-10) inherits carryOverContext and deduplicates boundary duplicate b2-dup
+        val batch2 = repository.processNextAiBatch(docId)
+        assertEquals(AiBatchStopReason.PAUSED_AFTER_BATCH, batch2.stopReason)
+        assertEquals(6, batch2.startPage)
+        assertEquals(10, batch2.endPage)
+        assertEquals(1, batch2.newDraftsCount) // b2-dup skipped, b2-new inserted
+        assertEquals("05-May-2024 SIP 2500", seenContexts[1]?.incompleteTailText)
+        assertEquals("123456/78", seenContexts[1]?.activeFolio)
+        assertEquals(2, savedDrafts.size)
+
+        // Auto-process remaining finishes pages 11-12
+        val batch3 = repository.autoProcessRemainingAiBatches(docId)
+        assertEquals(AiBatchStopReason.COMPLETED_ALL_PAGES, batch3.stopReason)
+        assertEquals(11, batch3.startPage)
+        assertEquals(12, batch3.endPage)
+        assertEquals(DocumentStatus.AI_COMPLETE.name, currentDoc.status)
+        assertEquals(3, savedDrafts.size)
+    }
+
+    @Test
+    fun autoProcessRemainingAutoPausesOnMathMismatchOrLowConfidence() = runBlocking {
+        val docId = "doc-autopause"
+        val documentDao = mock<DocumentDao>()
+        val draftDao = mock<DraftTransactionDao>()
+        val settings = mock<SettingsRepository>()
+        val store = ExtractedTextStore(tempFolder.newFolder("extracted_text_autopause"))
+
+        store.openWriter(docId).use { writer ->
+            for (p in 1..15) {
+                store.writePage(writer, p, "01-Jan-2024 BUY RELIANCE 10 2500 25000 (Page $p)")
+            }
+            writer.flush()
+        }
+
+        var currentDoc = DocumentEntity(
+            id = docId,
+            fileName = "trades_15.pdf",
+            localPath = "/tmp/trades_15.pdf",
+            fileHash = "hash-15",
+            fileSize = 15_000L,
+            importDate = 1700000000000L,
+            status = DocumentStatus.AI_PAUSED.name,
+            extractedTextPath = store.pathFor(docId),
+            pageCount = 15,
+            processedPages = 5,
+        )
+        whenever(documentDao.getDocumentById(docId)).thenAnswer { currentDoc }
+        whenever(documentDao.updateAiBatchProgress(eq(docId), any(), any(), any(), anyOrNull(), anyOrNull())).thenAnswer { inv ->
+            currentDoc = currentDoc.copy(
+                processedPages = inv.getArgument(1),
+                pageCount = inv.getArgument(2),
+                status = inv.getArgument(3),
+                carryOverContextJson = inv.getArgument(4),
+                extractionError = inv.getArgument(5),
+            )
+            Unit
+        }
+        whenever(settings.getGeminiApiKey()).thenReturn("api-key")
+        whenever(draftDao.getByDocumentIdOnce(docId)).thenReturn(emptyList())
+
+        val mismatchAi = object : ContextualAiProvider {
+            override suspend fun extractTransactions(rawText: String, apiKey: String, documentId: String) =
+                extractTransactionsWithContext(rawText, apiKey, documentId).map { it.drafts }
+
+            override suspend fun extractTransactionsDetailed(rawText: String, apiKey: String, documentId: String) =
+                extractTransactionsWithContext(rawText, apiKey, documentId)
+
+            override suspend fun extractTransactionsWithContext(
+                rawText: String,
+                apiKey: String,
+                documentId: String,
+                priorContext: AiCarryOverContext?,
+                modelName: String?,
+            ): Result<AiExtractionBatchResult> = Result.success(
+                AiExtractionBatchResult(
+                    drafts = listOf(
+                        DraftTransactionEntity(
+                            documentId = documentId,
+                            assetName = "RELIANCE",
+                            transactionType = "BUY",
+                            quantity = "10",
+                            price = "2500.00",
+                            netAmount = "250000.00", // 10x math mismatch!
+                            confidence = 92,
+                            sourcePage = 6,
+                        ),
+                    ),
+                ),
+            )
+        }
+
+        val repository = createRepository(
+            documentDao = documentDao,
+            draftTransactionDao = draftDao,
+            settingsRepository = settings,
+            aiProvider = mismatchAi,
+            extractedTextStore = store,
+        )
+
+        val result = repository.autoProcessRemainingAiBatches(docId)
+        assertEquals(AiBatchStopReason.AUTO_PAUSED_NEEDS_REVIEW, result.stopReason)
+        assertEquals(10, result.endPage)
+        assertEquals(1, result.flaggedDraftCount)
+        assertEquals(DocumentStatus.AI_PAUSED.name, currentDoc.status)
+        assertTrue(currentDoc.extractionError?.contains("flagged for review") == true)
+    }
+
+    @Test
+    fun rollbackDocumentImportDeletesDocumentTxnsAndRecalculatesFifoLots() = runBlocking {
+        val docToRollback = "doc-rollback"
+        val docToKeep = "doc-keep"
+        val documentDao = mock<DocumentDao>()
+        val draftDao = mock<DraftTransactionDao>()
+        val txnDao = mock<TransactionDao>()
+        val assetDao = mock<AssetDao>()
+        val lotDao = mock<LotDao>()
+        val database = mock<OpenFolioDatabase>()
+
+        whenever(database.assetDao()).thenReturn(assetDao)
+        whenever(database.lotDao()).thenReturn(lotDao)
+
+        val docEntity = DocumentEntity(
+            id = docToRollback,
+            fileName = "statement_undo.pdf",
+            localPath = "/tmp/statement_undo.pdf",
+            fileHash = "hash-undo",
+            fileSize = 2000L,
+            importDate = 1700000000000L,
+            status = DocumentStatus.COMPLETED.name,
+            extractedText = "Some extracted preview text",
+            pageCount = 10,
+            processedPages = 10,
+        )
+        whenever(documentDao.getDocumentById(docToRollback)).thenReturn(docEntity)
+
+        val keptTxn = TransactionEntity(
+            id = "tx-keep",
+            accountId = "default_account",
+            assetId = "INF179K01BE2",
+            type = TransactionType.BUY,
+            tradeDate = LocalDate.of(2024, 1, 1),
+            quantity = BigDecimal("10"),
+            unitPrice = BigDecimal("100.00"),
+            grossAmount = BigDecimal("1000.00"),
+            netAmount = BigDecimal("1000.00"),
+            currency = "INR",
+            fingerprint = "fp-keep",
+            status = TransactionStatus.CONFIRMED,
+            documentId = docToKeep,
+        )
+        val rolledBackSell = TransactionEntity(
+            id = "tx-undo-sell",
+            accountId = "default_account",
+            assetId = "INF179K01BE2",
+            type = TransactionType.SELL,
+            tradeDate = LocalDate.of(2024, 2, 1),
+            quantity = BigDecimal("4"),
+            unitPrice = BigDecimal("120.00"),
+            grossAmount = BigDecimal("480.00"),
+            netAmount = BigDecimal("480.00"),
+            currency = "INR",
+            fingerprint = "fp-undo-sell",
+            status = TransactionStatus.CONFIRMED,
+            documentId = docToRollback,
+        )
+        val rolledBackOnlyAsset = TransactionEntity(
+            id = "tx-undo-only",
+            accountId = "default_account",
+            assetId = "INE002A01018",
+            type = TransactionType.BUY,
+            tradeDate = LocalDate.of(2024, 2, 2),
+            quantity = BigDecimal("5"),
+            unitPrice = BigDecimal("2500.00"),
+            grossAmount = BigDecimal("12500.00"),
+            netAmount = BigDecimal("12500.00"),
+            currency = "INR",
+            fingerprint = "fp-undo-only",
+            status = TransactionStatus.CONFIRMED,
+            documentId = docToRollback,
+        )
+
+        val storedTxns = mutableListOf(keptTxn, rolledBackSell, rolledBackOnlyAsset)
+        val storedAssets = mutableMapOf(
+            "INF179K01BE2" to AssetEntity(
+                id = "INF179K01BE2",
+                displayName = "HDFC Top 100 Fund",
+                assetClass = AssetClass.MUTUAL_FUND,
+                totalQuantity = BigDecimal("6"),
+                totalInvested = BigDecimal("600.00"),
+                averageCost = BigDecimal("100.00"),
+                realizedPnL = BigDecimal("80.00"),
+                status = AssetStatus.ACTIVE,
+            ),
+            "INE002A01018" to AssetEntity(
+                id = "INE002A01018",
+                displayName = "Reliance Industries",
+                assetClass = AssetClass.STOCK,
+                totalQuantity = BigDecimal("5"),
+                totalInvested = BigDecimal("12500.00"),
+                averageCost = BigDecimal("2500.00"),
+                status = AssetStatus.ACTIVE,
+            ),
+        )
+        val storedLots = mutableMapOf<String, List<LotEntity>>()
+
+        whenever(txnDao.getByDocumentIdOnce(docToRollback)).thenAnswer {
+            storedTxns.filter { it.documentId == docToRollback }
+        }
+        whenever(txnDao.deleteByDocumentId(docToRollback)).thenAnswer {
+            val before = storedTxns.size
+            storedTxns.removeAll { it.documentId == docToRollback }
+            before - storedTxns.size
+        }
+        whenever(txnDao.getByAssetIdOnce(any())).thenAnswer { inv ->
+            val assetId = inv.getArgument<String>(0)
+            storedTxns.filter { it.assetId == assetId }
+        }
+        whenever(assetDao.getById(any())).thenAnswer { inv -> storedAssets[inv.getArgument(0)] }
+        whenever(lotDao.deleteByAssetId(any())).thenAnswer { inv ->
+            storedLots.remove(inv.getArgument<String>(0))
+            Unit
+        }
+        whenever(lotDao.insertAll(any())).thenAnswer { inv ->
+            val lots = inv.getArgument<List<LotEntity>>(0)
+            if (lots.isNotEmpty()) {
+                storedLots[lots.first().assetId] = lots
+            }
+            Unit
+        }
+
+        val repository = createRepository(
+            documentDao = documentDao,
+            draftTransactionDao = draftDao,
+            transactionDao = txnDao,
+            database = database,
+        ).apply {
+            transactionRunner = { block -> block() }
+        }
+
+        val rollbackResult = repository.rollbackDocumentImport(docToRollback)
+        assertEquals(2, rollbackResult.deletedTransactionCount)
+        assertEquals(2, rollbackResult.recalculatedAssetCount)
+        assertEquals(1, storedTxns.size)
+        assertEquals("tx-keep", storedTxns.single().id)
+
+        // HDFC lot restored to full 10 units @ 100.00 and realizedPnL reset to 0.00
+        verify(assetDao).updateAggregates(
+            assetId = eq("INF179K01BE2"),
+            qty = eq(BigDecimal("10")),
+            invested = eq(BigDecimal("1000.00")),
+            avgCost = eq(BigDecimal("100.0000")),
+            realizedPnL = eq(BigDecimal("0.00")),
+            timestamp = any(),
+        )
+        assertEquals(BigDecimal("10"), storedLots["INF179K01BE2"]?.single()?.remainingQuantity)
+
+        // Reliance aggregates zeroed and status updated to CLOSED
+        verify(assetDao).updateAggregates(
+            assetId = eq("INE002A01018"),
+            qty = eq(BigDecimal.ZERO),
+            invested = eq(BigDecimal.ZERO),
+            avgCost = eq(BigDecimal.ZERO),
+            realizedPnL = eq(BigDecimal.ZERO),
+            timestamp = any(),
+        )
+        verify(assetDao).update(storedAssets["INE002A01018"]!!.copy(status = AssetStatus.CLOSED))
+        verify(draftDao).deleteByDocumentId(docToRollback)
+        verify(documentDao).updateAiBatchProgress(
+            id = docToRollback,
+            processedPages = 0,
+            pageCount = 10,
+            status = DocumentStatus.OCR_COMPLETE.name,
+            carryOverContextJson = null,
+            error = null,
+        )
+        Unit
     }
 
     private fun createRepository(

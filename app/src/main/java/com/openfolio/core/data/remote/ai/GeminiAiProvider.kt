@@ -29,36 +29,42 @@ import org.json.JSONObject
 class GeminiAiProvider internal constructor(
     private val delayFn: suspend (Long) -> Unit,
     private val generateContentFn: (suspend (apiKey: String, rawText: String) -> String)?,
-) : TruncationAwareAiProvider {
+    private val defaultModelName: String = DEFAULT_MODEL_NAME,
+) : ContextualAiProvider {
 
     @Inject
     constructor() : this(
         delayFn = { millis -> delay(millis) },
         generateContentFn = null,
+        defaultModelName = DEFAULT_MODEL_NAME,
     )
 
     internal data class ParsedAiResponse(
         val drafts: List<DraftTransactionEntity>,
         val wasTruncated: Boolean,
+        val carryOverContext: AiCarryOverContext = AiCarryOverContext(),
     )
 
     @Volatile
-    private var cachedModelKey: Pair<String, String>? = null
+    private var cachedModelKey: Triple<String, String, String>? = null
 
     @Volatile
     private var cachedModel: GenerativeModel? = null
 
     private val modelLock = Any()
 
-    private fun getOrCreateModel(apiKey: String): GenerativeModel {
+    internal fun resolveModelName(modelName: String?): String =
+        modelName?.trim()?.takeIf(String::isNotBlank) ?: defaultModelName
+
+    private fun getOrCreateModel(apiKey: String, modelName: String): GenerativeModel {
         val today = LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE)
-        val cacheKey = apiKey to today
+        val cacheKey = Triple(apiKey, today, modelName)
         cachedModel?.takeIf { cachedModelKey == cacheKey }?.let { return it }
 
         synchronized(modelLock) {
             cachedModel?.takeIf { cachedModelKey == cacheKey }?.let { return it }
             val created = GenerativeModel(
-                modelName = MODEL_NAME,
+                modelName = modelName,
                 apiKey = apiKey,
                 generationConfig = generationConfig {
                     temperature = 0f
@@ -80,23 +86,35 @@ class GeminiAiProvider internal constructor(
         apiKey: String,
         documentId: String,
     ): Result<List<DraftTransactionEntity>> =
-        extractTransactionsDetailed(rawText, apiKey, documentId).map { it.drafts }
+        extractTransactionsWithContext(rawText, apiKey, documentId).map { it.drafts }
 
     override suspend fun extractTransactionsDetailed(
         rawText: String,
         apiKey: String,
         documentId: String,
+    ): Result<AiExtractionBatchResult> =
+        extractTransactionsWithContext(rawText, apiKey, documentId)
+
+    override suspend fun extractTransactionsWithContext(
+        rawText: String,
+        apiKey: String,
+        documentId: String,
+        priorContext: AiCarryOverContext?,
+        modelName: String?,
     ): Result<AiExtractionBatchResult> = withContext(Dispatchers.IO) {
         try {
             require(apiKey.isNotBlank()) { "API key must not be blank." }
             require(rawText.isNotBlank()) { "Raw text must not be blank." }
 
+            val resolvedModelName = resolveModelName(modelName)
+            val promptInput = buildBatchPrompt(rawText, priorContext)
+
             val responseText = executeWithRetry {
                 if (generateContentFn != null) {
-                    generateContentFn.invoke(apiKey, rawText)
+                    generateContentFn.invoke(apiKey, promptInput)
                 } else {
-                    val model = getOrCreateModel(apiKey)
-                    val response = model.generateContent(rawText)
+                    val model = getOrCreateModel(apiKey, resolvedModelName)
+                    val response = model.generateContent(promptInput)
                     response.text.orEmpty().trim()
                 }
             }
@@ -105,6 +123,7 @@ class GeminiAiProvider internal constructor(
                 AiExtractionBatchResult(
                     drafts = parsed.drafts,
                     wasTruncated = parsed.wasTruncated,
+                    carryOverContext = parsed.carryOverContext,
                 ),
             )
         } catch (ce: CancellationException) {
@@ -112,6 +131,18 @@ class GeminiAiProvider internal constructor(
         } catch (exception: Throwable) {
             runCatching { Log.e("GeminiAiProvider", "Gemini API call failed: ${exception.message}", exception) }
             Result.failure(exception)
+        }
+    }
+
+    internal fun buildBatchPrompt(
+        rawText: String,
+        priorContext: AiCarryOverContext?,
+    ): String {
+        val prefix = priorContext?.toPromptPrefix().orEmpty()
+        return if (prefix.isNotBlank()) {
+            "$prefix\n\n$rawText"
+        } else {
+            rawText
         }
     }
 
@@ -186,7 +217,49 @@ class GeminiAiProvider internal constructor(
             .removeSuffix("```")
             .trim()
 
+        val firstBrace = cleaned.indexOf('{')
         val firstBracket = cleaned.indexOf('[')
+        val isObjectWrapper = firstBrace >= 0 && (firstBracket < 0 || firstBrace < firstBracket)
+
+        if (isObjectWrapper) {
+            if (firstBrace > 0) {
+                cleaned = cleaned.substring(firstBrace).trim()
+            }
+            return try {
+                val root = JSONObject(cleaned)
+                val txArray = root.optJSONArray("transactions") ?: JSONArray()
+                val objects = buildList(txArray.length()) {
+                    for (i in 0 until txArray.length()) {
+                        txArray.optJSONObject(i)?.let(::add)
+                    }
+                }
+                val drafts = mapJsonObjectsToDrafts(objects, documentId)
+                val ctxObj = root.optJSONObject("carryOverContext")
+                ParsedAiResponse(
+                    drafts = drafts,
+                    wasTruncated = false,
+                    carryOverContext = parseCarryOverContext(ctxObj, drafts),
+                )
+            } catch (jsonEx: JSONException) {
+                val txKeyIdx = cleaned.indexOf("\"transactions\"")
+                val arrStart = if (txKeyIdx >= 0) cleaned.indexOf('[', txKeyIdx) else cleaned.indexOf('[')
+                if (arrStart < 0) {
+                    throw jsonEx
+                }
+                val arraySection = cleaned.substring(arrStart)
+                val salvagedObjects = salvageCompleteJsonObjects(arraySection)
+                if (salvagedObjects.isEmpty() && !arraySection.trimStart().startsWith("[")) {
+                    throw jsonEx
+                }
+                val drafts = mapJsonObjectsToDrafts(salvagedObjects, documentId)
+                ParsedAiResponse(
+                    drafts = drafts,
+                    wasTruncated = true,
+                    carryOverContext = parseCarryOverContext(null, drafts),
+                )
+            }
+        }
+
         if (firstBracket > 0) {
             cleaned = cleaned.substring(firstBracket).trim()
         }
@@ -198,9 +271,11 @@ class GeminiAiProvider internal constructor(
                     jsonArray.optJSONObject(i)?.let(::add)
                 }
             }
+            val drafts = mapJsonObjectsToDrafts(objects, documentId)
             ParsedAiResponse(
-                drafts = mapJsonObjectsToDrafts(objects, documentId),
+                drafts = drafts,
                 wasTruncated = false,
+                carryOverContext = parseCarryOverContext(null, drafts),
             )
         } catch (jsonEx: JSONException) {
             val salvagedObjects = salvageCompleteJsonObjects(cleaned)
@@ -208,11 +283,45 @@ class GeminiAiProvider internal constructor(
             if (salvagedObjects.isEmpty() && !looksLikeArray) {
                 throw jsonEx
             }
+            val drafts = mapJsonObjectsToDrafts(salvagedObjects, documentId)
             ParsedAiResponse(
-                drafts = mapJsonObjectsToDrafts(salvagedObjects, documentId),
+                drafts = drafts,
                 wasTruncated = true,
+                carryOverContext = parseCarryOverContext(null, drafts),
             )
         }
+    }
+
+    private fun parseCarryOverContext(
+        ctxObj: JSONObject?,
+        drafts: List<DraftTransactionEntity>,
+    ): AiCarryOverContext {
+        if (ctxObj != null) {
+            val headersArray = ctxObj.optJSONArray("activeColumnHeaders")
+            val headers = buildList {
+                if (headersArray != null) {
+                    for (i in 0 until headersArray.length()) {
+                        val header = headersArray.optString(i, "").trim()
+                        if (header.isNotEmpty()) add(header)
+                    }
+                }
+            }
+            return AiCarryOverContext(
+                activeAmc = ctxObj.optString("activeAmc", "").trim(),
+                activeScheme = ctxObj.optString("activeScheme", "").trim(),
+                activeIsin = ctxObj.optString("activeIsin", "").trim(),
+                activeFolio = ctxObj.optString("activeFolio", "").trim(),
+                activeBroker = ctxObj.optString("activeBroker", "").trim(),
+                activeColumnHeaders = headers,
+                incompleteTailText = ctxObj.optString("incompleteTailText", "").trim(),
+            )
+        }
+        val last = drafts.lastOrNull() ?: return AiCarryOverContext()
+        return AiCarryOverContext(
+            activeScheme = last.assetName,
+            activeIsin = last.isin.orEmpty(),
+            activeBroker = last.broker.orEmpty(),
+        )
     }
 
     private fun salvageCompleteJsonObjects(raw: String): List<JSONObject> {
@@ -220,6 +329,7 @@ class GeminiAiProvider internal constructor(
         var inString = false
         var escapeNext = false
         var braceDepth = 0
+        var bracketDepth = 0
         var objectStart = -1
 
         for (i in raw.indices) {
@@ -237,6 +347,21 @@ class GeminiAiProvider internal constructor(
             }
             when (ch) {
                 '"' -> inString = true
+                '[' -> {
+                    if (braceDepth == 0) {
+                        bracketDepth++
+                    }
+                }
+                ']' -> {
+                    if (braceDepth == 0) {
+                        if (bracketDepth > 0) {
+                            bracketDepth--
+                        }
+                        if (bracketDepth == 0) {
+                            break
+                        }
+                    }
+                }
                 '{' -> {
                     if (braceDepth == 0) {
                         objectStart = i
@@ -281,6 +406,7 @@ class GeminiAiProvider internal constructor(
             val rawIsin = obj.optString("isin", "").trim().takeIf(String::isNotBlank)
             val ticker = obj.optString("ticker", "").trim().uppercase().takeIf(String::isNotBlank)
             val isin = rawIsin?.let(AssetNameNormalizer::extractIsin) ?: AssetNameNormalizer.extractIsin(assetName)
+            val sourcePage = obj.optInt("sourcePage", 0).takeIf { it > 0 }
 
             val tradeDateMillis = parseTradeDate(tradeDateStr)
 
@@ -301,6 +427,7 @@ class GeminiAiProvider internal constructor(
                     broker = broker,
                     isin = isin,
                     ticker = ticker,
+                    sourcePage = sourcePage,
                 ),
             )
         }
@@ -325,7 +452,7 @@ class GeminiAiProvider internal constructor(
         DateParser.parseToEpochMilli(tradeDateStr)
 
     companion object {
-        private const val MODEL_NAME = "gemini-2.5-flash"
+        const val DEFAULT_MODEL_NAME = "gemini-2.5-flash"
         private const val MAX_OUTPUT_TOKENS = 8192
         private const val MAX_RETRY_ATTEMPTS = 4
         private const val INITIAL_RETRY_DELAY_MS = 2_000L
@@ -336,11 +463,27 @@ class GeminiAiProvider internal constructor(
 
         fun buildSystemPrompt(today: String = LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE)): String =
             """
-            You are an expert financial parser. Extract all transactions and holdings from the provided text exhaustively. Return ONLY a valid JSON array of objects without markdown formatting like ```json.
+            You are an expert financial parser. Extract all transactions and holdings from the provided text exhaustively. Return ONLY a valid JSON object without markdown formatting like ```json.
 
-            CRITICAL: If the provided text does not contain financial transactions, stock holdings, or bank statements (e.g., it is a random letter, invoice, or unrelated document), you MUST return an empty JSON array: [].
+            CRITICAL: If the provided text does not contain financial transactions, stock holdings, or bank statements (e.g., it is a random letter, invoice, or unrelated document), you MUST return: {"transactions": [], "carryOverContext": {"activeAmc": "", "activeScheme": "", "activeIsin": "", "activeFolio": "", "activeBroker": "", "activeColumnHeaders": [], "incompleteTailText": ""}}.
 
-            Each JSON object MUST include the following fields in the schema:
+            Output JSON schema:
+            {
+              "transactions": [ ... ],
+              "carryOverContext": {
+                "activeAmc": "Active Mutual Fund / AMC name at end of these pages (or empty)",
+                "activeScheme": "Active MF scheme or security name at end of these pages (or empty)",
+                "activeIsin": "Active 12-char ISIN at end of these pages (or empty)",
+                "activeFolio": "Active Folio No at end of these pages (or empty)",
+                "activeBroker": "Active Broker / Depository name (or empty)",
+                "activeColumnHeaders": ["Column1", "Column2"],
+                "incompleteTailText": "Any incomplete split row or trailing scheme header cut off at the bottom of the last page, else empty"
+              }
+            }
+
+            If a CARRY-OVER CONTEXT FROM PREVIOUS PAGES block is prepended, inherit activeAmc, activeScheme, activeIsin, activeFolio, activeBroker, and activeColumnHeaders for leading rows until a new header supersedes them, and complete any incompleteTailText row using the start of the first page below.
+
+            Each transaction object inside "transactions" MUST include:
             - assetName (string): Full name or trading symbol of the asset/security.
             - assetClass (string): Category of asset. Allowed values: STOCK, MUTUAL_FUND, BOND, FD, HOUSE, LAND, GOLD, CRYPTO. Default to STOCK if uncertain.
             - transactionType (string): BUY, SELL, DIVIDEND, INTEREST, FEE, TAX, or CHARGE. For holdings statements, use BUY.
@@ -351,6 +494,7 @@ class GeminiAiProvider internal constructor(
             - isin (string, optional): 12-character International Securities Identification Number starting with two letters (e.g., "INE002A01018", "INF209K01157"). Extract aggressively wherever present in the text, scheme name, or security details.
             - ticker (string, optional): Trading symbol or ticker (e.g., "RELIANCE", "INFY", "HDFCBANK"). Extract aggressively wherever present.
             - broker (string, optional): Broker, financial institution, or depository where the transaction was executed (e.g., "Zerodha", "Groww", "HDFC Bank", "CAMS", "KFintech", "ICICI Direct").
+            - sourcePage (integer, optional): The page number (N) from the "--- PAGE N ---" header where this transaction appears.
             - confidence (integer 0-100): Assign a confidence score of 95-100 if you clearly find the asset name, quantity, and price. Assign 80-94 if one field is missing. Assign below 80 only if the data is ambiguous.
             """.trimIndent()
 

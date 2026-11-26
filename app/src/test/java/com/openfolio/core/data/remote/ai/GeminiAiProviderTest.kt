@@ -373,4 +373,148 @@ class GeminiAiProviderTest {
             runBlocking { cancellingProvider.extractTransactions("text", "key", "doc-2") }
         }
     }
+
+    @Test
+    fun parseJsonResponseWithMetadataExtractsCarryOverContextWrapperAndSourcePage() {
+        val json = """
+            {
+              "transactions": [
+                {
+                  "assetName": "HDFC Top 100 Fund - Direct Plan - Growth",
+                  "assetClass": "MUTUAL_FUND",
+                  "transactionType": "BUY",
+                  "quantity": "49.8753",
+                  "price": "100.25",
+                  "netAmount": "5000.00",
+                  "tradeDate": "2024-03-01",
+                  "isin": "INF179K01BE2",
+                  "broker": "CAMS",
+                  "sourcePage": 4,
+                  "confidence": 97
+                }
+              ],
+              "carryOverContext": {
+                "activeAmc": "HDFC Mutual Fund",
+                "activeScheme": "HDFC Top 100 Fund - Direct Plan - Growth",
+                "activeIsin": "INF179K01BE2",
+                "activeFolio": "1234567/89",
+                "activeBroker": "CAMS",
+                "activeColumnHeaders": ["Date", "Transaction", "Amount", "Units", "NAV"],
+                "incompleteTailText": "15-Mar-2024 Systematic Investment"
+              }
+            }
+        """.trimIndent()
+
+        val parsed = provider.parseJsonResponseWithMetadata(json, "doc-wrapper")
+        assertFalse(parsed.wasTruncated)
+        assertEquals(1, parsed.drafts.size)
+        val draft = parsed.drafts.single()
+        assertEquals("MUTUAL_FUND", draft.assetClass)
+        assertEquals("49.8753", draft.quantity)
+        assertEquals("INF179K01BE2", draft.isin)
+        assertEquals("CAMS", draft.broker)
+        assertEquals(4, draft.sourcePage)
+
+        val ctx = parsed.carryOverContext
+        assertEquals("HDFC Mutual Fund", ctx.activeAmc)
+        assertEquals("HDFC Top 100 Fund - Direct Plan - Growth", ctx.activeScheme)
+        assertEquals("INF179K01BE2", ctx.activeIsin)
+        assertEquals("1234567/89", ctx.activeFolio)
+        assertEquals("CAMS", ctx.activeBroker)
+        assertEquals(listOf("Date", "Transaction", "Amount", "Units", "NAV"), ctx.activeColumnHeaders)
+        assertEquals("15-Mar-2024 Systematic Investment", ctx.incompleteTailText)
+    }
+
+    @Test
+    fun parseJsonResponseWithMetadataSalvagesTruncatedWrapperObject() {
+        val truncatedWrapper = """
+            {
+              "transactions": [
+                {
+                  "assetName": "Parag Parikh Flexi Cap Fund",
+                  "assetClass": "MUTUAL_FUND",
+                  "transactionType": "BUY",
+                  "quantity": "15.125",
+                  "price": "75.00",
+                  "netAmount": "1134.375",
+                  "tradeDate": "2024-04-10",
+                  "isin": "INF879O01019",
+                  "sourcePage": 5
+                },
+                {
+                  "assetName": "SBI Bluechip Fund",
+                  "assetClass": "MUTUAL_FUND",
+                  "transactionType": "BUY",
+                  "quantity": "20.00
+        """.trimIndent()
+
+        val parsed = provider.parseJsonResponseWithMetadata(truncatedWrapper, "doc-trunc-wrap")
+        assertTrue(parsed.wasTruncated)
+        assertEquals(1, parsed.drafts.size)
+        assertEquals("Parag Parikh Flexi Cap Fund", parsed.drafts[0].assetName)
+        assertEquals("15.125", parsed.drafts[0].quantity)
+        assertEquals("INF879O01019", parsed.carryOverContext.activeIsin)
+    }
+
+    @Test
+    fun extractTransactionsWithContextPrependsPriorContextAndResolvesModelName() = runBlocking {
+        var capturedPrompt = ""
+        val contextProvider = GeminiAiProvider(
+            delayFn = { },
+            generateContentFn = { _, prompt ->
+                capturedPrompt = prompt
+                """
+                {
+                  "transactions": [
+                    {
+                      "assetName": "HDFC Top 100 Fund",
+                      "assetClass": "MUTUAL_FUND",
+                      "transactionType": "BUY",
+                      "quantity": "10",
+                      "price": "100",
+                      "netAmount": "1000",
+                      "tradeDate": "2024-03-15",
+                      "isin": "INF179K01BE2"
+                    }
+                  ],
+                  "carryOverContext": {
+                    "activeAmc": "HDFC Mutual Fund",
+                    "activeScheme": "HDFC Top 100 Fund",
+                    "activeIsin": "INF179K01BE2",
+                    "activeFolio": "123456/78",
+                    "activeBroker": "CAMS",
+                    "activeColumnHeaders": ["Date", "Particulars", "Amount"],
+                    "incompleteTailText": ""
+                  }
+                }
+                """.trimIndent()
+            },
+            defaultModelName = "gemini-2.5-flash",
+        )
+
+        val prior = AiCarryOverContext(
+            activeAmc = "HDFC Mutual Fund",
+            activeScheme = "HDFC Top 100 Fund",
+            activeIsin = "INF179K01BE2",
+            activeFolio = "123456/78",
+            activeBroker = "CAMS",
+            activeColumnHeaders = listOf("Date", "Particulars", "Amount"),
+            incompleteTailText = "15-Mar-2024 Purchase",
+        )
+
+        val res = contextProvider.extractTransactionsWithContext(
+            rawText = "--- PAGE 6 ---\n1000.00 10.000 100.00",
+            apiKey = "test-key",
+            documentId = "doc-ctx",
+            priorContext = prior,
+            modelName = "gemini-2.5-pro",
+        )
+
+        assertTrue(res.isSuccess)
+        assertTrue(capturedPrompt.contains("CARRY-OVER CONTEXT FROM PREVIOUS PAGES"))
+        assertTrue(capturedPrompt.contains("INF179K01BE2"))
+        assertTrue(capturedPrompt.contains("15-Mar-2024 Purchase"))
+        assertEquals("gemini-2.5-pro", contextProvider.resolveModelName("gemini-2.5-pro"))
+        assertEquals("gemini-2.5-flash", contextProvider.resolveModelName(null))
+    }
 }

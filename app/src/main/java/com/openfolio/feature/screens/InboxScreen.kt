@@ -22,6 +22,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExtendedFloatingActionButton
@@ -30,9 +31,13 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -73,6 +78,9 @@ fun InboxScreen(
     onDocumentClick: (String) -> Unit,
     onProcessWithAiClick: ((String) -> Unit)? = null,
     onRetryClick: ((DocumentEntity) -> Unit)? = null,
+    onRollbackImport: ((DocumentEntity) -> Unit)? = null,
+    actionMessage: String? = null,
+    onDismissActionMessage: () -> Unit = {},
     onImport: ((Uri, AssetClass) -> Unit)? = null,
     onSaveManualTransaction: ((String, AssetClass, TransactionType, LocalDate, BigDecimal, BigDecimal, BigDecimal, BigDecimal, BigDecimal, String?, String?, String?) -> Unit)? = null,
 ) {
@@ -82,6 +90,15 @@ fun InboxScreen(
     var showAssetTypeSheet by remember { mutableStateOf(false) }
     var showManualTransactionDialog by remember { mutableStateOf(false) }
     var pendingAssetClass by remember { mutableStateOf(AssetClass.STOCK) }
+    var documentToRollback by remember { mutableStateOf<DocumentEntity?>(null) }
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(actionMessage) {
+        if (!actionMessage.isNullOrBlank()) {
+            snackbarHostState.showSnackbar(actionMessage)
+            onDismissActionMessage()
+        }
+    }
 
     val documentPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
@@ -92,6 +109,7 @@ fun InboxScreen(
 
     Scaffold(
         containerColor = colors.background,
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         floatingActionButton = {
             if (onImport != null || onSaveManualTransaction != null) {
                 ExtendedFloatingActionButton(
@@ -158,6 +176,11 @@ fun InboxScreen(
                                 onDocumentClick(document.id)
                             }
                         },
+                        onUndoImport = if (onRollbackImport != null && document.status == DocumentStatus.COMPLETED.name) {
+                            { documentToRollback = document }
+                        } else {
+                            null
+                        },
                     )
                 }
             }
@@ -197,6 +220,46 @@ fun InboxScreen(
             },
         )
     }
+
+    documentToRollback?.let { targetDoc ->
+        AlertDialog(
+            onDismissRequest = { documentToRollback = null },
+            containerColor = colors.surface,
+            title = {
+                Text(
+                    text = "Undo Import?",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = colors.content,
+                )
+            },
+            text = {
+                Text(
+                    text = "Remove all transactions imported from ${targetDoc.fileName} and recalculate portfolio FIFO cost basis?",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.muted,
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onRollbackImport?.invoke(targetDoc)
+                        documentToRollback = null
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = colors.lossGlyph,
+                        contentColor = colors.onAccent,
+                    ),
+                ) {
+                    Text("Undo Import")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { documentToRollback = null }) {
+                    Text("Cancel", color = colors.muted)
+                }
+            },
+        )
+    }
 }
 
 @Composable
@@ -205,6 +268,7 @@ fun DocumentCard(
     onClick: () -> Unit,
     onProcessWithAi: (() -> Unit)? = null,
     onRetry: (() -> Unit)? = null,
+    onUndoImport: (() -> Unit)? = null,
 ) {
     val colors = LocalOpenFolioColors.current
     val shape = RoundedCornerShape(12.dp)
@@ -311,6 +375,40 @@ fun DocumentCard(
                             )
                         }
                     }
+                    document.status == DocumentStatus.AI_PAUSED.name -> {
+                        Button(
+                            onClick = onClick,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = colors.brand,
+                                contentColor = colors.onAccent,
+                            ),
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                        ) {
+                            Text(
+                                text = "Continue (${document.processedPages}/${document.pageCount})",
+                                style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+                            )
+                        }
+                    }
+                    document.status == DocumentStatus.COMPLETED.name && onUndoImport != null -> {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            DocumentStatusBadge(document.status)
+                            TextButton(
+                                onClick = onUndoImport,
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                            ) {
+                                Text(
+                                    text = "Undo",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = colors.lossGlyph,
+                                )
+                            }
+                        }
+                    }
                     else -> {
                         DocumentStatusBadge(document.status)
                     }
@@ -387,10 +485,12 @@ private fun DocumentStatusBadge(status: String) {
             background = colors.lossGlyph.copy(alpha = 0.12f)
         }
         DocumentStatus.OCR_COMPLETE.name,
+        DocumentStatus.AI_PAUSED.name,
         DocumentStatus.READY_FOR_MAPPING.name,
         DocumentStatus.AI_COMPLETE.name -> {
             label = when (status) {
                 DocumentStatus.OCR_COMPLETE.name -> "Ready for AI"
+                DocumentStatus.AI_PAUSED.name -> "Paused"
                 DocumentStatus.READY_FOR_MAPPING.name -> "Map columns"
                 else -> "Ready for review"
             }

@@ -35,11 +35,15 @@ class SettingsRepository @Inject constructor(
     private val _geminiApiKey = MutableStateFlow("")
     val geminiApiKeyFlow: StateFlow<String> = _geminiApiKey.asStateFlow()
 
+    private val _geminiModelName = MutableStateFlow(DEFAULT_GEMINI_MODEL_NAME)
+    val geminiModelNameFlow: StateFlow<String> = _geminiModelName.asStateFlow()
+
     private val _showValues = MutableStateFlow(true)
     val showValuesFlow: StateFlow<Boolean> = _showValues.asStateFlow()
 
     init {
         _geminiApiKey.value = getGeminiApiKey()
+        _geminiModelName.value = getGeminiModelName()
         _showValues.value = getShowValues()
     }
 
@@ -57,6 +61,25 @@ class SettingsRepository @Inject constructor(
             prefs.edit().putString(KEY_GEMINI_API_KEY, trimmed).apply()
         } catch (_: Exception) {}
         _geminiApiKey.value = trimmed
+    }
+
+    fun getGeminiModelName(): String {
+        return try {
+            prefs.getString(KEY_GEMINI_MODEL_NAME, DEFAULT_GEMINI_MODEL_NAME)
+                ?.trim()
+                ?.takeIf(String::isNotBlank)
+                ?: DEFAULT_GEMINI_MODEL_NAME
+        } catch (_: Exception) {
+            DEFAULT_GEMINI_MODEL_NAME
+        }
+    }
+
+    suspend fun setGeminiModelName(modelName: String) = withContext(Dispatchers.IO) {
+        val resolved = modelName.trim().ifBlank { DEFAULT_GEMINI_MODEL_NAME }
+        try {
+            prefs.edit().putString(KEY_GEMINI_MODEL_NAME, resolved).apply()
+        } catch (_: Exception) {}
+        _geminiModelName.value = resolved
     }
 
     fun getShowValues(): Boolean {
@@ -80,6 +103,13 @@ class SettingsRepository @Inject constructor(
 
     companion object {
         const val KEY_GEMINI_API_KEY = "gemini_api_key"
+        const val KEY_GEMINI_MODEL_NAME = "gemini_model_name"
+        const val DEFAULT_GEMINI_MODEL_NAME = "gemini-2.5-flash"
         const val KEY_SHOW_VALUES = "show_values"
+        val SUPPORTED_GEMINI_MODELS = listOf(
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
+            "gemini-2.0-flash",
+        )
     }
 }

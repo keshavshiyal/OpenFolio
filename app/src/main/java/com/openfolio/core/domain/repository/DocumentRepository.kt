@@ -2,9 +2,11 @@ package com.openfolio.core.domain.repository
 
 import android.content.Context
 import android.net.Uri
+import com.openfolio.core.data.local.entity.AssetClass
 import com.openfolio.core.data.local.entity.DocumentEntity
 import com.openfolio.core.data.local.entity.ColumnMappingEntity
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
+import com.openfolio.core.data.remote.ai.AiCarryOverContext
 import kotlinx.coroutines.flow.Flow
 
 interface DocumentRepository {
@@ -60,6 +62,52 @@ interface DocumentRepository {
         processDocumentWithAi(documentId)
     }
 
+    suspend fun processNextAiBatch(
+        documentId: String,
+        onProgress: (suspend (stage: String, current: Int, total: Int) -> Unit)? = null,
+    ): AiBatchProcessResult {
+        processDocumentWithAi(documentId, onProgress)
+        return AiBatchProcessResult(
+            startPage = 1,
+            endPage = 1,
+            totalPages = 1,
+            newDraftsCount = 0,
+            flaggedDraftCount = 0,
+            carryOverContext = AiCarryOverContext(),
+            stopReason = AiBatchStopReason.COMPLETED_ALL_PAGES,
+        )
+    }
+
+    suspend fun autoProcessRemainingAiBatches(
+        documentId: String,
+        onProgress: (suspend (stage: String, current: Int, total: Int) -> Unit)? = null,
+    ): AiBatchProcessResult {
+        processDocumentWithAi(documentId, onProgress)
+        return AiBatchProcessResult(
+            startPage = 1,
+            endPage = 1,
+            totalPages = 1,
+            newDraftsCount = 0,
+            flaggedDraftCount = 0,
+            carryOverContext = AiCarryOverContext(),
+            stopReason = AiBatchStopReason.COMPLETED_ALL_PAGES,
+        )
+    }
+
+    suspend fun updateCarryOverContext(
+        documentId: String,
+        context: AiCarryOverContext,
+    ) {}
+
+    suspend fun updateDocumentAssetClass(
+        documentId: String,
+        assetClass: AssetClass,
+    ) {}
+
+    suspend fun rollbackDocumentImport(
+        documentId: String,
+    ): RollbackImportResult = RollbackImportResult(0, 0)
+
     suspend fun processDocumentWithMockAi(documentId: String)
 
     suspend fun runLocalExtraction(
@@ -107,4 +155,26 @@ data class DuplicateMatchInfo(
     val matchingTransactionId: String? = null,
     val matchingTradeDate: String? = null,
     val reason: String? = null,
+)
+
+enum class AiBatchStopReason {
+    COMPLETED_ALL_PAGES,
+    PAUSED_AFTER_BATCH,
+    AUTO_PAUSED_NEEDS_REVIEW,
+}
+
+data class AiBatchProcessResult(
+    val startPage: Int,
+    val endPage: Int,
+    val totalPages: Int,
+    val newDraftsCount: Int,
+    val flaggedDraftCount: Int,
+    val carryOverContext: AiCarryOverContext,
+    val stopReason: AiBatchStopReason,
+    val message: String? = null,
+)
+
+data class RollbackImportResult(
+    val deletedTransactionCount: Int,
+    val recalculatedAssetCount: Int,
 )

@@ -58,6 +58,7 @@ enum class ExtractionStatus {
     OCR_COMPLETE,
     OCR_FAILED,
     READY_FOR_MAPPING,
+    AI_PAUSED,
     AI_COMPLETE,
     COMPLETED,
     PENDING,

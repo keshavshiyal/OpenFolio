@@ -11,6 +11,7 @@ enum class DocumentStatus {
     OCR_COMPLETE,
     OCR_FAILED,
     READY_FOR_MAPPING,
+    AI_PAUSED,
     AI_COMPLETE,
     COMPLETED,
     PENDING,
@@ -33,6 +34,7 @@ data class DocumentEntity(
     @ColumnInfo(defaultValue = "NULL") val extractedTextPath: String? = null,
     @ColumnInfo(defaultValue = "0") val pageCount: Int = 0,
     @ColumnInfo(defaultValue = "0") val processedPages: Int = 0,
+    @ColumnInfo(defaultValue = "NULL") val carryOverContextJson: String? = null,
     @ColumnInfo(defaultValue = "NULL") val extractionError: String? = null,
 ) {
     fun getAssetClassEnum(): AssetClass = try {

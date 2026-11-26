@@ -59,12 +59,14 @@ fun OpenFolioApp(
     val homeUiState by homeViewModel.uiState.collectAsStateWithLifecycle()
     val ingestionState by homeViewModel.ingestionState.collectAsStateWithLifecycle()
     val inboxDocuments by inboxViewModel.documents.collectAsStateWithLifecycle()
+    val inboxActionMessage by inboxViewModel.actionMessage.collectAsStateWithLifecycle()
     val reviewUiState by reviewViewModel.uiState.collectAsStateWithLifecycle()
     val reviewDrafts by reviewViewModel.drafts.collectAsStateWithLifecycle()
     val reviewDraftReviewItems by reviewViewModel.draftReviewItems.collectAsStateWithLifecycle()
     val structuredHeaders by reviewViewModel.structuredHeaders.collectAsStateWithLifecycle()
     val reviewActionState by reviewViewModel.actionState.collectAsStateWithLifecycle()
     val reviewErrorMessage by reviewViewModel.errorMessage.collectAsStateWithLifecycle()
+    val reviewBatchBannerMessage by reviewViewModel.batchBannerMessage.collectAsStateWithLifecycle()
     val isPasswordProtected by reviewViewModel.isPasswordProtected.collectAsStateWithLifecycle()
     val passwordError by reviewViewModel.passwordError.collectAsStateWithLifecycle()
     val unlockedPassword by reviewViewModel.unlockedPassword.collectAsStateWithLifecycle()
@@ -211,6 +213,9 @@ fun OpenFolioApp(
                         navController.navigate("review/$documentId")
                     },
                     onRetryClick = inboxViewModel::retryOrResume,
+                    onRollbackImport = { doc -> inboxViewModel.rollbackImport(doc.id) },
+                    actionMessage = inboxActionMessage,
+                    onDismissActionMessage = inboxViewModel::clearActionMessage,
                     onImport = homeViewModel::ingestFile,
                     onSaveManualTransaction = homeViewModel::recordManualTransaction,
                 )
@@ -237,11 +242,17 @@ fun OpenFolioApp(
                     onBack = { navController.popBackStack() },
                     onSkip = { navController.popBackStack() },
                     onProcessWithAi = reviewViewModel::onProcessWithAi,
+                    onProcessNextAiBatch = reviewViewModel::onProcessNextAiBatch,
+                    onAutoProcessRemainingAi = reviewViewModel::onAutoProcessRemainingAi,
+                    batchBannerMessage = reviewBatchBannerMessage,
                     onRetryLocalExtraction = reviewViewModel::retryLocalExtraction,
                     onProcessMappedData = reviewViewModel::processMappedData,
                     onReloadHeaders = reviewViewModel::loadHeadersForHeaderRow,
                     onSaveDraft = { id, a, t, q, p, amt -> reviewViewModel.saveDraft(id, a, t, q, p, amt) },
                     onSaveDraftWithClass = { id, a, t, q, p, amt, cls -> reviewViewModel.saveDraft(id, a, t, q, p, amt, cls) },
+                    onSaveDraftWithDetails = { id, a, t, q, p, amt, cls, brk ->
+                        reviewViewModel.saveDraft(id, a, t, q, p, amt, cls, brk)
+                    },
                     onSaveConfirmed = { reviewViewModel.saveConfirmed() },
                     onSaveComplete = { navController.popBackStack() },
                     onNavigateToInbox = { navController.popBackStack() },

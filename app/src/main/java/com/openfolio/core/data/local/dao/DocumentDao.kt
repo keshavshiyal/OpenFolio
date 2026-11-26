@@ -27,7 +27,7 @@ interface DocumentDao {
         """
         SELECT id, fileName, localPath, fileHash, fileSize, importDate, extractionStatus,
                CASE WHEN length(extractedText) > 4000 THEN substr(extractedText, 1, 500) ELSE extractedText END AS extractedText,
-               status, assetClass, extractedTextPath, pageCount, processedPages, extractionError
+               status, assetClass, extractedTextPath, pageCount, processedPages, carryOverContextJson, extractionError
         FROM documents ORDER BY importDate DESC
         """,
     )
@@ -37,7 +37,7 @@ interface DocumentDao {
         """
         SELECT id, fileName, localPath, fileHash, fileSize, importDate, extractionStatus,
                CASE WHEN length(extractedText) > 4000 THEN substr(extractedText, 1, 500) ELSE extractedText END AS extractedText,
-               status, assetClass, extractedTextPath, pageCount, processedPages, extractionError
+               status, assetClass, extractedTextPath, pageCount, processedPages, carryOverContextJson, extractionError
         FROM documents ORDER BY importDate DESC
         """,
     )
@@ -47,7 +47,7 @@ interface DocumentDao {
         """
         SELECT id, fileName, localPath, fileHash, fileSize, importDate, extractionStatus,
                CASE WHEN length(extractedText) > 4000 THEN substr(extractedText, 1, 500) ELSE extractedText END AS extractedText,
-               status, assetClass, extractedTextPath, pageCount, processedPages, extractionError
+               status, assetClass, extractedTextPath, pageCount, processedPages, carryOverContextJson, extractionError
         FROM documents WHERE fileHash = :hash LIMIT 1
         """,
     )
@@ -57,7 +57,7 @@ interface DocumentDao {
         """
         SELECT id, fileName, localPath, fileHash, fileSize, importDate, extractionStatus,
                CASE WHEN length(extractedText) > 4000 THEN substr(extractedText, 1, 500) ELSE extractedText END AS extractedText,
-               status, assetClass, extractedTextPath, pageCount, processedPages, extractionError
+               status, assetClass, extractedTextPath, pageCount, processedPages, carryOverContextJson, extractionError
         FROM documents WHERE id = :id LIMIT 1
         """,
     )
@@ -67,7 +67,7 @@ interface DocumentDao {
         """
         SELECT id, fileName, localPath, fileHash, fileSize, importDate, extractionStatus,
                CASE WHEN length(extractedText) > 4000 THEN substr(extractedText, 1, 500) ELSE extractedText END AS extractedText,
-               status, assetClass, extractedTextPath, pageCount, processedPages, extractionError
+               status, assetClass, extractedTextPath, pageCount, processedPages, carryOverContextJson, extractionError
         FROM documents WHERE id = :id LIMIT 1
         """,
     )
@@ -77,7 +77,7 @@ interface DocumentDao {
         """
         SELECT id, fileName, localPath, fileHash, fileSize, importDate, extractionStatus,
                CASE WHEN length(extractedText) > 4000 THEN substr(extractedText, 1, 500) ELSE extractedText END AS extractedText,
-               status, assetClass, extractedTextPath, pageCount, processedPages, extractionError
+               status, assetClass, extractedTextPath, pageCount, processedPages, carryOverContextJson, extractionError
         FROM documents WHERE status IN (:statuses)
         """,
     )
@@ -123,6 +123,33 @@ interface DocumentDao {
         "UPDATE documents SET status = :status, extractionStatus = :status, extractionError = :error WHERE id = :id",
     )
     suspend fun updateStatusAndError(id: String, status: String, error: String?)
+
+    @Query(
+        """
+        UPDATE documents
+        SET processedPages = :processedPages,
+            pageCount = :pageCount,
+            status = :status,
+            extractionStatus = :status,
+            carryOverContextJson = :carryOverContextJson,
+            extractionError = :error
+        WHERE id = :id
+        """,
+    )
+    suspend fun updateAiBatchProgress(
+        id: String,
+        processedPages: Int,
+        pageCount: Int,
+        status: String,
+        carryOverContextJson: String?,
+        error: String?,
+    )
+
+    @Query("UPDATE documents SET carryOverContextJson = :carryOverContextJson WHERE id = :id")
+    suspend fun updateCarryOverContext(id: String, carryOverContextJson: String?)
+
+    @Query("UPDATE documents SET assetClass = :assetClass WHERE id = :id")
+    suspend fun updateAssetClass(id: String, assetClass: String)
 
     @Query(
         """

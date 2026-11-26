@@ -7,6 +7,7 @@ import com.openfolio.core.data.local.entity.DraftTransactionEntity
 import com.openfolio.core.data.local.entity.ColumnMappingEntity
 import com.openfolio.core.domain.repository.DocumentRepository
 import com.openfolio.core.domain.repository.DuplicateMatchInfo
+import com.openfolio.core.domain.repository.RollbackImportResult
 import com.openfolio.core.domain.repository.SaveDraftTransactionsResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -45,6 +46,15 @@ class InboxViewModelTest {
     @Test
     fun exposesDocumentsFromRepository() {
         assertEquals(listOf(pendingDocument), viewModel.documents.value)
+    }
+
+    @Test
+    fun rollbackImportUpdatesActionMessage() {
+        viewModel.rollbackImport(pendingDocument.id)
+        assertEquals(
+            "Undid import: removed 4 transaction(s) and recalculated 2 asset(s).",
+            viewModel.actionMessage.value,
+        )
     }
 
     private class FakeDocumentRepository(
@@ -112,5 +122,8 @@ class InboxViewModelTest {
             documentId: String,
             password: String,
         ): Result<Unit> = Result.success(Unit)
+
+        override suspend fun rollbackDocumentImport(documentId: String): RollbackImportResult =
+            RollbackImportResult(deletedTransactionCount = 4, recalculatedAssetCount = 2)
     }
 }

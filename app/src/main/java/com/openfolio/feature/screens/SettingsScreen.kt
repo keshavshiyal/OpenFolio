@@ -27,9 +27,14 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import com.openfolio.core.data.repository.SettingsRepository
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -57,6 +62,7 @@ import com.openfolio.core.ui.theme.LocalOpenFolioColors
 import com.openfolio.feature.settings.SettingsEvent
 import com.openfolio.feature.settings.SettingsViewModel
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen(
     viewModel: SettingsViewModel,
@@ -203,6 +209,45 @@ fun SettingsScreen(
                             unfocusedTextColor = colors.content,
                         ),
                     )
+
+                    OutlinedTextField(
+                        value = uiState.modelName,
+                        onValueChange = viewModel::onModelNameChange,
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Gemini Model") },
+                        placeholder = { Text(SettingsRepository.DEFAULT_GEMINI_MODEL_NAME) },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = colors.brand,
+                            unfocusedBorderColor = colors.border,
+                            focusedLabelColor = colors.brand,
+                            cursorColor = colors.brand,
+                            focusedTextColor = colors.content,
+                            unfocusedTextColor = colors.content,
+                        ),
+                    )
+
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        SettingsRepository.SUPPORTED_GEMINI_MODELS.forEach { preset ->
+                            FilterChip(
+                                selected = uiState.modelName.equals(preset, ignoreCase = true),
+                                onClick = { viewModel.onModelNameChange(preset) },
+                                label = {
+                                    Text(
+                                        text = preset,
+                                        style = MaterialTheme.typography.labelSmall,
+                                    )
+                                },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = colors.brandSubtle,
+                                    selectedLabelColor = colors.brand,
+                                ),
+                            )
+                        }
+                    }
 
                     Button(
                         onClick = viewModel::saveApiKey,

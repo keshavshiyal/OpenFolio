@@ -103,11 +103,15 @@ fun ReviewScreen(
     onBack: () -> Unit,
     onSkip: () -> Unit,
     onProcessWithAi: () -> Unit,
+    onProcessNextAiBatch: () -> Unit = {},
+    onAutoProcessRemainingAi: () -> Unit = {},
+    batchBannerMessage: String? = null,
     onRetryLocalExtraction: () -> Unit = {},
     onProcessMappedData: (String, String, String, String, String, String, String, Int) -> Unit,
     onReloadHeaders: (Int) -> Unit,
     onSaveDraft: (String?, String, String, String, String, String) -> Unit,
     onSaveDraftWithClass: ((String?, String, String, String, String, String, String) -> Unit)? = null,
+    onSaveDraftWithDetails: ((String?, String, String, String, String, String, String, String?) -> Unit)? = null,
     onSaveConfirmed: () -> Unit,
     onSaveComplete: () -> Unit,
     onNavigateToInbox: () -> Unit = onBack,
@@ -209,7 +213,7 @@ fun ReviewScreen(
                             )
                             if (actionState == ReviewActionState.ProcessingAi && document != null && document.pageCount > 0) {
                                 Text(
-                                    text = "Processing page ${document.processedPages} of ${document.pageCount}",
+                                    text = "Page ${document.processedPages} of ${document.pageCount}",
                                     style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
                                     color = colors.muted,
                                 )
@@ -341,6 +345,14 @@ fun ReviewScreen(
         val density = LocalDensity.current
         val isKeyboardVisible = WindowInsets.ime.getBottom(density) > 0
         val isMapping = document?.status == DocumentStatus.READY_FOR_MAPPING.name && drafts.isEmpty()
+        val hasPendingAiPages = document != null &&
+            document.pageCount > 0 &&
+            document.processedPages in 1 until document.pageCount &&
+            document.status in setOf(
+                DocumentStatus.AI_PAUSED.name,
+                DocumentStatus.PROCESSING.name,
+                DocumentStatus.FAILED.name,
+            )
 
         Column(
             modifier = Modifier
@@ -557,10 +569,13 @@ fun ReviewScreen(
                                 document?.status == DocumentStatus.PENDING_OCR.name ||
                                     document?.status == DocumentStatus.PROCESSING.name ->
                                     if ((document.pageCount) > 0) {
-                                        "Processing page ${document.processedPages} of ${document.pageCount}"
+                                        "Page ${document.processedPages} of ${document.pageCount}"
                                     } else {
                                         "Local text extraction is in progress."
                                     }
+                                document?.status == DocumentStatus.AI_PAUSED.name ->
+                                    batchBannerMessage
+                                        ?: "Paused at page ${document.processedPages} of ${document.pageCount}. Choose Next 5 Pages or Auto-Process Remaining."
                                 document?.status == DocumentStatus.OCR_FAILED.name ->
                                     document.extractionError ?: "Local text extraction failed. You can retry or add records manually."
                                 document?.status == DocumentStatus.FAILED.name ->
@@ -577,7 +592,17 @@ fun ReviewScreen(
                                 colors.muted
                             },
                         )
-                        if (document?.status == DocumentStatus.PENDING_OCR.name ||
+                        if (hasPendingAiPages) {
+                            val activeDoc = document!!
+                            BatchProgressControlsCard(
+                                document = activeDoc,
+                                stagedCount = drafts.size,
+                                bannerMessage = batchBannerMessage ?: activeDoc.extractionError,
+                                isProcessing = actionState == ReviewActionState.ProcessingAi,
+                                onNextBatch = onProcessNextAiBatch,
+                                onAutoProcessRemaining = onAutoProcessRemainingAi,
+                            )
+                        } else if (document?.status == DocumentStatus.PENDING_OCR.name ||
                             document?.status == DocumentStatus.PROCESSING.name
                         ) {
                             if (document.pageCount > 0) {
@@ -607,7 +632,7 @@ fun ReviewScreen(
                             }
                         }
                         if (
-                            !isLocked && (
+                            !isLocked && !hasPendingAiPages && (
                                 document?.status == DocumentStatus.OCR_COMPLETE.name ||
                                 document?.status == DocumentStatus.AI_COMPLETE.name ||
                                 document?.status == DocumentStatus.FAILED.name
@@ -653,7 +678,17 @@ fun ReviewScreen(
                             }
                         }
                     } else {
-                        if (document?.status == DocumentStatus.FAILED.name) {
+                        if (hasPendingAiPages) {
+                            val activeDoc = document!!
+                            BatchProgressControlsCard(
+                                document = activeDoc,
+                                stagedCount = drafts.size,
+                                bannerMessage = batchBannerMessage ?: activeDoc.extractionError,
+                                isProcessing = actionState == ReviewActionState.ProcessingAi,
+                                onNextBatch = onProcessNextAiBatch,
+                                onAutoProcessRemaining = onAutoProcessRemainingAi,
+                            )
+                        } else if (document?.status == DocumentStatus.FAILED.name) {
                             Surface(
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(12.dp),
@@ -817,7 +852,8 @@ fun ReviewScreen(
                         }
                         Button(
                             onClick = onSaveConfirmed,
-                            enabled = actionState != ReviewActionState.Saving &&
+                            enabled = !hasPendingAiPages &&
+                                actionState != ReviewActionState.Saving &&
                                 actionState != ReviewActionState.ProcessingAi,
                             modifier = Modifier.fillMaxWidth(),
                         ) {
@@ -830,11 +866,16 @@ fun ReviewScreen(
                                 Text("  Saving…")
                             } else {
                                 val label = when {
+                                    hasPendingAiPages ->
+                                        "Complete All ${document!!.pageCount} Pages to Commit ($selectedCount Staged)"
                                     selectedCount == 0 -> "Skip All & Complete"
                                     selectedCount < itemsToDisplay.size -> "Save Selected ($selectedCount / ${itemsToDisplay.size})"
                                     else -> "Save Confirmed ($selectedCount)"
                                 }
-                                Text(label)
+                                Text(
+                                    text = label,
+                                    style = MaterialTheme.typography.labelLarge.copy(fontFeatureSettings = "tnum"),
+                                )
                             }
                         }
                     }
@@ -853,11 +894,14 @@ fun ReviewScreen(
             ManualDraftForm(
                 draft = editingDraft,
                 documentImportDate = document?.importDate,
-                onSave = { draftId, asset, type, quantity, price, amount, assetClass ->
-                    if (onSaveDraftWithClass != null) {
-                        onSaveDraftWithClass(draftId, asset, type, quantity, price, amount, assetClass)
-                    } else {
-                        onSaveDraft(draftId, asset, type, quantity, price, amount)
+                onSave = { draftId, asset, type, quantity, price, amount, assetClass, broker ->
+                    when {
+                        onSaveDraftWithDetails != null ->
+                            onSaveDraftWithDetails(draftId, asset, type, quantity, price, amount, assetClass, broker)
+                        onSaveDraftWithClass != null ->
+                            onSaveDraftWithClass(draftId, asset, type, quantity, price, amount, assetClass)
+                        else ->
+                            onSaveDraft(draftId, asset, type, quantity, price, amount)
                     }
                     showManualForm = false
                 },
@@ -1205,7 +1249,11 @@ private fun DraftTransactionRow(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
         color = if (draft.isManual) colors.brandSubtle else colors.background,
-        border = if (item.isDuplicate) BorderStroke(1.dp, colors.lossGlyph.copy(alpha = 0.35f)) else null,
+        border = when {
+            item.isDuplicate -> BorderStroke(1.dp, colors.lossGlyph.copy(alpha = 0.35f))
+            item.isFlagged -> BorderStroke(1.dp, colors.lossGlyph.copy(alpha = 0.45f))
+            else -> null
+        },
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
@@ -1281,6 +1329,18 @@ private fun DraftTransactionRow(
                         ) {
                             Text(
                                 text = "DUPLICATE",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.lossGlyph,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+                            )
+                        }
+                    } else if (item.isFlagged) {
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = colors.lossGlyph.copy(alpha = 0.12f),
+                        ) {
+                            Text(
+                                text = "REVIEW",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = colors.lossGlyph,
                                 modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
@@ -1371,12 +1431,13 @@ private fun ConfidenceBadge(confidence: Int) {
 private fun ManualDraftForm(
     draft: DraftTransactionEntity?,
     documentImportDate: Long? = null,
-    onSave: (String?, String, String, String, String, String, String) -> Unit,
+    onSave: (String?, String, String, String, String, String, String, String?) -> Unit,
 ) {
     val colors = LocalOpenFolioColors.current
     var asset by remember(draft?.id) { mutableStateOf(draft?.assetName.orEmpty()) }
     var type by remember(draft?.id) { mutableStateOf(draft?.transactionType ?: "BUY") }
     var assetClass by remember(draft?.id) { mutableStateOf(draft?.assetClass ?: "STOCK") }
+    var broker by remember(draft?.id) { mutableStateOf(draft?.broker.orEmpty()) }
     var quantity by remember(draft?.id) { mutableStateOf(draft?.quantity.orEmpty()) }
     var price by remember(draft?.id) { mutableStateOf(draft?.price.orEmpty()) }
     var amount by remember(draft?.id) { mutableStateOf(draft?.netAmount.orEmpty()) }
@@ -1474,8 +1535,26 @@ private fun ManualDraftForm(
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
         )
+        OutlinedTextField(
+            value = broker,
+            onValueChange = { broker = it },
+            label = { Text("Broker / AMC / Depository (optional)") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+        )
         Button(
-            onClick = { onSave(draft?.id, asset, type, quantity, price, amount, assetClass) },
+            onClick = {
+                onSave(
+                    draft?.id,
+                    asset,
+                    type,
+                    quantity,
+                    price,
+                    amount,
+                    assetClass,
+                    broker.trim().takeIf(String::isNotBlank),
+                )
+            },
             enabled = asset.isNotBlank() &&
                 type in setOf("BUY", "SELL", "DIVIDEND", "INTEREST", "FEE", "TAX") &&
                 quantity.toBigDecimalOrNull()?.let { it.signum() > 0 } == true &&
@@ -1484,6 +1563,106 @@ private fun ManualDraftForm(
             modifier = Modifier.fillMaxWidth(),
         ) {
             Text("Save Record")
+        }
+    }
+}
+
+@Composable
+private fun BatchProgressControlsCard(
+    document: com.openfolio.core.data.local.entity.DocumentEntity,
+    stagedCount: Int,
+    bannerMessage: String?,
+    isProcessing: Boolean,
+    onNextBatch: () -> Unit,
+    onAutoProcessRemaining: () -> Unit,
+) {
+    val colors = LocalOpenFolioColors.current
+    val hasAlert = !document.extractionError.isNullOrBlank() ||
+        document.status == DocumentStatus.FAILED.name
+    val fraction = (document.processedPages.toFloat() / document.pageCount.coerceAtLeast(1))
+        .coerceIn(0f, 1f)
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = if (hasAlert) colors.lossGlyph.copy(alpha = 0.08f) else colors.brandSubtle,
+        border = BorderStroke(
+            1.dp,
+            if (hasAlert) colors.lossGlyph.copy(alpha = 0.3f) else colors.brand.copy(alpha = 0.25f),
+        ),
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "Page ${document.processedPages} of ${document.pageCount}",
+                    style = MaterialTheme.typography.titleSmall.copy(fontFeatureSettings = "tnum"),
+                    color = colors.content,
+                )
+                Surface(
+                    shape = RoundedCornerShape(4.dp),
+                    color = colors.surface,
+                ) {
+                    Text(
+                        text = "$stagedCount staged",
+                        style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+                        color = colors.brand,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                    )
+                }
+            }
+            LinearProgressIndicator(
+                progress = { fraction },
+                modifier = Modifier.fillMaxWidth(),
+                color = colors.brand,
+                trackColor = colors.surface,
+            )
+            if (!bannerMessage.isNullOrBlank()) {
+                Text(
+                    text = bannerMessage,
+                    style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
+                    color = if (hasAlert) colors.lossGlyph else colors.muted,
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(
+                    onClick = onNextBatch,
+                    enabled = !isProcessing,
+                    modifier = Modifier.weight(1f),
+                    border = BorderStroke(1.dp, colors.brand),
+                ) {
+                    Text(
+                        text = "Next 5 Pages",
+                        color = colors.brand,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Button(
+                    onClick = onAutoProcessRemaining,
+                    enabled = !isProcessing,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = colors.brand,
+                        contentColor = colors.onAccent,
+                    ),
+                ) {
+                    Text(
+                        text = "Auto-Process Remaining",
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
         }
     }
 }

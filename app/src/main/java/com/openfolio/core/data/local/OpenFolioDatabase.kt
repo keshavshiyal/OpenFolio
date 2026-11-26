@@ -37,7 +37,7 @@ import com.openfolio.core.data.local.entity.ValuationEntity
         TransactionEntity::class,
         ValuationEntity::class,
     ],
-    version = 15,
+    version = 16,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -289,6 +289,24 @@ abstract class OpenFolioDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE `documents` ADD COLUMN `processedPages` INTEGER NOT NULL DEFAULT 0")
                 db.execSQL("ALTER TABLE `documents` ADD COLUMN `extractionError` TEXT DEFAULT NULL")
                 db.execSQL("ALTER TABLE `draft_transactions` ADD COLUMN `sourcePage` INTEGER DEFAULT NULL")
+            }
+        }
+
+        val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                var hasCarryOverColumn = false
+                db.query("PRAGMA table_info(`documents`)").use { cursor ->
+                    val nameIdx = cursor.getColumnIndex("name")
+                    while (cursor.moveToNext()) {
+                        if (nameIdx >= 0 && cursor.getString(nameIdx) == "carryOverContextJson") {
+                            hasCarryOverColumn = true
+                            break
+                        }
+                    }
+                }
+                if (!hasCarryOverColumn) {
+                    db.execSQL("ALTER TABLE `documents` ADD COLUMN `carryOverContextJson` TEXT DEFAULT NULL")
+                }
             }
         }
     }
