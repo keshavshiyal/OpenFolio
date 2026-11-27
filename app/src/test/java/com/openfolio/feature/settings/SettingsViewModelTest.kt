@@ -3,10 +3,18 @@ package com.openfolio.feature.settings
 import android.content.ContentResolver
 import android.content.Context
 import android.net.Uri
+import com.openfolio.core.data.local.export.AppBackupManager
+import com.openfolio.core.data.local.export.BackupDecryptionException
+import com.openfolio.core.data.local.export.BackupExportSummary
+import com.openfolio.core.data.local.export.BackupRestoreSummary
+import com.openfolio.core.data.local.export.CsvReportExportResult
+import com.openfolio.core.data.local.export.CsvReportExporter
+import com.openfolio.core.data.local.export.CsvReportType
 import com.openfolio.core.data.local.export.DatabaseExportMetadata
 import com.openfolio.core.data.local.export.DatabaseExporter
 import com.openfolio.core.data.local.export.ExportResult
 import com.openfolio.core.data.repository.SettingsRepository
+import java.io.ByteArrayInputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -178,5 +186,111 @@ class SettingsViewModelTest {
         val fileName = viewModel.getDefaultExportFileName()
         assertTrue(fileName.startsWith("openfolio_db_v9_"))
         assertTrue(fileName.endsWith(".json"))
+    }
+
+    @Test
+    fun exportAndImportEncryptedBackupEmitExpectedSnackbarsAndRefreshMetadata() = runTest {
+        val backupManager = mock<AppBackupManager>()
+        val csvExporter = mock<CsvReportExporter>()
+        val exportUri = mock<Uri>()
+        val importUri = mock<Uri>()
+
+        whenever(contentResolver.openOutputStream(exportUri)).thenReturn(ByteArrayOutputStream())
+        whenever(contentResolver.openInputStream(importUri)).thenReturn(ByteArrayInputStream(byteArrayOf(1, 2, 3)))
+        whenever(backupManager.exportEncryptedBackup(any(), any(), any())).thenReturn(
+            BackupExportSummary("backup.ofbackup", 10, 42L, 3, 2, "now"),
+        )
+        whenever(backupManager.importEncryptedBackup(any(), any())).thenReturn(
+            BackupRestoreSummary(10, 42L, 3, 2, true),
+        )
+
+        val viewModel = SettingsViewModel(
+            settingsRepository = repository,
+            databaseExporter = databaseExporter,
+            context = context,
+            ioDispatcher = testDispatcher,
+            appBackupManager = backupManager,
+            csvReportExporter = csvExporter,
+        )
+        advanceUntilIdle()
+
+        val events = mutableListOf<SettingsEvent>()
+        val job = launch { viewModel.events.collect { events.add(it) } }
+
+        viewModel.exportEncryptedBackupToUri(exportUri, "secret123", includeApiKey = false)
+        advanceUntilIdle()
+        viewModel.importEncryptedBackupFromUri(importUri, "secret123")
+        advanceUntilIdle()
+
+        assertFalse(viewModel.uiState.value.isExportingBackup)
+        assertFalse(viewModel.uiState.value.isImportingBackup)
+        assertEquals(2, events.size)
+        assertTrue((events[0] as SettingsEvent.ShowSnackbar).message.contains("Encrypted backup saved"))
+        assertTrue((events[1] as SettingsEvent.ShowSnackbar).message.contains("Restored 42 records"))
+        job.cancel()
+    }
+
+    @Test
+    fun wrongBackupPasswordEmitsFriendlyDecryptionMessage() = runTest {
+        val backupManager = mock<AppBackupManager>()
+        val importUri = mock<Uri>()
+        whenever(contentResolver.openInputStream(importUri)).thenReturn(ByteArrayInputStream(byteArrayOf(1, 2, 3)))
+        whenever(backupManager.importEncryptedBackup(any(), any())).thenAnswer {
+            throw BackupDecryptionException("Bad tag")
+        }
+
+        val viewModel = SettingsViewModel(
+            settingsRepository = repository,
+            databaseExporter = databaseExporter,
+            context = context,
+            ioDispatcher = testDispatcher,
+            appBackupManager = backupManager,
+        )
+        advanceUntilIdle()
+
+        val events = mutableListOf<SettingsEvent>()
+        val job = launch { viewModel.events.collect { events.add(it) } }
+
+        viewModel.importEncryptedBackupFromUri(importUri, "wrong")
+        advanceUntilIdle()
+
+        assertFalse(viewModel.uiState.value.isImportingBackup)
+        assertEquals(
+            "Incorrect backup password or corrupted archive.",
+            (events.single() as SettingsEvent.ShowSnackbar).message,
+        )
+        job.cancel()
+    }
+
+    @Test
+    fun exportCsvReportToUriWritesReportAndEmitsConfirmation() = runTest {
+        val csvExporter = mock<CsvReportExporter>()
+        val csvUri = mock<Uri>()
+        whenever(contentResolver.openOutputStream(csvUri)).thenReturn(ByteArrayOutputStream())
+        whenever(csvExporter.exportReport(any(), any())).thenReturn(
+            CsvReportExportResult(CsvReportType.CURRENT_HOLDINGS, 5, "holdings.csv"),
+        )
+
+        val viewModel = SettingsViewModel(
+            settingsRepository = repository,
+            databaseExporter = databaseExporter,
+            context = context,
+            ioDispatcher = testDispatcher,
+            csvReportExporter = csvExporter,
+        )
+        advanceUntilIdle()
+
+        val events = mutableListOf<SettingsEvent>()
+        val job = launch { viewModel.events.collect { events.add(it) } }
+
+        viewModel.exportCsvReportToUri(CsvReportType.CURRENT_HOLDINGS, csvUri)
+        advanceUntilIdle()
+
+        assertEquals(null, viewModel.uiState.value.activeCsvReportType)
+        assertEquals(
+            "Exported Current Holdings (5 rows) to CSV.",
+            (events.single() as SettingsEvent.ShowSnackbar).message,
+        )
+        job.cancel()
     }
 }

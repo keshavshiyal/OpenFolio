@@ -9,11 +9,14 @@ import com.openfolio.core.data.local.entity.DraftTransactionEntity
 import com.openfolio.core.data.local.entity.TransactionEntity
 import com.openfolio.core.data.local.entity.TransactionStatus
 import com.openfolio.core.data.local.entity.TransactionType
+import com.openfolio.core.domain.repository.AssetRepository
 import com.openfolio.core.domain.repository.DocumentRepository
 import com.openfolio.core.domain.repository.DuplicateDocumentException
+import com.openfolio.core.domain.repository.DuplicateTransactionException
 import com.openfolio.core.domain.repository.DuplicateMatchInfo
 import com.openfolio.core.domain.repository.SaveDraftTransactionsResult
 import com.openfolio.core.domain.usecase.GetDashboardDataUseCase
+import com.openfolio.core.ui.components.ManualTransactionInput
 import java.math.BigDecimal
 import java.time.LocalDate
 import kotlinx.coroutines.Dispatchers
@@ -22,6 +25,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -29,7 +33,9 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import org.mockito.kotlin.anyOrNull
 import org.mockito.kotlin.mock
+import org.mockito.kotlin.whenever
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class HomeViewModelTest {
@@ -226,6 +232,54 @@ class HomeViewModelTest {
     @Test(expected = IllegalArgumentException::class)
     fun rejectsUnsupportedChartPeriod() {
         viewModel.selectPeriod("2Y")
+    }
+
+    @Test
+    fun recordManualTransactionResultReturnsSuccessAndFailureWithoutCrashing() = runTest {
+        val assetRepo = mock<AssetRepository>()
+        whenever(assetRepo.getAllAssets()).thenReturn(flowOf(emptyList()))
+        whenever(
+            assetRepo.recordManualTransaction(
+                assetName = anyOrNull(),
+                assetClass = anyOrNull(),
+                type = anyOrNull(),
+                tradeDate = anyOrNull(),
+                quantity = anyOrNull(),
+                unitPrice = anyOrNull(),
+                netAmount = anyOrNull(),
+                fees = anyOrNull(),
+                taxes = anyOrNull(),
+                notes = anyOrNull(),
+                broker = anyOrNull(),
+                tickerOrIsin = anyOrNull(),
+                selectedAssetId = anyOrNull(),
+            ),
+        ).thenReturn(sampleTxn)
+            .thenAnswer { throw DuplicateTransactionException("Already recorded") }
+
+        val vm = HomeViewModel(
+            context = mock(),
+            documentRepository = FakeDocumentRepository(),
+            getDashboardDataUseCase = GetDashboardDataUseCase(FakeTransactionDao(1000.0, 0.0, emptyList())),
+            assetRepository = assetRepo,
+        )
+
+        val input = ManualTransactionInput(
+            assetName = "Reliance",
+            assetClass = com.openfolio.core.data.local.entity.AssetClass.STOCK,
+            type = TransactionType.BUY,
+            tradeDate = LocalDate.of(2025, 1, 10),
+            quantity = BigDecimal("10"),
+            unitPrice = BigDecimal("1250"),
+            netAmount = BigDecimal("12500"),
+        )
+
+        val first = vm.recordManualTransactionResult(input)
+        assertTrue(first.isSuccess)
+
+        val second = vm.recordManualTransactionResult(input)
+        assertTrue(second.isFailure)
+        assertEquals("Already recorded", second.exceptionOrNull()?.message)
     }
 
     private fun createViewModel(

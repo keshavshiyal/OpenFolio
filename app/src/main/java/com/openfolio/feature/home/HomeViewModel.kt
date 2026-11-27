@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.openfolio.core.data.local.entity.AssetClass
+import com.openfolio.core.data.local.entity.AssetEntity
 import com.openfolio.core.data.local.entity.DocumentEntity
 import com.openfolio.core.data.local.entity.TransactionType
 import com.openfolio.core.data.repository.SettingsRepository
@@ -13,6 +14,7 @@ import com.openfolio.core.domain.repository.AssetRepository
 import com.openfolio.core.domain.repository.DocumentRepository
 import com.openfolio.core.domain.repository.DuplicateDocumentException
 import com.openfolio.core.domain.usecase.GetDashboardDataUseCase
+import com.openfolio.core.ui.components.ManualTransactionInput
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.math.BigDecimal
@@ -24,6 +26,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -44,6 +47,14 @@ class HomeViewModel @Inject constructor(
 
     private val _documents = MutableStateFlow<List<DocumentEntity>>(emptyList())
     val documents: StateFlow<List<DocumentEntity>> = _documents.asStateFlow()
+
+    val existingAssets: StateFlow<List<AssetEntity>> =
+        (assetRepository?.getAllAssets() ?: flowOf(emptyList()))
+            .stateIn(
+                scope = viewModelScope,
+                started = SharingStarted.WhileSubscribed(5_000),
+                initialValue = emptyList(),
+            )
 
     private var currentDashboardData: DashboardData? = null
 
@@ -143,6 +154,32 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    suspend fun recordManualTransactionResult(input: ManualTransactionInput): Result<Unit> {
+        val repo = assetRepository
+            ?: return Result.failure(IllegalStateException("Asset repository is unavailable."))
+        return try {
+            repo.recordManualTransaction(
+                assetName = input.assetName,
+                assetClass = input.assetClass,
+                type = input.type,
+                tradeDate = input.tradeDate,
+                quantity = input.quantity,
+                unitPrice = input.unitPrice,
+                netAmount = input.netAmount,
+                fees = input.fees,
+                taxes = input.taxes,
+                notes = input.notes,
+                broker = input.broker,
+                tickerOrIsin = input.tickerOrIsin,
+                selectedAssetId = input.selectedAssetId,
+            )
+            Result.success(Unit)
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+            Result.failure(t)
+        }
+    }
+
     fun recordManualTransaction(
         assetName: String,
         assetClass: AssetClass,
@@ -156,11 +193,12 @@ class HomeViewModel @Inject constructor(
         notes: String? = null,
         broker: String? = null,
         tickerOrIsin: String? = null,
+        selectedAssetId: String? = null,
     ) {
         viewModelScope.launch {
             _ingestionState.value = IngestionState.Loading
-            try {
-                assetRepository?.recordManualTransaction(
+            val result = recordManualTransactionResult(
+                ManualTransactionInput(
                     assetName = assetName,
                     assetClass = assetClass,
                     type = type,
@@ -173,11 +211,13 @@ class HomeViewModel @Inject constructor(
                     notes = notes,
                     broker = broker,
                     tickerOrIsin = tickerOrIsin,
-                )
-                _ingestionState.value = IngestionState.Success("Manual: $assetName")
-            } catch (t: Throwable) {
-                _ingestionState.value = IngestionState.Error(t.message ?: "Failed to save manual transaction")
-            }
+                    selectedAssetId = selectedAssetId,
+                ),
+            )
+            _ingestionState.value = result.fold(
+                onSuccess = { IngestionState.Success("Manual: $assetName") },
+                onFailure = { IngestionState.Error(it.message ?: "Failed to save manual transaction") },
+            )
         }
     }
 

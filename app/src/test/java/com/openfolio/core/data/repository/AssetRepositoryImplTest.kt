@@ -3,11 +3,14 @@ package com.openfolio.core.data.repository
 import androidx.room.withTransaction
 import com.openfolio.core.data.local.OpenFolioDatabase
 import com.openfolio.core.data.local.dao.AssetDao
+import com.openfolio.core.data.local.dao.DocumentDao
 import com.openfolio.core.data.local.dao.LotDao
 import com.openfolio.core.data.local.dao.TransactionDao
 import com.openfolio.core.data.local.entity.AssetClass
 import com.openfolio.core.data.local.entity.AssetEntity
 import com.openfolio.core.data.local.entity.AssetStatus
+import com.openfolio.core.data.local.entity.DocumentEntity
+import com.openfolio.core.data.local.entity.DocumentStatus
 import com.openfolio.core.data.local.entity.LotEntity
 import com.openfolio.core.data.local.entity.TransactionEntity
 import com.openfolio.core.data.local.entity.TransactionStatus
@@ -17,6 +20,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.mockito.kotlin.any
@@ -73,6 +77,7 @@ class AssetRepositoryImplTest {
         whenever(transactionDao.getByAssetIdOnce("asset_rel")).thenReturn(listOf(sampleTxn))
         whenever(transactionDao.getById("txn_1")).thenReturn(sampleTxn)
         whenever(transactionDao.containsFingerprint(any())).thenReturn(false)
+        whenever(transactionDao.getByAssetIds(any())).thenReturn(emptyList())
 
         repository = AssetRepositoryImpl(
             database = database,
@@ -185,5 +190,108 @@ class AssetRepositoryImplTest {
         assertEquals("Groww", createdTxn.broker)
         assertEquals("asset_rel", createdTxn.assetId)
         verify(transactionDao).insert(createdTxn)
+    }
+
+    @Test
+    fun recordManualTransactionCreatesInboxDocumentForUndoSupport() = runTest {
+        val documentDao = mock<DocumentDao>()
+        whenever(database.documentDao()).thenReturn(documentDao)
+        whenever(assetDao.getAllOnce()).thenReturn(listOf(sampleAsset))
+        whenever(transactionDao.containsFingerprint(any())).thenReturn(false)
+        whenever(transactionDao.getByAssetIds(any())).thenReturn(emptyList())
+        whenever(transactionDao.getByAssetIdOnce("asset_rel")).thenReturn(listOf(sampleTxn))
+
+        val createdTxn = repository.recordManualTransaction(
+            assetName = "Reliance Industries",
+            assetClass = AssetClass.STOCK,
+            type = TransactionType.BUY,
+            tradeDate = LocalDate.of(2024, 3, 10),
+            quantity = BigDecimal("10"),
+            unitPrice = BigDecimal("2800"),
+            netAmount = BigDecimal("28000"),
+            broker = "Zerodha",
+            selectedAssetId = "asset_rel",
+        )
+
+        val docCaptor = argumentCaptor<DocumentEntity>()
+        verify(documentDao).insert(docCaptor.capture())
+        val insertedDoc = docCaptor.firstValue
+        assertTrue(insertedDoc.id.startsWith("manual_"))
+        assertEquals(DocumentStatus.COMPLETED.name, insertedDoc.status)
+        assertEquals("", insertedDoc.localPath)
+        assertEquals(insertedDoc.id, createdTxn.documentId)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun recordManualTransactionRejectsFutureDate() = runTest {
+        repository.recordManualTransaction(
+            assetName = "Reliance Industries",
+            assetClass = AssetClass.STOCK,
+            type = TransactionType.BUY,
+            tradeDate = LocalDate.now().plusDays(2),
+            quantity = BigDecimal("5"),
+            unitPrice = BigDecimal("2500"),
+            netAmount = BigDecimal("12500"),
+        )
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun recordManualTransactionRejectsOversellAgainstHeldQuantity() = runTest {
+        whenever(assetDao.getAllOnce()).thenReturn(listOf(sampleAsset))
+        whenever(transactionDao.getByAssetIdOnce("asset_rel")).thenReturn(listOf(sampleTxn))
+
+        repository.recordManualTransaction(
+            assetName = "Reliance Industries",
+            assetClass = AssetClass.STOCK,
+            type = TransactionType.SELL,
+            tradeDate = LocalDate.of(2024, 5, 1),
+            quantity = BigDecimal("150"),
+            unitPrice = BigDecimal("2900"),
+            netAmount = BigDecimal("435000"),
+            selectedAssetId = "asset_rel",
+        )
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun recordManualTransactionRejectsConflictingIsinForSelectedAsset() = runTest {
+        val assetWithIsin = sampleAsset.copy(identifiersJson = """{"isin":"INE002A01018"}""")
+        whenever(assetDao.getAllOnce()).thenReturn(listOf(assetWithIsin))
+
+        repository.recordManualTransaction(
+            assetName = "Reliance Industries",
+            assetClass = AssetClass.STOCK,
+            type = TransactionType.BUY,
+            tradeDate = LocalDate.of(2024, 4, 1),
+            quantity = BigDecimal("5"),
+            unitPrice = BigDecimal("2500"),
+            netAmount = BigDecimal("12500"),
+            tickerOrIsin = "INE467B01029",
+            selectedAssetId = "asset_rel",
+        )
+    }
+
+    @Test(expected = DuplicateTransactionException::class)
+    fun recordManualTransactionRejectsSemanticDuplicateEvenWithDifferentCasing() = runTest {
+        val existing = sampleTxn.copy(
+            broker = "Zerodha",
+            tradeDate = LocalDate.of(2024, 6, 15),
+            quantity = BigDecimal("10.0000"),
+            netAmount = BigDecimal("25000.00"),
+        )
+        whenever(assetDao.getAllOnce()).thenReturn(listOf(sampleAsset))
+        whenever(transactionDao.containsFingerprint(any())).thenReturn(false)
+        whenever(transactionDao.getByAssetIds(listOf("asset_rel"))).thenReturn(listOf(existing))
+
+        repository.recordManualTransaction(
+            assetName = "Reliance Industries",
+            assetClass = AssetClass.STOCK,
+            type = TransactionType.BUY,
+            tradeDate = LocalDate.of(2024, 6, 15),
+            quantity = BigDecimal("10"),
+            unitPrice = BigDecimal("2500"),
+            netAmount = BigDecimal("25000.02"),
+            broker = "zerodha",
+            selectedAssetId = "asset_rel",
+        )
     }
 }

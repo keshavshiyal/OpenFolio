@@ -6,7 +6,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -23,7 +26,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountBalanceWallet
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Search
@@ -38,7 +40,6 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -46,6 +47,8 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -54,6 +57,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -65,9 +69,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.openfolio.core.data.local.entity.AssetClass
+import com.openfolio.core.data.local.entity.AssetEntity
 import com.openfolio.core.data.local.entity.AssetStatus
 import com.openfolio.core.data.local.entity.TransactionType
-import com.openfolio.core.ui.components.ManualTransactionDialog
+import com.openfolio.core.ui.components.ManualEntryBottomSheet
+import com.openfolio.core.ui.components.ManualTransactionInput
 import com.openfolio.core.ui.components.MoneyText
 import com.openfolio.core.ui.components.MoneyTextStyle
 import com.openfolio.core.ui.theme.LocalOpenFolioColors
@@ -79,6 +85,7 @@ import com.openfolio.feature.assets.AssetsViewModel
 import com.openfolio.feature.assets.toDisplayTitle
 import java.math.BigDecimal
 import java.time.LocalDate
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -86,27 +93,21 @@ fun AssetsScreen(
     viewModel: AssetsViewModel,
     onAssetClick: (String) -> Unit,
     onImportClick: () -> Unit,
+    existingAssets: List<AssetEntity> = emptyList(),
     onSaveManualTransaction: ((String, AssetClass, TransactionType, LocalDate, BigDecimal, BigDecimal, BigDecimal, BigDecimal, BigDecimal, String?, String?, String?) -> Unit)? = null,
+    onSaveManualTransactionResult: (suspend (ManualTransactionInput) -> Result<Unit>)? = null,
     modifier: Modifier = Modifier,
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val colors = LocalOpenFolioColors.current
+    val snackbarHostState = remember { SnackbarHostState() }
+    val coroutineScope = rememberCoroutineScope()
     var showManualTransactionDialog by remember { mutableStateOf(false) }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
         containerColor = colors.background,
-        floatingActionButton = {
-            if (onSaveManualTransaction != null) {
-                FloatingActionButton(
-                    onClick = { showManualTransactionDialog = true },
-                    containerColor = colors.brand,
-                    contentColor = colors.onAccent,
-                ) {
-                    Icon(Icons.Filled.Add, contentDescription = "Add Transaction / Asset")
-                }
-            }
-        },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = {
@@ -173,12 +174,39 @@ fun AssetsScreen(
         }
 
         if (showManualTransactionDialog) {
-            ManualTransactionDialog(
+            ManualEntryBottomSheet(
+                existingAssets = existingAssets,
                 onDismiss = { showManualTransactionDialog = false },
-                onSave = { name, cls, type, date, qty, price, netAmt, fees, taxes, notes, broker, tickerOrIsin ->
-                    onSaveManualTransaction?.invoke(
-                        name, cls, type, date, qty, price, netAmt, fees, taxes, notes, broker, tickerOrIsin,
-                    )
+                onSave = { input ->
+                    if (onSaveManualTransactionResult != null) {
+                        val result = onSaveManualTransactionResult(input)
+                        if (result.isSuccess) {
+                            coroutineScope.launch {
+                                snackbarHostState.showSnackbar(
+                                    "Manual entry saved. Open Inbox anytime to Undo.",
+                                )
+                            }
+                        }
+                        result
+                    } else if (onSaveManualTransaction != null) {
+                        onSaveManualTransaction(
+                            input.assetName,
+                            input.assetClass,
+                            input.type,
+                            input.tradeDate,
+                            input.quantity,
+                            input.unitPrice,
+                            input.netAmount,
+                            input.fees,
+                            input.taxes,
+                            input.notes,
+                            input.broker,
+                            input.tickerOrIsin,
+                        )
+                        Result.success(Unit)
+                    } else {
+                        Result.failure(IllegalStateException("Manual entry saving is not configured."))
+                    }
                 },
             )
         }
@@ -197,11 +225,21 @@ private fun AssetsContent(
     val colors = LocalOpenFolioColors.current
     var sortMenuExpanded by remember { mutableStateOf(false) }
 
-    LazyColumn(
-        modifier = modifier,
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
+    BoxWithConstraints(modifier = modifier) {
+        val isWide = maxWidth >= 600.dp
+        val columns = if (isWide) 2 else 1
+        val horizontalPadding = if (isWide) 24.dp else 16.dp
+
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                start = horizontalPadding,
+                top = 8.dp,
+                end = horizontalPadding,
+                bottom = 96.dp,
+            ),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
         // Controls: Search & Sort Row
         item(key = "controls_header") {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -408,21 +446,53 @@ private fun AssetsContent(
                     )
                 }
 
-                items(
-                    items = group.assets,
-                    key = { it.id },
-                ) { asset ->
-                    AssetCard(
-                        asset = asset,
-                        showValues = uiState.showValues,
-                        onClick = { onAssetClick(asset.id) },
-                    )
+                if (columns == 1) {
+                    items(
+                        items = group.assets,
+                        key = { it.id },
+                    ) { asset ->
+                        AssetCard(
+                            asset = asset,
+                            showValues = uiState.showValues,
+                            onClick = { onAssetClick(asset.id) },
+                        )
+                    }
+                } else {
+                    val rows = group.assets.chunked(2)
+                    items(
+                        items = rows,
+                        key = { row -> row.joinToString("_") { it.id } },
+                    ) { rowAssets ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            AssetCard(
+                                asset = rowAssets[0],
+                                showValues = uiState.showValues,
+                                onClick = { onAssetClick(rowAssets[0].id) },
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (rowAssets.size > 1) {
+                                AssetCard(
+                                    asset = rowAssets[1],
+                                    showValues = uiState.showValues,
+                                    onClick = { onAssetClick(rowAssets[1].id) },
+                                    modifier = Modifier.weight(1f),
+                                )
+                            } else {
+                                Spacer(modifier = Modifier.weight(1f))
+                            }
+                        }
+                    }
                 }
             }
         }
     }
+    }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AssetGroupHeader(
     group: AssetGroup,
@@ -431,14 +501,15 @@ private fun AssetGroupHeader(
 ) {
     val colors = LocalOpenFolioColors.current
 
-    Row(
+    FlowRow(
         modifier = modifier
             .fillMaxWidth()
             .padding(top = 12.dp, bottom = 4.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Row(
+            modifier = Modifier.align(Alignment.CenterVertically),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
@@ -446,6 +517,8 @@ private fun AssetGroupHeader(
                 text = group.title,
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                 color = colors.content,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
             Box(
                 modifier = Modifier
@@ -466,6 +539,7 @@ private fun AssetGroupHeader(
 
         // Subtotal invested
         Row(
+            modifier = Modifier.align(Alignment.CenterVertically),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
@@ -547,62 +621,131 @@ private fun AssetCard(
             }
 
             // Row 2: Metrics Grid (Quantity, Total Invested, Realized Gain/Loss)
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                // Quantity Held
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "HOLDINGS",
-                        style = typography.labelSmall.copy(fontWeight = FontWeight.Medium),
-                        color = colors.muted,
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = if (showValues) {
-                            formatQuantityDisplay(asset.totalQuantity)
-                        } else {
-                            "— — —"
-                        },
-                        style = typography.bodyMedium.copy(
-                            fontWeight = FontWeight.SemiBold,
-                            fontFeatureSettings = "tnum",
-                        ),
-                        color = colors.content,
-                    )
-                }
+            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                if (maxWidth < 300.dp) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "HOLDINGS",
+                                    style = typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                                    color = colors.muted,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    text = if (showValues) {
+                                        formatQuantityDisplay(asset.totalQuantity)
+                                    } else {
+                                        "— — —"
+                                    },
+                                    style = typography.bodyMedium.copy(
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontFeatureSettings = "tnum",
+                                    ),
+                                    color = colors.content,
+                                )
+                            }
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                horizontalAlignment = Alignment.End,
+                            ) {
+                                Text(
+                                    text = "INVESTED",
+                                    style = typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                                    color = colors.muted,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                MoneyText(
+                                    amount = asset.totalInvested,
+                                    showValues = showValues,
+                                    style = MoneyTextStyle.Body,
+                                )
+                            }
+                        }
+                        Column {
+                            Text(
+                                text = "REALIZED P&L",
+                                style = typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                                color = colors.muted,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            RealizedPnLDisplay(
+                                realizedPnL = asset.realizedPnL,
+                                showValues = showValues,
+                            )
+                        }
+                    }
+                } else {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        // Quantity Held
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "HOLDINGS",
+                                style = typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                                color = colors.muted,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = if (showValues) {
+                                    formatQuantityDisplay(asset.totalQuantity)
+                                } else {
+                                    "— — —"
+                                },
+                                style = typography.bodyMedium.copy(
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontFeatureSettings = "tnum",
+                                ),
+                                color = colors.content,
+                            )
+                        }
 
-                // Total Invested
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "INVESTED",
-                        style = typography.labelSmall.copy(fontWeight = FontWeight.Medium),
-                        color = colors.muted,
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    MoneyText(
-                        amount = asset.totalInvested,
-                        showValues = showValues,
-                        style = MoneyTextStyle.Body,
-                    )
-                }
+                        // Total Invested
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "INVESTED",
+                                style = typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                                color = colors.muted,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            MoneyText(
+                                amount = asset.totalInvested,
+                                showValues = showValues,
+                                style = MoneyTextStyle.Body,
+                            )
+                        }
 
-                // Realized P&L
-                Column(
-                    modifier = Modifier.weight(1f),
-                    horizontalAlignment = Alignment.End,
-                ) {
-                    Text(
-                        text = "REALIZED P&L",
-                        style = typography.labelSmall.copy(fontWeight = FontWeight.Medium),
-                        color = colors.muted,
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    RealizedPnLDisplay(
-                        realizedPnL = asset.realizedPnL,
-                        showValues = showValues,
-                    )
+                        // Realized P&L
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            horizontalAlignment = Alignment.End,
+                        ) {
+                            Text(
+                                text = "REALIZED P&L",
+                                style = typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                                color = colors.muted,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            RealizedPnLDisplay(
+                                realizedPnL = asset.realizedPnL,
+                                showValues = showValues,
+                            )
+                        }
+                    }
                 }
             }
 

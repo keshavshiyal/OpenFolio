@@ -4,13 +4,18 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -659,98 +664,57 @@ private fun AssetSummaryCard(
                 color = colors.background,
                 shape = RoundedCornerShape(10.dp),
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    // Current Value
-                    Column {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                    val stackMetrics = maxWidth < 360.dp
+                    if (stackMetrics) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
                         ) {
-                            Text(
-                                text = "CURRENT VALUE",
-                                style = typography.labelSmall,
-                                color = colors.muted,
-                            )
-                            if (currentValue == null) {
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(4.dp))
-                                        .background(colors.border)
-                                        .padding(horizontal = 6.dp, vertical = 1.dp),
-                                ) {
-                                    Text(
-                                        text = "Live price soon",
-                                        style = typography.labelSmall.copy(fontSize = typography.labelSmall.fontSize * 0.85f),
-                                        color = colors.muted,
-                                    )
-                                }
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(2.dp))
-                        if (currentValue != null) {
-                            MoneyText(
+                            ValuationPlaceholderBlock(
+                                title = "CURRENT VALUE",
                                 amount = currentValue,
                                 showValues = showValues,
-                                style = MoneyTextStyle.Body,
+                                fallbackText = "₹ — — —",
+                                isPnL = false,
+                                alignEnd = false,
                             )
-                        } else {
-                            Text(
-                                text = "₹ — — —",
-                                style = typography.bodyMedium.copy(
-                                    fontFeatureSettings = "tnum",
-                                    fontWeight = FontWeight.Medium,
-                                ),
-                                color = colors.muted,
-                            )
-                        }
-                    }
-
-                    // Unrealized P&L
-                    Column(horizontalAlignment = Alignment.End) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            Text(
-                                text = "UNREALIZED P&L",
-                                style = typography.labelSmall,
-                                color = colors.muted,
-                            )
-                            if (unrealizedPnL == null) {
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(4.dp))
-                                        .background(colors.border)
-                                        .padding(horizontal = 6.dp, vertical = 1.dp),
-                                ) {
-                                    Text(
-                                        text = "Live price soon",
-                                        style = typography.labelSmall.copy(fontSize = typography.labelSmall.fontSize * 0.85f),
-                                        color = colors.muted,
-                                    )
-                                }
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(2.dp))
-                        if (unrealizedPnL != null) {
-                            RealizedPnLDisplay(
-                                realizedPnL = unrealizedPnL,
+                            ValuationPlaceholderBlock(
+                                title = "UNREALIZED P&L",
+                                amount = unrealizedPnL,
                                 showValues = showValues,
+                                fallbackText = "— — —",
+                                isPnL = true,
+                                alignEnd = false,
                             )
-                        } else {
-                            Text(
-                                text = "— — —",
-                                style = typography.bodyMedium.copy(
-                                    fontFeatureSettings = "tnum",
-                                    fontWeight = FontWeight.Medium,
-                                ),
-                                color = colors.muted,
+                        }
+                    } else {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            ValuationPlaceholderBlock(
+                                title = "CURRENT VALUE",
+                                amount = currentValue,
+                                showValues = showValues,
+                                fallbackText = "₹ — — —",
+                                isPnL = false,
+                                alignEnd = false,
+                                modifier = Modifier.weight(1f),
+                            )
+                            ValuationPlaceholderBlock(
+                                title = "UNREALIZED P&L",
+                                amount = unrealizedPnL,
+                                showValues = showValues,
+                                fallbackText = "— — —",
+                                isPnL = true,
+                                alignEnd = true,
+                                modifier = Modifier.weight(1f),
                             )
                         }
                     }
@@ -829,6 +793,7 @@ private fun TransactionLedgerRow(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Row(
+                    modifier = Modifier.weight(1f).padding(end = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
@@ -843,6 +808,8 @@ private fun TransactionLedgerRow(
                             fontWeight = FontWeight.Medium,
                         ),
                         color = colors.muted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
 
@@ -1018,6 +985,8 @@ private fun EditTransactionDialog(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .heightIn(max = 460.dp)
+                    .imePadding()
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
@@ -1629,4 +1598,75 @@ fun EditAssetDetailsDialog(
         },
         containerColor = colors.surface,
     )
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ValuationPlaceholderBlock(
+    title: String,
+    amount: BigDecimal?,
+    showValues: Boolean,
+    fallbackText: String,
+    isPnL: Boolean,
+    alignEnd: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val colors = LocalOpenFolioColors.current
+    val typography = MaterialTheme.typography
+
+    Column(
+        modifier = modifier,
+        horizontalAlignment = if (alignEnd) Alignment.End else Alignment.Start,
+    ) {
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                text = title,
+                style = typography.labelSmall,
+                color = colors.muted,
+                modifier = Modifier.align(Alignment.CenterVertically),
+            )
+            if (amount == null) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterVertically)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(colors.border)
+                        .padding(horizontal = 6.dp, vertical = 1.dp),
+                ) {
+                    Text(
+                        text = "Live price soon",
+                        style = typography.labelSmall.copy(fontSize = typography.labelSmall.fontSize * 0.85f),
+                        color = colors.muted,
+                    )
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(2.dp))
+        if (amount != null) {
+            if (isPnL) {
+                RealizedPnLDisplay(
+                    realizedPnL = amount,
+                    showValues = showValues,
+                )
+            } else {
+                MoneyText(
+                    amount = amount,
+                    showValues = showValues,
+                    style = MoneyTextStyle.Body,
+                )
+            }
+        } else {
+            Text(
+                text = fallbackText,
+                style = typography.bodyMedium.copy(
+                    fontFeatureSettings = "tnum",
+                    fontWeight = FontWeight.Medium,
+                ),
+                color = colors.muted,
+            )
+        }
+    }
 }

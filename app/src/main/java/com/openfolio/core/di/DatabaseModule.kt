@@ -14,9 +14,14 @@ import com.openfolio.core.data.local.dao.DraftTransactionDao
 import com.openfolio.core.data.local.dao.LotDao
 import com.openfolio.core.data.local.dao.TransactionDao
 import com.openfolio.core.data.local.dao.ValuationDao
+import com.openfolio.core.data.local.export.AppBackupManager
+import com.openfolio.core.data.local.export.AppBackupManagerImpl
+import com.openfolio.core.data.local.export.CsvReportExporter
+import com.openfolio.core.data.local.export.CsvReportExporterImpl
 import com.openfolio.core.data.local.export.DatabaseExporter
 import com.openfolio.core.data.local.export.DatabaseExporterImpl
 import com.openfolio.core.data.repository.AssetRepositoryImpl
+import com.openfolio.core.data.repository.SettingsRepository
 import com.openfolio.core.domain.repository.AssetRepository
 import dagger.Module
 import dagger.Provides
@@ -42,14 +47,8 @@ object DatabaseModule {
             OpenFolioDatabase::class.java,
             "openfolio.db",
         )
-            .addMigrations(
-                OpenFolioDatabase.MIGRATION_11_12,
-                OpenFolioDatabase.MIGRATION_12_13,
-                OpenFolioDatabase.MIGRATION_13_14,
-                OpenFolioDatabase.MIGRATION_14_15,
-                OpenFolioDatabase.MIGRATION_15_16,
-            )
             .fallbackToDestructiveMigration()
+            .fallbackToDestructiveMigrationOnDowngrade()
             .openHelperFactory(SupportFactory(passphraseProvider.getPassphrase()))
             .build()
     }
@@ -98,6 +97,21 @@ object DatabaseModule {
     @Singleton
     fun provideDatabaseExporter(database: OpenFolioDatabase): DatabaseExporter =
         DatabaseExporterImpl(database)
+
+    @Provides
+    @Singleton
+    fun provideAppBackupManager(
+        database: OpenFolioDatabase,
+        databaseExporter: DatabaseExporter,
+        settingsRepository: SettingsRepository,
+        @ApplicationContext context: Context,
+    ): AppBackupManager =
+        AppBackupManagerImpl(database, databaseExporter, settingsRepository, context)
+
+    @Provides
+    @Singleton
+    fun provideCsvReportExporter(database: OpenFolioDatabase): CsvReportExporter =
+        CsvReportExporterImpl(database)
 
     @Provides
     @Singleton

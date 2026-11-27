@@ -1,16 +1,29 @@
 package com.openfolio.feature.navigation
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.NavigationRailItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
@@ -58,6 +71,7 @@ fun OpenFolioApp(
     val colors = LocalOpenFolioColors.current
     val homeUiState by homeViewModel.uiState.collectAsStateWithLifecycle()
     val ingestionState by homeViewModel.ingestionState.collectAsStateWithLifecycle()
+    val existingAssets by homeViewModel.existingAssets.collectAsStateWithLifecycle()
     val inboxDocuments by inboxViewModel.documents.collectAsStateWithLifecycle()
     val inboxActionMessage by inboxViewModel.actionMessage.collectAsStateWithLifecycle()
     val reviewUiState by reviewViewModel.uiState.collectAsStateWithLifecycle()
@@ -74,74 +88,134 @@ fun OpenFolioApp(
     val showTableReview by reviewViewModel.showTableReview.collectAsStateWithLifecycle()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
+    val showNavigationChrome = currentRoute != REVIEW_ROUTE &&
+        currentRoute?.startsWith("asset_detail") != true
 
-    Scaffold(
-        containerColor = colors.background,
-        contentWindowInsets = WindowInsets(0, 0, 0, 0),
-        bottomBar = {
-            if (currentRoute != REVIEW_ROUTE && currentRoute?.startsWith("asset_detail") != true) {
-                NavigationBar(
-                    modifier = Modifier.drawBehind {
-                        val strokeWidth = 1.dp.toPx()
-                        drawLine(
-                            color = colors.border,
-                            start = Offset(0f, 0f),
-                            end = Offset(size.width, 0f),
-                            strokeWidth = strokeWidth,
-                        )
-                    },
-                    containerColor = colors.background,
-                    contentColor = colors.content,
-                ) {
-                    AppDestination.entries.forEach { destination ->
-                        NavigationBarItem(
-                            selected = currentRoute == destination.route,
-                            onClick = {
-                                if (currentRoute != destination.route) {
-                                    navController.navigate(destination.route) {
-                                        popUpTo(navController.graph.findStartDestination().id) {
-                                            inclusive = (destination.route == navController.graph.findStartDestination().route)
-                                            saveState = false
-                                        }
-                                        launchSingleTop = true
-                                        restoreState = false
-                                    }
-                                } else {
-                                    navController.popBackStack(destination.route, inclusive = false)
-                                }
-                            },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = colors.brand,
-                                selectedTextColor = colors.brand,
-                                unselectedIconColor = colors.muted,
-                                unselectedTextColor = colors.muted,
-                                indicatorColor = Color.Transparent,
-                            ),
-                            icon = {
-                                Icon(
-                                    imageVector = destination.icon,
-                                    contentDescription = destination.label,
-                                )
-                            },
-                            label = { Text(destination.label) },
-                        )
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val useNavRail = maxWidth >= 600.dp && showNavigationChrome
+
+        val navigateToDestination: (AppDestination) -> Unit = { destination ->
+            if (currentRoute != destination.route) {
+                navController.navigate(destination.route) {
+                    popUpTo(navController.graph.findStartDestination().id) {
+                        inclusive = (destination.route == navController.graph.findStartDestination().route)
+                        saveState = false
+                    }
+                    launchSingleTop = true
+                    restoreState = false
+                }
+            } else {
+                navController.popBackStack(destination.route, inclusive = false)
+            }
+        }
+
+        Scaffold(
+            containerColor = colors.background,
+            contentWindowInsets = WindowInsets(0, 0, 0, 0),
+            bottomBar = {
+                if (showNavigationChrome && !useNavRail) {
+                    NavigationBar(
+                        modifier = Modifier.drawBehind {
+                            val strokeWidth = 1.dp.toPx()
+                            drawLine(
+                                color = colors.border,
+                                start = Offset(0f, 0f),
+                                end = Offset(size.width, 0f),
+                                strokeWidth = strokeWidth,
+                            )
+                        },
+                        containerColor = colors.background,
+                        contentColor = colors.content,
+                    ) {
+                        AppDestination.entries.forEach { destination ->
+                            NavigationBarItem(
+                                selected = currentRoute == destination.route,
+                                onClick = { navigateToDestination(destination) },
+                                colors = NavigationBarItemDefaults.colors(
+                                    selectedIconColor = colors.brand,
+                                    selectedTextColor = colors.brand,
+                                    unselectedIconColor = colors.muted,
+                                    unselectedTextColor = colors.muted,
+                                    indicatorColor = Color.Transparent,
+                                ),
+                                icon = {
+                                    Icon(
+                                        imageVector = destination.icon,
+                                        contentDescription = destination.label,
+                                    )
+                                },
+                                label = { Text(destination.label) },
+                            )
+                        }
                     }
                 }
-            }
-        },
-    ) { innerPadding ->
-        NavHost(
-            navController = navController,
-            startDestination = AppDestination.Home.route,
-            modifier = Modifier.padding(innerPadding),
-        ) {
+            },
+        ) { innerPadding ->
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding),
+            ) {
+                if (useNavRail) {
+                    NavigationRail(
+                        containerColor = colors.background,
+                        contentColor = colors.content,
+                    ) {
+                        Spacer(modifier = Modifier.weight(1f))
+                        AppDestination.entries.forEach { destination ->
+                            NavigationRailItem(
+                                selected = currentRoute == destination.route,
+                                onClick = { navigateToDestination(destination) },
+                                colors = NavigationRailItemDefaults.colors(
+                                    selectedIconColor = colors.brand,
+                                    selectedTextColor = colors.brand,
+                                    unselectedIconColor = colors.muted,
+                                    unselectedTextColor = colors.muted,
+                                    indicatorColor = colors.brandSubtle,
+                                ),
+                                icon = {
+                                    Icon(
+                                        imageVector = destination.icon,
+                                        contentDescription = destination.label,
+                                    )
+                                },
+                                label = { Text(destination.label) },
+                            )
+                        }
+                        Spacer(modifier = Modifier.weight(1f))
+                    }
+                    Box(
+                        modifier = Modifier
+                            .width(1.dp)
+                            .fillMaxHeight()
+                            .background(colors.border),
+                    )
+                }
+
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(),
+                    contentAlignment = Alignment.TopCenter,
+                ) {
+                    NavHost(
+                        navController = navController,
+                        startDestination = AppDestination.Home.route,
+                        modifier = if (currentRoute == REVIEW_ROUTE) {
+                            Modifier.fillMaxSize()
+                        } else {
+                            Modifier
+                                .widthIn(max = 840.dp)
+                                .fillMaxSize()
+                        },
+                    ) {
             composable(AppDestination.Home.route) {
                 HomeScreen(
                     uiState = homeUiState,
                     ingestionState = ingestionState,
                     onToggleValues = homeViewModel::toggleValuesVisibility,
                     onSelectPeriod = homeViewModel::selectPeriod,
-                    onImport = homeViewModel::ingestFile,
+                    onImport = { uri, assetClass -> homeViewModel.ingestFile(uri, assetClass) },
                     onImportSuccess = {
                         navController.navigate(AppDestination.Inbox.route) {
                             popUpTo(navController.graph.findStartDestination().id) {
@@ -153,6 +227,9 @@ fun OpenFolioApp(
                     },
                     onIngestionHandled = homeViewModel::clearIngestionState,
                     onSettings = { navController.navigate(AppDestination.Settings.route) },
+                    existingAssets = existingAssets,
+                    onSaveManualTransaction = homeViewModel::recordManualTransaction,
+                    onSaveManualTransactionResult = homeViewModel::recordManualTransactionResult,
                 )
             }
             composable(AppDestination.Assets.route) {
@@ -170,7 +247,9 @@ fun OpenFolioApp(
                             restoreState = false
                         }
                     },
+                    existingAssets = existingAssets,
                     onSaveManualTransaction = homeViewModel::recordManualTransaction,
+                    onSaveManualTransactionResult = homeViewModel::recordManualTransactionResult,
                 )
             }
             composable(
@@ -217,7 +296,9 @@ fun OpenFolioApp(
                     actionMessage = inboxActionMessage,
                     onDismissActionMessage = inboxViewModel::clearActionMessage,
                     onImport = homeViewModel::ingestFile,
+                    existingAssets = existingAssets,
                     onSaveManualTransaction = homeViewModel::recordManualTransaction,
+                    onSaveManualTransactionResult = homeViewModel::recordManualTransactionResult,
                 )
             }
             composable(
@@ -276,6 +357,9 @@ fun OpenFolioApp(
             }
             composable(AppDestination.Settings.route) {
                 SettingsScreen(viewModel = settingsViewModel)
+            }
+        }
+                }
             }
         }
     }

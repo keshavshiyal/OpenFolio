@@ -6,7 +6,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -41,6 +44,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -49,18 +53,21 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.openfolio.core.data.local.entity.AssetClass
+import com.openfolio.core.data.local.entity.AssetEntity
 import com.openfolio.core.data.local.entity.DocumentEntity
 import com.openfolio.core.data.local.entity.DocumentStatus
 import com.openfolio.core.data.local.entity.TransactionType
 import com.openfolio.core.data.repository.DocumentRepositoryImpl
 import com.openfolio.core.ui.components.AssetTypeSelectionBottomSheet
 import com.openfolio.core.ui.components.ImportOptionsBottomSheet
-import com.openfolio.core.ui.components.ManualTransactionDialog
+import com.openfolio.core.ui.components.ManualEntryBottomSheet
+import com.openfolio.core.ui.components.ManualTransactionInput
 import com.openfolio.core.ui.theme.LocalOpenFolioColors
 import com.openfolio.feature.assets.toDisplayTitle
 import java.math.BigDecimal
 import java.time.LocalDate
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 private val DOCUMENT_MIME_TYPES = arrayOf(
     "application/pdf",
@@ -82,7 +89,9 @@ fun InboxScreen(
     actionMessage: String? = null,
     onDismissActionMessage: () -> Unit = {},
     onImport: ((Uri, AssetClass) -> Unit)? = null,
+    existingAssets: List<AssetEntity> = emptyList(),
     onSaveManualTransaction: ((String, AssetClass, TransactionType, LocalDate, BigDecimal, BigDecimal, BigDecimal, BigDecimal, BigDecimal, String?, String?, String?) -> Unit)? = null,
+    onSaveManualTransactionResult: (suspend (ManualTransactionInput) -> Result<Unit>)? = null,
 ) {
     val colors = LocalOpenFolioColors.current
     val awaitingReview = documents.count { it.status != DocumentStatus.COMPLETED.name }
@@ -92,6 +101,7 @@ fun InboxScreen(
     var pendingAssetClass by remember { mutableStateOf(AssetClass.STOCK) }
     var documentToRollback by remember { mutableStateOf<DocumentEntity?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
+    val coroutineScope = rememberCoroutineScope()
 
     LaunchedEffect(actionMessage) {
         if (!actionMessage.isNullOrBlank()) {
@@ -111,7 +121,7 @@ fun InboxScreen(
         containerColor = colors.background,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         floatingActionButton = {
-            if (onImport != null || onSaveManualTransaction != null) {
+            if (onImport != null || onSaveManualTransactionResult != null || onSaveManualTransaction != null) {
                 ExtendedFloatingActionButton(
                     onClick = { showImportOptionsSheet = true },
                     icon = { Icon(Icons.Filled.Add, contentDescription = null) },
@@ -213,10 +223,39 @@ fun InboxScreen(
     }
 
     if (showManualTransactionDialog) {
-        ManualTransactionDialog(
+        ManualEntryBottomSheet(
+            existingAssets = existingAssets,
             onDismiss = { showManualTransactionDialog = false },
-            onSave = { name, cls, type, date, qty, price, netAmt, fees, taxes, notes, broker, tickerOrIsin ->
-                onSaveManualTransaction?.invoke(name, cls, type, date, qty, price, netAmt, fees, taxes, notes, broker, tickerOrIsin)
+            onSave = { input ->
+                if (onSaveManualTransactionResult != null) {
+                    val result = onSaveManualTransactionResult(input)
+                    if (result.isSuccess) {
+                        coroutineScope.launch {
+                            snackbarHostState.showSnackbar(
+                                "Manual entry saved. Tap Undo on its card to revert.",
+                            )
+                        }
+                    }
+                    result
+                } else if (onSaveManualTransaction != null) {
+                    onSaveManualTransaction(
+                        input.assetName,
+                        input.assetClass,
+                        input.type,
+                        input.tradeDate,
+                        input.quantity,
+                        input.unitPrice,
+                        input.netAmount,
+                        input.fees,
+                        input.taxes,
+                        input.notes,
+                        input.broker,
+                        input.tickerOrIsin,
+                    )
+                    Result.success(Unit)
+                } else {
+                    Result.failure(IllegalStateException("Manual entry saving is not configured."))
+                }
             },
         )
     }
@@ -286,173 +325,222 @@ fun DocumentCard(
         color = colors.surface,
         border = BorderStroke(1.dp, colors.border),
     ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            val isNarrow = maxWidth < 360.dp
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Icon(
-                    imageVector = Icons.Outlined.Description,
-                    contentDescription = "Document",
-                    tint = colors.muted,
-                    modifier = Modifier.size(24.dp),
-                )
-                Spacer(Modifier.width(12.dp))
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        text = document.fileName,
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = colors.content,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+                    Icon(
+                        imageVector = Icons.Outlined.Description,
+                        contentDescription = "Document",
+                        tint = colors.muted,
+                        modifier = Modifier.size(24.dp),
                     )
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    Spacer(Modifier.width(12.dp))
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(3.dp),
                     ) {
-                        Surface(
-                            shape = RoundedCornerShape(4.dp),
-                            color = colors.brand.copy(alpha = 0.12f),
-                        ) {
-                            Text(
-                                text = document.getAssetClassEnum().toDisplayTitle(),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = colors.brand,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                            )
-                        }
                         Text(
-                            text = "•  ${formatFileSize(document.fileSize)}",
-                            style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
-                            color = colors.muted,
+                            text = document.fileName,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = colors.content,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
-                    }
-                    Text(
-                        text = "SHA-256: ${document.fileHash.take(8)}...",
-                        style = MaterialTheme.typography.bodySmall,
-                        fontFamily = FontFamily.Monospace,
-                        color = colors.muted,
-                    )
-                }
-                Spacer(Modifier.width(10.dp))
-                when {
-                    document.status == DocumentStatus.OCR_COMPLETE.name -> {
-                        Button(
-                            onClick = { onProcessWithAi?.invoke() ?: onClick() },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = colors.brand,
-                                contentColor = colors.onAccent,
-                            ),
-                            shape = RoundedCornerShape(8.dp),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                        ) {
-                            Text(
-                                text = "Process with AI",
-                                style = MaterialTheme.typography.labelSmall,
-                            )
-                        }
-                    }
-                    isFailed && !isLocked && onRetry != null -> {
-                        OutlinedButton(
-                            onClick = onRetry,
-                            shape = RoundedCornerShape(8.dp),
-                            border = BorderStroke(1.dp, colors.brand),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                        ) {
-                            Text(
-                                text = if (document.status == DocumentStatus.FAILED.name && document.processedPages > 0) {
-                                    "Resume"
-                                } else {
-                                    "Retry"
-                                },
-                                style = MaterialTheme.typography.labelSmall,
-                                color = colors.brand,
-                            )
-                        }
-                    }
-                    document.status == DocumentStatus.AI_PAUSED.name -> {
-                        Button(
-                            onClick = onClick,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = colors.brand,
-                                contentColor = colors.onAccent,
-                            ),
-                            shape = RoundedCornerShape(8.dp),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                        ) {
-                            Text(
-                                text = "Continue (${document.processedPages}/${document.pageCount})",
-                                style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
-                            )
-                        }
-                    }
-                    document.status == DocumentStatus.COMPLETED.name && onUndoImport != null -> {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
-                            DocumentStatusBadge(document.status)
-                            TextButton(
-                                onClick = onUndoImport,
-                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = colors.brand.copy(alpha = 0.12f),
                             ) {
                                 Text(
-                                    text = "Undo",
+                                    text = document.getAssetClassEnum().toDisplayTitle(),
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = colors.lossGlyph,
+                                    color = colors.brand,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                                 )
                             }
+                            Text(
+                                text = "•  ${formatFileSize(document.fileSize)}",
+                                style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
+                                color = colors.muted,
+                            )
                         }
+                        Text(
+                            text = "SHA-256: ${document.fileHash.take(8)}...",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
+                            color = colors.muted,
+                        )
                     }
-                    else -> {
-                        DocumentStatusBadge(document.status)
+                    if (!isNarrow) {
+                        Spacer(Modifier.width(10.dp))
+                        DocumentCardActionControl(
+                            document = document,
+                            isFailed = isFailed,
+                            isLocked = isLocked,
+                            onClick = onClick,
+                            onProcessWithAi = onProcessWithAi,
+                            onRetry = onRetry,
+                            onUndoImport = onUndoImport,
+                        )
                     }
+                }
+
+                if (isNarrow) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                    ) {
+                        DocumentCardActionControl(
+                            document = document,
+                            isFailed = isFailed,
+                            isLocked = isLocked,
+                            onClick = onClick,
+                            onProcessWithAi = onProcessWithAi,
+                            onRetry = onRetry,
+                            onUndoImport = onUndoImport,
+                        )
+                    }
+                }
+
+                if (isInProgress) {
+                    val progressText = if (document.pageCount > 0) {
+                        "Processing page ${document.processedPages} of ${document.pageCount}"
+                    } else {
+                        "Preparing extraction..."
+                    }
+                    Text(
+                        text = progressText,
+                        style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
+                        color = colors.brand,
+                    )
+                    if (document.pageCount > 0) {
+                        val fraction = (document.processedPages.toFloat() / document.pageCount.coerceAtLeast(1))
+                            .coerceIn(0f, 1f)
+                        LinearProgressIndicator(
+                            progress = { fraction },
+                            modifier = Modifier.fillMaxWidth(),
+                            color = colors.brand,
+                            trackColor = colors.brandSubtle,
+                        )
+                    } else {
+                        LinearProgressIndicator(
+                            modifier = Modifier.fillMaxWidth(),
+                            color = colors.brand,
+                            trackColor = colors.brandSubtle,
+                        )
+                    }
+                }
+
+                if (isFailed && !document.extractionError.isNullOrBlank()) {
+                    Text(
+                        text = document.extractionError,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.lossGlyph,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
+        }
+    }
+}
 
-            if (isInProgress) {
-                val progressText = if (document.pageCount > 0) {
-                    "Processing page ${document.processedPages} of ${document.pageCount}"
-                } else {
-                    "Preparing extraction..."
-                }
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun DocumentCardActionControl(
+    document: DocumentEntity,
+    isFailed: Boolean,
+    isLocked: Boolean,
+    onClick: () -> Unit,
+    onProcessWithAi: (() -> Unit)?,
+    onRetry: (() -> Unit)?,
+    onUndoImport: (() -> Unit)?,
+) {
+    val colors = LocalOpenFolioColors.current
+    when {
+        document.status == DocumentStatus.OCR_COMPLETE.name -> {
+            Button(
+                onClick = { onProcessWithAi?.invoke() ?: onClick() },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = colors.brand,
+                    contentColor = colors.onAccent,
+                ),
+                shape = RoundedCornerShape(8.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+            ) {
                 Text(
-                    text = progressText,
-                    style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
+                    text = "Process with AI",
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                )
+            }
+        }
+        isFailed && !isLocked && onRetry != null -> {
+            OutlinedButton(
+                onClick = onRetry,
+                shape = RoundedCornerShape(8.dp),
+                border = BorderStroke(1.dp, colors.brand),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+            ) {
+                Text(
+                    text = if (document.status == DocumentStatus.FAILED.name && document.processedPages > 0) {
+                        "Resume"
+                    } else {
+                        "Retry"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
                     color = colors.brand,
+                    maxLines = 1,
                 )
-                if (document.pageCount > 0) {
-                    val fraction = (document.processedPages.toFloat() / document.pageCount.coerceAtLeast(1))
-                        .coerceIn(0f, 1f)
-                    LinearProgressIndicator(
-                        progress = { fraction },
-                        modifier = Modifier.fillMaxWidth(),
-                        color = colors.brand,
-                        trackColor = colors.brandSubtle,
-                    )
-                } else {
-                    LinearProgressIndicator(
-                        modifier = Modifier.fillMaxWidth(),
-                        color = colors.brand,
-                        trackColor = colors.brandSubtle,
+            }
+        }
+        document.status == DocumentStatus.AI_PAUSED.name -> {
+            Button(
+                onClick = onClick,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = colors.brand,
+                    contentColor = colors.onAccent,
+                ),
+                shape = RoundedCornerShape(8.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+            ) {
+                Text(
+                    text = "Continue (${document.processedPages}/${document.pageCount})",
+                    style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+                    maxLines = 1,
+                )
+            }
+        }
+        document.status == DocumentStatus.COMPLETED.name && onUndoImport != null -> {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                DocumentStatusBadge(document.status)
+                TextButton(
+                    onClick = onUndoImport,
+                    modifier = Modifier.align(Alignment.CenterVertically),
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                ) {
+                    Text(
+                        text = "Undo",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.lossGlyph,
+                        maxLines = 1,
                     )
                 }
             }
-
-            if (isFailed && !document.extractionError.isNullOrBlank()) {
-                Text(
-                    text = document.extractionError,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = colors.lossGlyph,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+        }
+        else -> {
+            DocumentStatusBadge(document.status)
         }
     }
 }

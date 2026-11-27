@@ -26,6 +26,9 @@ interface LotDao {
     @Query("SELECT * FROM lot WHERE id = :id LIMIT 1")
     suspend fun getById(id: String): LotEntity?
 
+    @Query("SELECT * FROM lot ORDER BY acquiredDate ASC")
+    suspend fun getAllOnce(): List<LotEntity>
+
     @Query("SELECT * FROM lot WHERE assetId = :assetId ORDER BY acquiredDate ASC")
     fun getByAssetId(assetId: String): Flow<List<LotEntity>>
 

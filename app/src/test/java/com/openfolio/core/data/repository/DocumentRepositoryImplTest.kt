@@ -933,6 +933,73 @@ class DocumentRepositoryImplTest {
         assertEquals("MUTUAL_FUND", captor.firstValue.assetClass)
     }
 
+    @Test
+    fun rollbackDocumentImportDeletesManualDocumentAndOrphanedAsset() = runBlocking {
+        val documentDao = mock<DocumentDao>()
+        val draftDao = mock<DraftTransactionDao>()
+        val txnDao = mock<TransactionDao>()
+        val assetDao = mock<com.openfolio.core.data.local.dao.AssetDao>()
+        val lotDao = mock<com.openfolio.core.data.local.dao.LotDao>()
+        val database = mock<OpenFolioDatabase>()
+        whenever(database.assetDao()).thenReturn(assetDao)
+        whenever(database.lotDao()).thenReturn(lotDao)
+
+        val manualDocId = "manual_undo_1"
+        val assetId = "ASSET_ORPHAN"
+        val manualDoc = DocumentEntity(
+            id = manualDocId,
+            fileName = "Manual: New Stock (BUY)",
+            localPath = "",
+            fileHash = "manual_txn-1",
+            fileSize = 0L,
+            importDate = 1700000000000L,
+            status = DocumentStatus.COMPLETED.name,
+        )
+        val manualTxn = com.openfolio.core.data.local.entity.TransactionEntity(
+            id = "txn-manual-1",
+            accountId = "default_account",
+            assetId = assetId,
+            type = com.openfolio.core.data.local.entity.TransactionType.BUY,
+            tradeDate = java.time.LocalDate.of(2025, 2, 1),
+            quantity = java.math.BigDecimal("10"),
+            unitPrice = java.math.BigDecimal("100"),
+            grossAmount = java.math.BigDecimal("1000"),
+            netAmount = java.math.BigDecimal("1000"),
+            currency = "INR",
+            fingerprint = "fp-manual-1",
+            status = com.openfolio.core.data.local.entity.TransactionStatus.CONFIRMED,
+            documentId = manualDocId,
+        )
+
+        whenever(documentDao.getDocumentById(manualDocId)).thenReturn(manualDoc)
+        whenever(txnDao.getByDocumentIdOnce(manualDocId)).thenReturn(listOf(manualTxn))
+        whenever(txnDao.getByAssetIdOnce(assetId)).thenReturn(emptyList())
+
+        val repository = DocumentRepositoryImpl(
+            documentDao = documentDao,
+            columnMappingDao = mock<ColumnMappingDao>(),
+            draftTransactionDao = draftDao,
+            transactionDao = txnDao,
+            database = database,
+            documentTextExtractor = mock<DocumentTextExtractor>(),
+            structuredFileParser = mock<StructuredFileParser>(),
+            settingsRepository = mock<SettingsRepository>(),
+            aiProvider = mock<AiProvider>(),
+            applicationScope = mock<CoroutineScope>(),
+        ).apply {
+            transactionRunner = { block -> block() }
+        }
+
+        val result = repository.rollbackDocumentImport(manualDocId)
+
+        assertEquals(1, result.deletedTransactionCount)
+        assertEquals(1, result.recalculatedAssetCount)
+        verify(txnDao).deleteByDocumentId(manualDocId)
+        verify(lotDao).deleteByAssetId(assetId)
+        verify(assetDao).deleteById(assetId)
+        verify(documentDao).deleteById(manualDocId)
+    }
+
     private fun createTestRepository() = DocumentRepositoryImpl(
         documentDao = mock<DocumentDao>(),
         columnMappingDao = mock<ColumnMappingDao>(),

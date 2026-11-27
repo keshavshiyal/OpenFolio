@@ -645,6 +645,9 @@ class DocumentRepositoryImpl @Inject constructor(
             val document = requireNotNull(documentDao.getDocumentById(documentId)) {
                 "Document not found: $documentId"
             }
+            val isManualDocument = document.id.startsWith("manual_") ||
+                document.fileHash.startsWith("manual_") ||
+                document.localPath.isBlank()
             val committedTxns = transactionDao.getByDocumentIdOnce(documentId)
             val affectedAssetIds = committedTxns.map { it.assetId }.distinct()
 
@@ -655,6 +658,11 @@ class DocumentRepositoryImpl @Inject constructor(
             val lotDao = runCatching { database.lotDao() }.getOrNull()
             for (assetId in affectedAssetIds) {
                 val remainingTxns = transactionDao.getByAssetIdOnce(assetId)
+                if (isManualDocument && remainingTxns.isEmpty()) {
+                    lotDao?.deleteByAssetId(assetId)
+                    database.assetDao().deleteById(assetId)
+                    continue
+                }
                 val fifoResult = FifoCostBasisCalculator.calculate(assetId, remainingTxns)
 
                 lotDao?.deleteByAssetId(assetId)
@@ -678,25 +686,29 @@ class DocumentRepositoryImpl @Inject constructor(
 
             draftTransactionDao.deleteByDocumentId(documentId)
 
-            val extension = document.fileName.substringAfterLast('.', "").lowercase()
-            val hasText = (extractedTextStore != null &&
-                (document.extractedTextPath != null || extractedTextStore.hasText(documentId)) &&
-                extractedTextStore.hasText(documentId)) ||
-                (!document.extractedText.isNullOrBlank() && document.extractedText != PASSWORD_PROTECTED_MARKER)
-            val restoredStatus = when {
-                extension in STRUCTURED_EXTENSIONS -> DocumentStatus.READY_FOR_MAPPING.name
-                hasText -> DocumentStatus.OCR_COMPLETE.name
-                else -> DocumentStatus.PENDING_OCR.name
-            }
+            if (isManualDocument) {
+                documentDao.deleteById(documentId)
+            } else {
+                val extension = document.fileName.substringAfterLast('.', "").lowercase()
+                val hasText = (extractedTextStore != null &&
+                    (document.extractedTextPath != null || extractedTextStore.hasText(documentId)) &&
+                    extractedTextStore.hasText(documentId)) ||
+                    (!document.extractedText.isNullOrBlank() && document.extractedText != PASSWORD_PROTECTED_MARKER)
+                val restoredStatus = when {
+                    extension in STRUCTURED_EXTENSIONS -> DocumentStatus.READY_FOR_MAPPING.name
+                    hasText -> DocumentStatus.OCR_COMPLETE.name
+                    else -> DocumentStatus.PENDING_OCR.name
+                }
 
-            documentDao.updateAiBatchProgress(
-                id = documentId,
-                processedPages = 0,
-                pageCount = document.pageCount,
-                status = restoredStatus,
-                carryOverContextJson = null,
-                error = null,
-            )
+                documentDao.updateAiBatchProgress(
+                    id = documentId,
+                    processedPages = 0,
+                    pageCount = document.pageCount,
+                    status = restoredStatus,
+                    carryOverContextJson = null,
+                    error = null,
+                )
+            }
 
             RollbackImportResult(
                 deletedTransactionCount = committedTxns.size,

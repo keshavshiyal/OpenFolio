@@ -9,7 +9,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -63,17 +66,21 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import com.openfolio.R
 import com.openfolio.core.data.local.entity.AssetClass
+import com.openfolio.core.data.local.entity.AssetEntity
 import com.openfolio.core.data.local.entity.TransactionEntity
 import com.openfolio.core.data.local.entity.TransactionType
 import com.openfolio.core.ui.components.AssetTypeSelectionBottomSheet
 import com.openfolio.core.ui.components.ImportOptionsBottomSheet
-import com.openfolio.core.ui.components.ManualTransactionDialog
+import com.openfolio.core.ui.components.ManualEntryBottomSheet
+import com.openfolio.core.ui.components.ManualTransactionInput
 import com.openfolio.core.ui.components.MoneyText
 import com.openfolio.core.ui.components.MoneyTextStyle
 import com.openfolio.core.ui.theme.LocalOpenFolioColors
@@ -85,6 +92,7 @@ import com.openfolio.feature.home.IngestionState
 import com.openfolio.feature.navigation.AppDestination
 import java.math.BigDecimal
 import java.time.LocalDate
+import kotlinx.coroutines.launch
 
 @Composable
 fun HomeScreen(
@@ -95,18 +103,21 @@ fun HomeScreen(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val ingestionState by viewModel.ingestionState.collectAsStateWithLifecycle()
+    val existingAssets by viewModel.existingAssets.collectAsStateWithLifecycle()
 
     HomeScreen(
         uiState = uiState,
         ingestionState = ingestionState,
         onToggleValues = viewModel::toggleValuesVisibility,
         onSelectPeriod = viewModel::selectPeriod,
-        onImport = viewModel::ingestFile,
+        onImport = { uri, assetClass -> viewModel.ingestFile(uri, assetClass) },
         onImportSuccess = onImportSuccess,
         onIngestionHandled = viewModel::clearIngestionState,
         onSettings = onSettings,
         onAddManually = onAddManually,
+        existingAssets = existingAssets,
         onSaveManualTransaction = viewModel::recordManualTransaction,
+        onSaveManualTransactionResult = viewModel::recordManualTransactionResult,
     )
 }
 
@@ -149,10 +160,13 @@ fun HomeScreen(
     onIngestionHandled: () -> Unit,
     onSettings: () -> Unit,
     onAddManually: () -> Unit = {},
+    existingAssets: List<AssetEntity> = emptyList(),
     onSaveManualTransaction: ((String, AssetClass, TransactionType, LocalDate, BigDecimal, BigDecimal, BigDecimal, BigDecimal, BigDecimal, String?, String?, String?) -> Unit)? = null,
+    onSaveManualTransactionResult: (suspend (ManualTransactionInput) -> Result<Unit>)? = null,
 ) {
     val colors = LocalOpenFolioColors.current
     val snackbarHostState = remember { SnackbarHostState() }
+    val coroutineScope = rememberCoroutineScope()
     var showImportOptionsSheet by remember { mutableStateOf(false) }
     var showAssetTypeSheet by remember { mutableStateOf(false) }
     var showManualTransactionDialog by remember { mutableStateOf(false) }
@@ -388,11 +402,40 @@ fun HomeScreen(
     }
 
     if (showManualTransactionDialog) {
-        ManualTransactionDialog(
+        ManualEntryBottomSheet(
+            existingAssets = existingAssets,
             onDismiss = { showManualTransactionDialog = false },
-            onSave = { name, cls, type, date, qty, price, netAmt, fees, taxes, notes, broker, tickerOrIsin ->
-                onSaveManualTransaction?.invoke(name, cls, type, date, qty, price, netAmt, fees, taxes, notes, broker, tickerOrIsin)
-                    ?: onAddManually()
+            onSave = { input ->
+                if (onSaveManualTransactionResult != null) {
+                    val result = onSaveManualTransactionResult(input)
+                    if (result.isSuccess) {
+                        coroutineScope.launch {
+                            snackbarHostState.showSnackbar(
+                                "Manual entry saved. Open Inbox anytime to Undo.",
+                            )
+                        }
+                    }
+                    result
+                } else if (onSaveManualTransaction != null) {
+                    onSaveManualTransaction(
+                        input.assetName,
+                        input.assetClass,
+                        input.type,
+                        input.tradeDate,
+                        input.quantity,
+                        input.unitPrice,
+                        input.netAmount,
+                        input.fees,
+                        input.taxes,
+                        input.notes,
+                        input.broker,
+                        input.tickerOrIsin,
+                    )
+                    Result.success(Unit)
+                } else {
+                    onAddManually()
+                    Result.failure(IllegalStateException("Manual entry saving is not configured."))
+                }
             },
         )
     }
@@ -408,6 +451,7 @@ private val DOCUMENT_MIME_TYPES = arrayOf(
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun NetWorthSection(
     netWorth: BigDecimal,
@@ -425,9 +469,9 @@ private fun NetWorthSection(
             style = MaterialTheme.typography.titleMedium,
             color = colors.muted,
         )
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
+        FlowRow(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             val trendStyle = MaterialTheme.typography.labelMedium.copy(
                 fontFeatureSettings = "tnum",
@@ -436,8 +480,10 @@ private fun NetWorthSection(
                 amount = netWorth,
                 style = MoneyTextStyle.Display,
                 showValues = showValues,
+                modifier = Modifier.align(Alignment.CenterVertically),
             )
             Row(
+                modifier = Modifier.align(Alignment.CenterVertically),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
@@ -665,22 +711,44 @@ private fun AssetLiabilityPair(
     totalLiabilities: BigDecimal,
     showValues: Boolean,
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        StatCard(
-            modifier = Modifier.weight(1f),
-            label = "Assets",
-            amount = totalAssets,
-            showValues = showValues,
-        )
-        StatCard(
-            modifier = Modifier.weight(1f),
-            label = "Liabilities",
-            amount = totalLiabilities,
-            showValues = showValues,
-        )
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        if (maxWidth < 340.dp) {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                StatCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    label = "Assets",
+                    amount = totalAssets,
+                    showValues = showValues,
+                )
+                StatCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    label = "Liabilities",
+                    amount = totalLiabilities,
+                    showValues = showValues,
+                )
+            }
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                StatCard(
+                    modifier = Modifier.weight(1f),
+                    label = "Assets",
+                    amount = totalAssets,
+                    showValues = showValues,
+                )
+                StatCard(
+                    modifier = Modifier.weight(1f),
+                    label = "Liabilities",
+                    amount = totalLiabilities,
+                    showValues = showValues,
+                )
+            }
+        }
     }
 }
 
@@ -702,7 +770,13 @@ private fun StatCard(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Text(label, style = MaterialTheme.typography.bodyMedium, color = colors.muted)
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyMedium,
+                color = colors.muted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
             MoneyText(
                 amount = amount,
                 style = MoneyTextStyle.Title,
@@ -833,6 +907,8 @@ private fun RecentActivityRow(
                 text = "${transaction.type.name} ${transaction.assetId}",
                 style = MaterialTheme.typography.bodyLarge,
                 color = colors.content,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
             Text(
                 text = transaction.tradeDate.toString(),

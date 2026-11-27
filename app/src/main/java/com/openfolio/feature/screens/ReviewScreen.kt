@@ -4,11 +4,13 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -294,66 +296,83 @@ fun ReviewScreen(
                 DocumentStatus.FAILED.name,
             )
 
-        Column(
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
                 .imePadding()
                 .navigationBarsPadding(),
         ) {
-            if (!isMapping || !isKeyboardVisible) {
-                Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(if (isMapping) 0.35f else 0.4f),
-                    color = colors.background,
-                ) {
-                    if (document != null && document.localPath.isNotBlank()) {
-                        val fileExtension = document.fileName.substringAfterLast('.', "")
-                            .ifBlank { document.localPath.substringAfterLast('.', "") }
-                        DocumentPreview(
-                            filePath = document.localPath,
-                            fileExtension = fileExtension,
-                            headerRowIndex = headerRowNumber,
-                            password = unlockedPassword,
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                    } else {
-                        Column(
-                            modifier = Modifier.fillMaxSize(),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center,
-                        ) {
-                            Text(
-                                text = when (uiState) {
-                                    is ReviewUiState.Error -> uiState.message
-                                    ReviewUiState.NotFound -> "This document is no longer available."
-                                    else -> "Loading document…"
-                                },
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = colors.muted,
+            val isWideSplit = maxWidth >= 600.dp
+            val showPreview = !isMapping || !isKeyboardVisible || isWideSplit
+            val editorShape = if (isWideSplit) {
+                RoundedCornerShape(topStart = 24.dp, bottomStart = 24.dp)
+            } else {
+                RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+            }
+
+            ReviewAdaptiveSplitLayout(
+                isWideSplit = isWideSplit,
+                showPreview = showPreview,
+                previewVerticalWeight = if (isMapping) 0.35f else 0.4f,
+                editorVerticalWeight = if (isMapping && isKeyboardVisible) 1f else if (isMapping) 0.65f else 0.6f,
+                previewContent = { previewModifier ->
+                    Surface(
+                        modifier = previewModifier,
+                        color = colors.background,
+                    ) {
+                        if (document != null && document.localPath.isNotBlank()) {
+                            val fileExtension = document.fileName.substringAfterLast('.', "")
+                                .ifBlank { document.localPath.substringAfterLast('.', "") }
+                            DocumentPreview(
+                                filePath = document.localPath,
+                                fileExtension = fileExtension,
+                                headerRowIndex = headerRowNumber,
+                                password = unlockedPassword,
+                                modifier = Modifier.fillMaxSize(),
                             )
-                            document?.let {
+                        } else {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(20.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center,
+                            ) {
+                                val isManualDoc = document?.id?.startsWith("manual_") == true ||
+                                    document?.fileHash?.startsWith("manual_") == true
                                 Text(
-                                    text = it.fileName,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = colors.muted,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
+                                    text = when {
+                                        uiState is ReviewUiState.Error -> uiState.message
+                                        uiState is ReviewUiState.NotFound -> "This document is no longer available."
+                                        isManualDoc -> document?.fileName ?: "Manual Entry"
+                                        else -> "Loading document…"
+                                    },
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = if (isManualDoc) colors.content else colors.muted,
                                 )
+                                document?.let {
+                                    val subText = if (isManualDoc) it.extractedText.orEmpty() else it.fileName
+                                    if (subText.isNotBlank()) {
+                                        Text(
+                                            text = subText,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = colors.muted,
+                                            maxLines = 3,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
-                }
-            }
-
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(if (isMapping && isKeyboardVisible) 1f else if (isMapping) 0.65f else 0.6f),
-                color = colors.surface,
-                shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-            ) {
+                },
+                editorContent = { editorModifier ->
+                    Surface(
+                        modifier = editorModifier,
+                        color = colors.surface,
+                        shape = editorShape,
+                    ) {
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
@@ -833,7 +852,9 @@ fun ReviewScreen(
                     }
                 }
             }
-        }
+        },
+        )
+    }
     }
 
 
@@ -1700,5 +1721,47 @@ internal fun formatEpochMillisToDate(millis: Long): String {
             .format(DateTimeFormatter.ISO_LOCAL_DATE)
     } catch (_: Exception) {
         "Unknown Date"
+    }
+}
+
+@Composable
+private fun ReviewAdaptiveSplitLayout(
+    isWideSplit: Boolean,
+    showPreview: Boolean,
+    previewVerticalWeight: Float,
+    editorVerticalWeight: Float,
+    previewContent: @Composable (Modifier) -> Unit,
+    editorContent: @Composable (Modifier) -> Unit,
+) {
+    if (isWideSplit) {
+        Row(modifier = Modifier.fillMaxSize()) {
+            if (showPreview) {
+                previewContent(
+                    Modifier
+                        .fillMaxHeight()
+                        .weight(0.45f),
+                )
+            }
+            editorContent(
+                Modifier
+                    .fillMaxHeight()
+                    .weight(if (showPreview) 0.55f else 1f),
+            )
+        }
+    } else {
+        Column(modifier = Modifier.fillMaxSize()) {
+            if (showPreview) {
+                previewContent(
+                    Modifier
+                        .fillMaxWidth()
+                        .weight(previewVerticalWeight),
+                )
+            }
+            editorContent(
+                Modifier
+                    .fillMaxWidth()
+                    .weight(if (!showPreview) 1f else editorVerticalWeight),
+            )
+        }
     }
 }

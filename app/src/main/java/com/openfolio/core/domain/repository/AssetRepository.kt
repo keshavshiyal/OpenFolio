@@ -35,6 +35,7 @@ interface AssetRepository {
         notes: String? = null,
         broker: String? = null,
         tickerOrIsin: String? = null,
+        selectedAssetId: String? = null,
     ): TransactionEntity {
         throw UnsupportedOperationException("Manual transaction not implemented in this repository.")
     }
