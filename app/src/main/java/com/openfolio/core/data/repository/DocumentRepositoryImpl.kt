@@ -845,7 +845,7 @@ class DocumentRepositoryImpl @Inject constructor(
                 throw AiExtractionException(msg, e)
             }
 
-            if (batchResult.wasTruncated && depth < MAX_TRUNCATION_SPLIT_DEPTH) {
+            val resolvedResult = if (batchResult.wasTruncated && depth < MAX_TRUNCATION_SPLIT_DEPTH) {
                 if (pagesInChunk.size > 1) {
                     val mid = pagesInChunk.size / 2
                     val firstPages = pagesInChunk.subList(0, mid)
@@ -863,37 +863,47 @@ class DocumentRepositoryImpl @Inject constructor(
                     } else {
                         AiExtractionBatchResult(emptyList(), false, midContext)
                     }
-                    return AiExtractionBatchResult(
+                    AiExtractionBatchResult(
                         drafts = firstRes.drafts + secondRes.drafts,
-                        wasTruncated = false,
+                        wasTruncated = firstRes.wasTruncated || secondRes.wasTruncated,
                         carryOverContext = mergeCarryOverContext(midContext, secondRes.carryOverContext),
                     )
-                }
-
-                val lines = chunkText.lineSequence().filter { it.isNotBlank() }.toList()
-                if (lines.size > MIN_LINES_TO_SPLIT_ON_TRUNCATION) {
-                    val mid = lines.size / 2
-                    val firstHalf = lines.subList(0, mid).joinToString("\n")
-                    val secondHalf = lines.subList(mid, lines.size).joinToString("\n")
-                    val firstRes = if (firstHalf.isNotBlank()) {
-                        invokeAiChunk(firstHalf, priorContext, emptyList(), depth + 1)
+                } else {
+                    val lines = chunkText.lineSequence().filter { it.isNotBlank() }.toList()
+                    if (lines.size > MIN_LINES_TO_SPLIT_ON_TRUNCATION) {
+                        val mid = lines.size / 2
+                        val firstHalf = lines.subList(0, mid).joinToString("\n")
+                        val secondHalf = lines.subList(mid, lines.size).joinToString("\n")
+                        val firstRes = if (firstHalf.isNotBlank()) {
+                            invokeAiChunk(firstHalf, priorContext, emptyList(), depth + 1)
+                        } else {
+                            AiExtractionBatchResult(emptyList(), false, priorContext)
+                        }
+                        val midContext = mergeCarryOverContext(priorContext, firstRes.carryOverContext)
+                        val secondRes = if (secondHalf.isNotBlank()) {
+                            invokeAiChunk(secondHalf, midContext, emptyList(), depth + 1)
+                        } else {
+                            AiExtractionBatchResult(emptyList(), false, midContext)
+                        }
+                        AiExtractionBatchResult(
+                            drafts = firstRes.drafts + secondRes.drafts,
+                            wasTruncated = firstRes.wasTruncated || secondRes.wasTruncated,
+                            carryOverContext = mergeCarryOverContext(midContext, secondRes.carryOverContext),
+                        )
                     } else {
-                        AiExtractionBatchResult(emptyList(), false, priorContext)
+                        batchResult
                     }
-                    val midContext = mergeCarryOverContext(priorContext, firstRes.carryOverContext)
-                    val secondRes = if (secondHalf.isNotBlank()) {
-                        invokeAiChunk(secondHalf, midContext, emptyList(), depth + 1)
-                    } else {
-                        AiExtractionBatchResult(emptyList(), false, midContext)
-                    }
-                    return AiExtractionBatchResult(
-                        drafts = firstRes.drafts + secondRes.drafts,
-                        wasTruncated = false,
-                        carryOverContext = mergeCarryOverContext(midContext, secondRes.carryOverContext),
-                    )
                 }
+            } else {
+                batchResult
             }
-            return batchResult
+
+            if (depth == 0 && resolvedResult.wasTruncated && resolvedResult.drafts.isEmpty()) {
+                val msg = "AI response exceeded token limit (MAX_TOKENS). Try splitting the PDF or choosing another model in Settings."
+                documentDao.updateStatusAndError(documentId, DocumentStatus.FAILED.name, msg)
+                throw AiExtractionException(msg)
+            }
+            return resolvedResult
         }
 
         data class NormalizedBatchResult(
@@ -1006,7 +1016,10 @@ class DocumentRepositoryImpl @Inject constructor(
                     pageCount = totalPages,
                     status = DocumentStatus.PROCESSING.name,
                 )
-            } else if (document.status != DocumentStatus.PROCESSING.name) {
+                if (document.extractionError != null) {
+                    documentDao.updateStatusAndError(documentId, DocumentStatus.PROCESSING.name, null)
+                }
+            } else if (document.status != DocumentStatus.PROCESSING.name || document.extractionError != null) {
                 documentDao.updateStatusAndError(documentId, DocumentStatus.PROCESSING.name, null)
             }
 
@@ -1030,7 +1043,7 @@ class DocumentRepositoryImpl @Inject constructor(
                     currentCoroutineContext().ensureActive()
                     val lookaheadPages = activeStore.readPagesRange(
                         documentId = documentId,
-                        pageRange = currentPage..minOf(currentPage + 5, totalPages),
+                        pageRange = currentPage..minOf(currentPage + DEFAULT_AI_BATCH_PAGES, totalPages),
                     )
                     val batchEndPage = selectSmartBatchEndPage(
                         batchStartPage = currentPage,
@@ -1995,27 +2008,45 @@ class DocumentRepositoryImpl @Inject constructor(
         totalPages: Int,
         pagesByNumber: Map<Int, String>,
     ): Int {
+        if (batchStartPage >= totalPages) return totalPages
+
+        val p1 = batchStartPage
+        val p2 = batchStartPage + 1
+        val text1 = pagesByNumber[p1].orEmpty()
+        val text2 = pagesByNumber[p2].orEmpty()
+
+        // Keep dense statements to 1 page per request so output stays safely within the token window
+        if (shouldUseSinglePageBatch(text1, text2)) {
+            return p1
+        }
+
         val remaining = totalPages - batchStartPage + 1
         if (remaining <= DEFAULT_AI_BATCH_PAGES) return totalPages
 
-        val p4 = batchStartPage + 3
-        val p5 = batchStartPage + 4
+        val nextAfter2 = pagesByNumber[p2 + 1].orEmpty()
 
-        val text4 = pagesByNumber[p4].orEmpty()
-        val text5 = pagesByNumber[p5].orEmpty()
-        val nextAfter5 = pagesByNumber[p5 + 1].orEmpty()
+        // Strictly cap at 2 pages per Gemini request; snap to 1 if a clean section break lands there
+        if (hasClosingBreak(text2) || (p2 + 1 <= totalPages && startsWithNewSection(nextAfter2))) {
+            return p2
+        }
+        if (hasClosingBreak(text1) || startsWithNewSection(text2)) {
+            return p1
+        }
+        return p2
+    }
 
-        // Strictly cap at 5 pages per Gemini request; snap to 4 if a clean section break lands there
-        if (hasClosingBreak(text5) || (p5 + 1 <= totalPages && startsWithNewSection(nextAfter5))) {
-            return p5
+    private fun shouldUseSinglePageBatch(page1Text: String, page2Text: String): Boolean {
+        val p1Chars = page1Text.length
+        val p2Chars = page2Text.length
+        if (p1Chars >= MAX_SINGLE_PAGE_CHARS_FOR_BATCHING || p1Chars + p2Chars > MAX_AI_BATCH_CHARS) {
+            return true
         }
-        if (hasClosingBreak(text4) || startsWithNewSection(text5)) {
-            return p4
+        val p1Lines = page1Text.lineSequence().count { it.isNotBlank() }
+        if (p1Lines >= MAX_SINGLE_PAGE_LINES_FOR_BATCHING) {
+            return true
         }
-        if (hasSectionBreakMarker(text4) && !hasSectionBreakMarker(text5)) {
-            return p4
-        }
-        return p5
+        val p2Lines = page2Text.lineSequence().count { it.isNotBlank() }
+        return p1Lines + p2Lines > MAX_AI_BATCH_LINES
     }
 
     private fun extractTrailingContentLines(pageText: String, maxLines: Int = 4): String {
@@ -2049,12 +2080,6 @@ class DocumentRepositoryImpl @Inject constructor(
 
     private fun hasClosingBreak(text: String): Boolean =
         text.contains("Closing Unit Balance", ignoreCase = true)
-
-    private fun hasSectionBreakMarker(text: String): Boolean =
-        text.contains("Closing Unit Balance", ignoreCase = true) ||
-            text.contains("Folio No", ignoreCase = true) ||
-            text.contains("ISIN:", ignoreCase = true) ||
-            text.contains("ISIN :", ignoreCase = true)
 
     private fun startsWithNewSection(text: String): Boolean {
         val leadingLines = text.lineSequence().map { it.trim() }.filter { it.isNotBlank() }.take(6)
@@ -2368,9 +2393,13 @@ class DocumentRepositoryImpl @Inject constructor(
         const val PROGRESS_UPDATE_INTERVAL_PAGES = 5
         const val LEGACY_PREVIEW_MAX_CHARS = 500
         const val LEGACY_SLICE_SIZE = 100_000
-        const val MAX_TRUNCATION_SPLIT_DEPTH = 2
-        const val MIN_LINES_TO_SPLIT_ON_TRUNCATION = 10
-        const val DEFAULT_AI_BATCH_PAGES = 5
+        const val MAX_TRUNCATION_SPLIT_DEPTH = 3
+        const val MIN_LINES_TO_SPLIT_ON_TRUNCATION = 4
+        const val DEFAULT_AI_BATCH_PAGES = 2
+        const val MAX_SINGLE_PAGE_CHARS_FOR_BATCHING = 6_000
+        const val MAX_AI_BATCH_CHARS = 9_000
+        const val MAX_SINGLE_PAGE_LINES_FOR_BATCHING = 80
+        const val MAX_AI_BATCH_LINES = 120
         const val LOW_CONFIDENCE_REVIEW_THRESHOLD = 80
         const val MILLIS_PER_DAY = 86_400_000L
         val SUPPORTED_EXTENSIONS = setOf("pdf", "csv", "xlsx", "png", "jpg", "jpeg")

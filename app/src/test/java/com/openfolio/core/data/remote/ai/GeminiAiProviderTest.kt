@@ -2,6 +2,7 @@ package com.openfolio.core.data.remote.ai
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -549,5 +550,230 @@ class GeminiAiProviderTest {
         val fallbackOnlyPrompt = restored.copy(incompleteTailText = "").toPromptPrefix()
         assertTrue(fallbackOnlyPrompt.contains("Trailing Lines from Previous Page"))
         assertTrue(fallbackOnlyPrompt.contains("30-Mar-2024 Stamp Duty 0.50"))
+    }
+
+    @Test
+    fun defaultModelIsGemini38FlashAndRequestConfigAdaptsByModelFamily() {
+        assertEquals("gemini-3.8-flash", GeminiAiProvider.DEFAULT_MODEL_NAME)
+        assertEquals("gemini-3.8-flash", provider.resolveModelName(null))
+
+        val req38 = JSONObject(
+            provider.buildGenerateContentRequestJson(
+                modelName = "gemini-3.8-flash",
+                systemPrompt = "sys",
+                userPrompt = "usr",
+            ),
+        )
+        val gen38 = req38.getJSONObject("generationConfig")
+        assertEquals(65_536, gen38.getInt("maxOutputTokens"))
+        assertEquals("application/json", gen38.getString("responseMimeType"))
+        assertFalse(gen38.has("temperature"))
+        assertEquals("LOW", gen38.getJSONObject("thinkingConfig").getString("thinkingLevel"))
+
+        val req4Hydrogen = JSONObject(
+            provider.buildGenerateContentRequestJson(
+                modelName = "gemini-4-hydrogen",
+                systemPrompt = "sys",
+                userPrompt = "usr",
+            ),
+        )
+        val gen4 = req4Hydrogen.getJSONObject("generationConfig")
+        assertEquals(65_536, gen4.getInt("maxOutputTokens"))
+        assertFalse(gen4.has("temperature"))
+        assertEquals("LOW", gen4.getJSONObject("thinkingConfig").getString("thinkingLevel"))
+
+        val req36 = JSONObject(
+            provider.buildGenerateContentRequestJson(
+                modelName = "gemini-3.6-flash",
+                systemPrompt = "sys",
+                userPrompt = "usr",
+            ),
+        )
+        val gen36 = req36.getJSONObject("generationConfig")
+        assertEquals(65_536, gen36.getInt("maxOutputTokens"))
+        assertFalse(gen36.has("temperature"))
+        assertEquals("MINIMAL", gen36.getJSONObject("thinkingConfig").getString("thinkingLevel"))
+
+        val req35Lite = JSONObject(
+            provider.buildGenerateContentRequestJson(
+                modelName = "gemini-3.5-flash-lite",
+                systemPrompt = "sys",
+                userPrompt = "usr",
+            ),
+        )
+        val gen35Lite = req35Lite.getJSONObject("generationConfig")
+        assertEquals("MINIMAL", gen35Lite.getJSONObject("thinkingConfig").getString("thinkingLevel"))
+
+        val req25 = JSONObject(
+            provider.buildGenerateContentRequestJson(
+                modelName = "gemini-2.5-flash",
+                systemPrompt = "sys",
+                userPrompt = "usr",
+            ),
+        )
+        val gen25 = req25.getJSONObject("generationConfig")
+        assertEquals(65_536, gen25.getInt("maxOutputTokens"))
+        assertEquals(0.0, gen25.getDouble("temperature"), 0.0001)
+        assertEquals(0, gen25.getJSONObject("thinkingConfig").getInt("thinkingBudget"))
+
+        val req20 = JSONObject(
+            provider.buildGenerateContentRequestJson(
+                modelName = "gemini-2.0-flash",
+                systemPrompt = "sys",
+                userPrompt = "usr",
+            ),
+        )
+        val gen20 = req20.getJSONObject("generationConfig")
+        assertEquals(8_192, gen20.getInt("maxOutputTokens"))
+        assertEquals(0.0, gen20.getDouble("temperature"), 0.0001)
+        assertFalse(gen20.has("thinkingConfig"))
+    }
+
+    @Test
+    fun restTransportSkipsThoughtPartsAndHandlesMaxTokensWithoutFailing() = runBlocking {
+        var capturedUrl = ""
+        var capturedApiKey = ""
+        val partialTruncatedEnvelope = """
+            {
+              "candidates": [
+                {
+                  "finishReason": "MAX_TOKENS",
+                  "content": {
+                    "role": "model",
+                    "parts": [
+                      {
+                        "thought": true,
+                        "text": "Internal reasoning should be ignored"
+                      },
+                      {
+                        "text": "{\"transactions\":[{\"assetName\":\"HDFC Mid-Cap Opportunities Fund\",\"assetClass\":\"MUTUAL_FUND\",\"transactionType\":\"BUY\",\"quantity\":\"12.500\",\"price\":\"100.00\",\"netAmount\":\"1250.00\",\"tradeDate\":\"2026-05-10\",\"isin\":\"INF179K01CR2\"},{\"assetName\":\"Partial Cut"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val restProvider = GeminiAiProvider(
+            delayFn = { },
+            generateContentFn = null,
+            httpPostFn = { url, apiKey, _ ->
+                capturedUrl = url
+                capturedApiKey = apiKey
+                GeminiAiProvider.HttpPostResult(200, partialTruncatedEnvelope)
+            },
+        )
+
+        val result = restProvider.extractTransactionsWithContext(
+            rawText = "--- PAGE 1 ---\nHDFC Mid-Cap SIP 1250.00",
+            apiKey = "AIza-test-key",
+            documentId = "doc-rest-max-tokens",
+        )
+
+        assertTrue(result.isSuccess)
+        assertEquals(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
+            capturedUrl,
+        )
+        assertEquals("AIza-test-key", capturedApiKey)
+        val batch = result.getOrThrow()
+        assertTrue(batch.wasTruncated)
+        assertEquals(1, batch.drafts.size)
+        assertEquals("HDFC Mid-Cap Opportunities Fund", batch.drafts.single().assetName)
+        assertEquals("INF179K01CR2", batch.drafts.single().isin)
+    }
+
+    @Test
+    fun restMaxTokensWithEmptyTextTriggersTruncationSplitInsteadOfError() = runBlocking {
+        val emptyMaxTokensEnvelope = """
+            {
+              "candidates": [
+                {
+                  "finishReason": "MAX_TOKENS",
+                  "content": {
+                    "role": "model",
+                    "parts": []
+                  }
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val restProvider = GeminiAiProvider(
+            delayFn = { },
+            generateContentFn = null,
+            httpPostFn = { _, _, _ -> GeminiAiProvider.HttpPostResult(200, emptyMaxTokensEnvelope) },
+        )
+
+        val result = restProvider.extractTransactionsWithContext(
+            rawText = "--- PAGE 1 ---\nDense table",
+            apiKey = "AIza-test-key",
+            documentId = "doc-empty-max-tokens",
+        )
+
+        assertTrue(result.isSuccess)
+        val batch = result.getOrThrow()
+        assertTrue(batch.wasTruncated)
+        assertTrue(batch.drafts.isEmpty())
+    }
+
+    @Test
+    fun restSafetyBlockAndHttpErrorsBehaveDeterministically() = runBlocking {
+        val safetyProvider = GeminiAiProvider(
+            delayFn = { },
+            generateContentFn = null,
+            httpPostFn = { _, _, _ ->
+                GeminiAiProvider.HttpPostResult(
+                    200,
+                    """{"candidates":[{"finishReason":"SAFETY","content":{"parts":[]}}]}""",
+                )
+            },
+        )
+        val safetyRes = safetyProvider.extractTransactionsWithContext("text", "key", "doc-safety")
+        assertTrue(safetyRes.isFailure)
+        assertTrue(safetyRes.exceptionOrNull()?.message?.contains("SAFETY") == true)
+
+        var http400Attempts = 0
+        val badRequestProvider = GeminiAiProvider(
+            delayFn = { },
+            generateContentFn = null,
+            httpPostFn = { _, _, _ ->
+                http400Attempts++
+                GeminiAiProvider.HttpPostResult(
+                    400,
+                    """{"error":{"code":400,"message":"Invalid argument","status":"INVALID_ARGUMENT"}}""",
+                )
+            },
+        )
+        val badReqRes = badRequestProvider.extractTransactionsWithContext("text", "key", "doc-400")
+        assertTrue(badReqRes.isFailure)
+        assertEquals(1, http400Attempts)
+        assertTrue(badReqRes.exceptionOrNull()?.message?.contains("Invalid argument") == true)
+
+        var http429Attempts = 0
+        val recordedDelays = mutableListOf<Long>()
+        val rateLimitedProvider = GeminiAiProvider(
+            delayFn = { recordedDelays.add(it) },
+            generateContentFn = null,
+            httpPostFn = { _, _, _ ->
+                http429Attempts++
+                if (http429Attempts == 1) {
+                    GeminiAiProvider.HttpPostResult(
+                        429,
+                        """{"error":{"code":429,"message":"Rate limit exceeded","status":"RESOURCE_EXHAUSTED"}}""",
+                    )
+                } else {
+                    GeminiAiProvider.HttpPostResult(
+                        200,
+                        """{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"{\"transactions\":[],\"carryOverContext\":{}}"}]}}]}""",
+                    )
+                }
+            },
+        )
+        val retryRes = rateLimitedProvider.extractTransactionsWithContext("text", "key", "doc-429")
+        assertTrue(retryRes.isSuccess)
+        assertEquals(2, http429Attempts)
+        assertEquals(listOf(2_000L), recordedDelays)
     }
 }

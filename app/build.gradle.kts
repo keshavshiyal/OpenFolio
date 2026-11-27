@@ -120,7 +120,6 @@ dependencies {
     implementation(libs.mlkit.text.recognition)
     implementation(libs.opencsv)
     implementation(libs.androidx.security.crypto)
-    implementation(libs.google.generativeai)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.androidx.hilt.work)

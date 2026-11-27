@@ -65,10 +65,16 @@ class SettingsRepository @Inject constructor(
 
     fun getGeminiModelName(): String {
         return try {
-            prefs.getString(KEY_GEMINI_MODEL_NAME, DEFAULT_GEMINI_MODEL_NAME)
+            val saved = prefs.getString(KEY_GEMINI_MODEL_NAME, DEFAULT_GEMINI_MODEL_NAME)
                 ?.trim()
                 ?.takeIf(String::isNotBlank)
-                ?: DEFAULT_GEMINI_MODEL_NAME
+            val resolved = resolveMigratedModelName(saved)
+            if (saved != null && resolved != saved) {
+                runCatching {
+                    prefs.edit().putString(KEY_GEMINI_MODEL_NAME, resolved).apply()
+                }
+            }
+            resolved
         } catch (_: Exception) {
             DEFAULT_GEMINI_MODEL_NAME
         }
@@ -104,12 +110,32 @@ class SettingsRepository @Inject constructor(
     companion object {
         const val KEY_GEMINI_API_KEY = "gemini_api_key"
         const val KEY_GEMINI_MODEL_NAME = "gemini_model_name"
-        const val DEFAULT_GEMINI_MODEL_NAME = "gemini-2.5-flash"
+        const val DEFAULT_GEMINI_MODEL_NAME = "gemini-3.8-flash"
         const val KEY_SHOW_VALUES = "show_values"
         val SUPPORTED_GEMINI_MODELS = listOf(
+            "gemini-3.8-flash",
+            "gemini-4-hydrogen",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash-lite",
+        )
+        private val DEPRECATED_GEMINI_MODELS = setOf(
+            "gemini-1.5-flash",
+            "gemini-1.5-pro",
+            "gemini-2.0-flash",
+            "gemini-2.0-flash-lite",
             "gemini-2.5-flash",
             "gemini-2.5-pro",
-            "gemini-2.0-flash",
+            "gemini-3.5-flash",
+            "gemini-3.7-flash",
         )
+
+        internal fun resolveMigratedModelName(rawModelName: String?): String {
+            val trimmed = rawModelName?.trim()?.takeIf(String::isNotBlank) ?: return DEFAULT_GEMINI_MODEL_NAME
+            return if (trimmed.lowercase() in DEPRECATED_GEMINI_MODELS) {
+                DEFAULT_GEMINI_MODEL_NAME
+            } else {
+                trimmed
+            }
+        }
     }
 }

@@ -1,14 +1,16 @@
 package com.openfolio.core.data.remote.ai
 
 import android.util.Log
-import com.google.ai.client.generativeai.GenerativeModel
-import com.google.ai.client.generativeai.type.content
-import com.google.ai.client.generativeai.type.generationConfig
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
 import com.openfolio.core.utils.AssetNameNormalizer
 import com.openfolio.core.utils.DateParser
+import java.io.IOException
 import java.math.BigDecimal
+import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
+import java.net.URL
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.UUID
@@ -17,6 +19,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -30,6 +33,7 @@ class GeminiAiProvider internal constructor(
     private val delayFn: suspend (Long) -> Unit,
     private val generateContentFn: (suspend (apiKey: String, rawText: String) -> String)?,
     private val defaultModelName: String = DEFAULT_MODEL_NAME,
+    private val httpPostFn: (suspend (endpointUrl: String, apiKey: String, requestBody: String) -> HttpPostResult)? = null,
 ) : ContextualAiProvider {
 
     @Inject
@@ -37,7 +41,18 @@ class GeminiAiProvider internal constructor(
         delayFn = { millis -> delay(millis) },
         generateContentFn = null,
         defaultModelName = DEFAULT_MODEL_NAME,
+        httpPostFn = null,
     )
+
+    internal data class HttpPostResult(
+        val statusCode: Int,
+        val body: String,
+    )
+
+    internal class GeminiApiHttpException(
+        val statusCode: Int,
+        message: String,
+    ) : IOException(message)
 
     internal data class ParsedAiResponse(
         val drafts: List<DraftTransactionEntity>,
@@ -45,40 +60,168 @@ class GeminiAiProvider internal constructor(
         val carryOverContext: AiCarryOverContext = AiCarryOverContext(),
     )
 
-    @Volatile
-    private var cachedModelKey: Triple<String, String, String>? = null
-
-    @Volatile
-    private var cachedModel: GenerativeModel? = null
-
-    private val modelLock = Any()
-
     internal fun resolveModelName(modelName: String?): String =
         modelName?.trim()?.takeIf(String::isNotBlank) ?: defaultModelName
 
-    private fun getOrCreateModel(apiKey: String, modelName: String): GenerativeModel {
-        val today = LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE)
-        val cacheKey = Triple(apiKey, today, modelName)
-        cachedModel?.takeIf { cachedModelKey == cacheKey }?.let { return it }
+    internal fun buildEndpointUrl(modelName: String): String {
+        val cleanModel = resolveModelName(modelName).removePrefix("models/")
+        val encodedModel = URLEncoder.encode(cleanModel, StandardCharsets.UTF_8.name())
+        return "$GEMINI_API_BASE_URL/models/$encodedModel:generateContent"
+    }
 
-        synchronized(modelLock) {
-            cachedModel?.takeIf { cachedModelKey == cacheKey }?.let { return it }
-            val created = GenerativeModel(
-                modelName = modelName,
-                apiKey = apiKey,
-                generationConfig = generationConfig {
-                    temperature = 0f
-                    maxOutputTokens = MAX_OUTPUT_TOKENS
-                    responseMimeType = "application/json"
-                },
-                systemInstruction = content {
-                    text(buildSystemPrompt(today))
-                },
-            )
-            cachedModelKey = cacheKey
-            cachedModel = created
-            return created
+    internal fun buildGenerateContentRequestJson(
+        modelName: String,
+        systemPrompt: String,
+        userPrompt: String,
+    ): String {
+        val generationConfig = JSONObject().apply {
+            put("responseMimeType", "application/json")
+            put("maxOutputTokens", maxOutputTokensForModel(modelName))
+            if (supportsLegacyTemperature(modelName)) {
+                put("temperature", 0.0)
+            }
+            thinkingConfigForModel(modelName)?.let { put("thinkingConfig", it) }
         }
+
+        val systemInstruction = JSONObject().put(
+            "parts",
+            JSONArray().put(JSONObject().put("text", systemPrompt)),
+        )
+
+        val userContent = JSONObject().apply {
+            put("role", "user")
+            put("parts", JSONArray().put(JSONObject().put("text", userPrompt)))
+        }
+
+        return JSONObject().apply {
+            put("systemInstruction", systemInstruction)
+            put("contents", JSONArray().put(userContent))
+            put("generationConfig", generationConfig)
+        }.toString()
+    }
+
+    internal fun parseGenerateContentResponseJson(
+        responseBody: String,
+        documentId: String,
+    ): ParsedAiResponse {
+        val root = JSONObject(responseBody)
+        val candidates = root.optJSONArray("candidates")
+        if (candidates == null || candidates.length() == 0) {
+            val blockReason = root.optJSONObject("promptFeedback")
+                ?.optString("blockReason", "")
+                ?.trim()
+                .orEmpty()
+            if (blockReason.isNotEmpty()) {
+                throw IllegalStateException("Content generation blocked. Reason: $blockReason")
+            }
+            throw IllegalStateException("Gemini API returned no candidates.")
+        }
+
+        val candidate = candidates.optJSONObject(0)
+            ?: throw IllegalStateException("Gemini API returned an invalid candidate.")
+        val finishReason = candidate.optString("finishReason", "").trim().uppercase()
+
+        val parts = candidate.optJSONObject("content")?.optJSONArray("parts")
+        val textBuilder = StringBuilder()
+        if (parts != null) {
+            for (i in 0 until parts.length()) {
+                val part = parts.optJSONObject(i) ?: continue
+                if (part.optBoolean("thought", false)) continue
+                val text = part.optString("text", "")
+                if (text.isNotEmpty()) {
+                    textBuilder.append(text)
+                }
+            }
+        }
+        val responseText = textBuilder.toString().trim()
+
+        if (finishReason in BLOCKED_FINISH_REASONS) {
+            throw IllegalStateException("Content generation blocked. Reason: $finishReason")
+        }
+
+        if (finishReason == FINISH_REASON_MAX_TOKENS) {
+            if (responseText.isBlank()) {
+                return ParsedAiResponse(drafts = emptyList(), wasTruncated = true)
+            }
+            return try {
+                parseJsonResponseWithMetadata(responseText, documentId).copy(wasTruncated = true)
+            } catch (_: JSONException) {
+                ParsedAiResponse(drafts = emptyList(), wasTruncated = true)
+            }
+        }
+
+        if (responseText.isBlank()) {
+            if (finishReason.isNotBlank() && finishReason != FINISH_REASON_STOP) {
+                throw IllegalStateException("Content generation stopped. Reason: $finishReason")
+            }
+            return ParsedAiResponse(drafts = emptyList(), wasTruncated = false)
+        }
+
+        return parseJsonResponseWithMetadata(responseText, documentId)
+    }
+
+    private suspend fun executeHttpPost(
+        endpointUrl: String,
+        apiKey: String,
+        requestBody: String,
+    ): HttpPostResult = withContext(Dispatchers.IO) {
+        val connection = (URL(endpointUrl).openConnection() as HttpURLConnection)
+        val job = currentCoroutineContext()[Job]
+        val cancelHandle = job?.invokeOnCompletion { cause ->
+            if (cause is CancellationException) {
+                runCatching { connection.disconnect() }
+            }
+        }
+        try {
+            currentCoroutineContext().ensureActive()
+            connection.requestMethod = "POST"
+            connection.connectTimeout = HTTP_CONNECT_TIMEOUT_MS
+            connection.readTimeout = HTTP_READ_TIMEOUT_MS
+            connection.doInput = true
+            connection.doOutput = true
+            connection.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+            connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("x-goog-api-key", apiKey)
+
+            connection.outputStream.use { out ->
+                out.write(requestBody.toByteArray(StandardCharsets.UTF_8))
+                out.flush()
+            }
+
+            val statusCode = connection.responseCode
+            val stream = if (statusCode in 200..299) connection.inputStream else connection.errorStream
+            val body = stream?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() }.orEmpty()
+            currentCoroutineContext().ensureActive()
+            HttpPostResult(statusCode = statusCode, body = body)
+        } catch (ioe: IOException) {
+            currentCoroutineContext().ensureActive()
+            throw ioe
+        } finally {
+            cancelHandle?.dispose()
+            runCatching { connection.disconnect() }
+        }
+    }
+
+    private fun parseHttpErrorMessage(statusCode: Int, responseBody: String): String {
+        val trimmed = responseBody.trim()
+        if (trimmed.isNotEmpty()) {
+            val parsed = runCatching {
+                val errorObj = JSONObject(trimmed).optJSONObject("error")
+                if (errorObj != null) {
+                    val apiStatus = errorObj.optString("status", "").trim()
+                    val apiMsg = errorObj.optString("message", "").trim()
+                    when {
+                        apiStatus.isNotEmpty() && apiMsg.isNotEmpty() -> "HTTP $statusCode ($apiStatus): $apiMsg"
+                        apiMsg.isNotEmpty() -> "HTTP $statusCode: $apiMsg"
+                        else -> null
+                    }
+                } else {
+                    null
+                }
+            }.getOrNull()
+            if (parsed != null) return parsed
+        }
+        return "HTTP $statusCode from Gemini API"
     }
 
     override suspend fun extractTransactions(
@@ -109,16 +252,29 @@ class GeminiAiProvider internal constructor(
             val resolvedModelName = resolveModelName(modelName)
             val promptInput = buildBatchPrompt(rawText, priorContext)
 
-            val responseText = executeWithRetry {
+            val parsed = executeWithRetry {
                 if (generateContentFn != null) {
-                    generateContentFn.invoke(apiKey, promptInput)
+                    val responseText = generateContentFn.invoke(apiKey, promptInput)
+                    parseJsonResponseWithMetadata(responseText, documentId)
                 } else {
-                    val model = getOrCreateModel(apiKey, resolvedModelName)
-                    val response = model.generateContent(promptInput)
-                    response.text.orEmpty().trim()
+                    val today = LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE)
+                    val requestBody = buildGenerateContentRequestJson(
+                        modelName = resolvedModelName,
+                        systemPrompt = buildSystemPrompt(today),
+                        userPrompt = promptInput,
+                    )
+                    val endpointUrl = buildEndpointUrl(resolvedModelName)
+                    val httpResult = httpPostFn?.invoke(endpointUrl, apiKey, requestBody)
+                        ?: executeHttpPost(endpointUrl, apiKey, requestBody)
+                    if (httpResult.statusCode !in 200..299) {
+                        throw GeminiApiHttpException(
+                            statusCode = httpResult.statusCode,
+                            message = parseHttpErrorMessage(httpResult.statusCode, httpResult.body),
+                        )
+                    }
+                    parseGenerateContentResponseJson(httpResult.body, documentId)
                 }
             }
-            val parsed = parseJsonResponseWithMetadata(responseText, documentId)
             Result.success(
                 AiExtractionBatchResult(
                     drafts = parsed.drafts,
@@ -178,12 +334,21 @@ class GeminiAiProvider internal constructor(
             return false
         }
         return chain.any { t ->
+            if (t is GeminiApiHttpException) {
+                return@any t.statusCode in RETRYABLE_HTTP_STATUS_CODES
+            }
             if (t is SocketTimeoutException || t is TimeoutException) {
                 return@any true
             }
             val msg = t.message.orEmpty().lowercase()
             val cls = t::class.java.simpleName.lowercase()
-            if (msg.contains("api key") || msg.contains("401") || msg.contains("403") || msg.contains("400")) {
+            if (
+                msg.contains("api key") ||
+                msg.contains("401") ||
+                msg.contains("403") ||
+                msg.contains("400") ||
+                msg.contains("404")
+            ) {
                 return@any false
             }
             msg.contains("429") ||
@@ -191,7 +356,10 @@ class GeminiAiProvider internal constructor(
                 msg.contains("resource exhausted") ||
                 msg.contains("too many requests") ||
                 msg.contains("rate limit") ||
+                msg.contains("500") ||
+                msg.contains("502") ||
                 msg.contains("503") ||
+                msg.contains("504") ||
                 msg.contains("service unavailable") ||
                 msg.contains("timeout") ||
                 msg.contains("timed out") ||
@@ -455,14 +623,55 @@ class GeminiAiProvider internal constructor(
         DateParser.parseToEpochMilli(tradeDateStr)
 
     companion object {
-        const val DEFAULT_MODEL_NAME = "gemini-2.5-flash"
-        private const val MAX_OUTPUT_TOKENS = 8192
+        const val DEFAULT_MODEL_NAME = "gemini-3.8-flash"
+        private const val GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+        private const val MAX_OUTPUT_TOKENS = 65_536
+        private const val LEGACY_MAX_OUTPUT_TOKENS = 8_192
+        private const val HTTP_CONNECT_TIMEOUT_MS = 30_000
+        private const val HTTP_READ_TIMEOUT_MS = 180_000
         private const val MAX_RETRY_ATTEMPTS = 4
         private const val INITIAL_RETRY_DELAY_MS = 2_000L
         private const val MAX_RETRY_DELAY_MS = 30_000L
+        private const val FINISH_REASON_STOP = "STOP"
+        private const val FINISH_REASON_MAX_TOKENS = "MAX_TOKENS"
+        private val RETRYABLE_HTTP_STATUS_CODES = setOf(429, 500, 502, 503, 504)
+        private val BLOCKED_FINISH_REASONS = setOf(
+            "SAFETY", "RECITATION", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "IMAGE_SAFETY",
+        )
         private val ALLOWED_ASSET_CLASSES = setOf(
             "STOCK", "MUTUAL_FUND", "BOND", "SGB", "FD", "HOUSE", "LAND", "VEHICLE", "GOLD", "CRYPTO", "CASH", "OTHER",
         )
+
+        internal fun maxOutputTokensForModel(modelName: String): Int {
+            val lower = modelName.trim().lowercase()
+            return if (lower.startsWith("gemini-1.") || lower.startsWith("gemini-2.0")) {
+                LEGACY_MAX_OUTPUT_TOKENS
+            } else {
+                MAX_OUTPUT_TOKENS
+            }
+        }
+
+        internal fun supportsLegacyTemperature(modelName: String): Boolean {
+            val lower = modelName.trim().lowercase()
+            return lower.startsWith("gemini-1.") || lower.startsWith("gemini-2.")
+        }
+
+        internal fun thinkingConfigForModel(modelName: String): JSONObject? {
+            val lower = modelName.trim().lowercase()
+            return when {
+                lower.startsWith("gemini-3.5-flash-lite") ||
+                    lower.startsWith("gemini-3.6-flash") ||
+                    lower.startsWith("gemini-3.7-flash") ->
+                    JSONObject().put("thinkingLevel", "MINIMAL")
+                lower.startsWith("gemini-3") || lower.startsWith("gemini-4") ->
+                    JSONObject().put("thinkingLevel", "LOW")
+                lower.startsWith("gemini-2.5-flash") ->
+                    JSONObject().put("thinkingBudget", 0)
+                lower.startsWith("gemini-2.5-pro") ->
+                    JSONObject().put("thinkingBudget", 128)
+                else -> null
+            }
+        }
 
         fun buildSystemPrompt(today: String = LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE)): String =
             """

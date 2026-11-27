@@ -75,6 +75,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.openfolio.core.data.local.entity.AssetClass
 import com.openfolio.core.data.local.entity.DocumentStatus
+import com.openfolio.core.data.repository.DocumentRepositoryImpl
 import com.openfolio.feature.assets.toDisplayTitle
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
 import com.openfolio.core.tableextraction.ExtractedTable
@@ -514,7 +515,7 @@ fun ReviewScreen(
                                     }
                                 document?.status == DocumentStatus.AI_PAUSED.name ->
                                     batchBannerMessage
-                                        ?: "Paused at page ${document.processedPages} of ${document.pageCount}. Choose Next 5 Pages or Auto-Process Remaining."
+                                        ?: "Paused at page ${document.processedPages} of ${document.pageCount}. Choose Next ${DocumentRepositoryImpl.DEFAULT_AI_BATCH_PAGES} Pages or Auto-Process Remaining."
                                 document?.status == DocumentStatus.OCR_FAILED.name ->
                                     document.extractionError ?: "Local text extraction failed. You can retry or add records manually."
                                 document?.status == DocumentStatus.FAILED.name ->
@@ -610,9 +611,9 @@ fun ReviewScreen(
                                     }
                                     Text(aiButtonLabel)
                                 }
-                                if (document.pageCount > 5) {
+                                if (document.pageCount > DocumentRepositoryImpl.DEFAULT_AI_BATCH_PAGES) {
                                     Text(
-                                        text = "Sends 5 pages per request so you can verify Batch 1 before continuing.",
+                                        text = "Sends up to ${DocumentRepositoryImpl.DEFAULT_AI_BATCH_PAGES} pages per request so you can verify Batch 1 before continuing.",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = colors.muted,
                                     )
@@ -1665,7 +1666,7 @@ private fun BatchProgressControlsCard(
                     border = BorderStroke(1.dp, colors.brand),
                 ) {
                     Text(
-                        text = "Next 5 Pages",
+                        text = "Next ${DocumentRepositoryImpl.DEFAULT_AI_BATCH_PAGES} Pages",
                         color = colors.brand,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,

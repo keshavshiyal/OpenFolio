@@ -99,7 +99,7 @@ class SettingsViewModelTest {
         advanceUntilIdle()
 
         viewModel.onApiKeyChange("saved-key")
-        viewModel.onModelNameChange("gemini-2.5-pro")
+        viewModel.onModelNameChange("gemini-3.6-flash")
         val events = mutableListOf<SettingsEvent>()
         val job = launch { viewModel.events.collect { events.add(it) } }
 
@@ -107,7 +107,10 @@ class SettingsViewModelTest {
         advanceUntilIdle()
 
         verify(repository).setGeminiApiKey("saved-key")
-        verify(repository).setGeminiModelName("gemini-2.5-pro")
+        verify(repository).setGeminiModelName("gemini-3.6-flash")
+        assertEquals("gemini-3.8-flash", SettingsRepository.DEFAULT_GEMINI_MODEL_NAME)
+        assertEquals("gemini-3.8-flash", SettingsRepository.resolveMigratedModelName("gemini-2.5-flash"))
+        assertEquals("gemini-3.6-flash", SettingsRepository.resolveMigratedModelName("gemini-3.6-flash"))
         assertEquals(1, events.size)
         assertTrue(events[0] is SettingsEvent.ShowSnackbar)
         assertEquals("API key saved securely.", (events[0] as SettingsEvent.ShowSnackbar).message)

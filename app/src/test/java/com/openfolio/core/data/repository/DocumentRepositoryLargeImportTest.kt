@@ -48,6 +48,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -589,43 +590,60 @@ class DocumentRepositoryLargeImportTest {
     }
 
     @Test
-    fun selectSmartBatchEndPageStrictlyCapsAt5AndSnapsToSectionBreaksOnPage4() {
+    fun selectSmartBatchEndPageStrictlyCapsAt2AndSnapsTo1OnSectionBreaksOrDensePages() {
         val repository = createRepository()
 
         val plainPages = (1..12).associateWith { page -> "Transaction row on page $page" }
-        assertEquals(5, repository.selectSmartBatchEndPage(1, 12, plainPages))
+        assertEquals(2, repository.selectSmartBatchEndPage(1, 12, plainPages))
 
-        val closingOnPage4 = plainPages.toMutableMap().apply {
-            this[4] = "12-Mar-2024 SIP 5000\nClosing Unit Balance: 150.250"
+        val closingOnPage1 = plainPages.toMutableMap().apply {
+            this[1] = "12-Mar-2024 SIP 5000\nClosing Unit Balance: 150.250"
         }
-        assertEquals(4, repository.selectSmartBatchEndPage(1, 12, closingOnPage4))
+        assertEquals(1, repository.selectSmartBatchEndPage(1, 12, closingOnPage1))
 
-        val newFolioOnPage5Top = plainPages.toMutableMap().apply {
-            this[5] = "Folio No: 987654/32\nSBI Bluechip Fund ISIN: INF200K01QX4"
+        val newFolioOnPage2Top = plainPages.toMutableMap().apply {
+            this[2] = "Folio No: 987654/32\nSBI Bluechip Fund ISIN: INF200K01QX4"
         }
-        assertEquals(4, repository.selectSmartBatchEndPage(1, 12, newFolioOnPage5Top))
+        assertEquals(1, repository.selectSmartBatchEndPage(1, 12, newFolioOnPage2Top))
 
-        val closingOnPage6 = plainPages.toMutableMap().apply {
-            this[6] = "15-Mar-2024 SIP 5000\nClosing Unit Balance: 220.000"
+        val closingOnPage2 = plainPages.toMutableMap().apply {
+            this[2] = "15-Mar-2024 SIP 5000\nClosing Unit Balance: 220.000"
         }
-        assertEquals(5, repository.selectSmartBatchEndPage(1, 12, closingOnPage6))
+        assertEquals(2, repository.selectSmartBatchEndPage(1, 12, closingOnPage2))
+
+        val densePage1 = plainPages.toMutableMap().apply {
+            this[1] = "X".repeat(DocumentRepositoryImpl.MAX_SINGLE_PAGE_CHARS_FOR_BATCHING)
+        }
+        assertEquals(1, repository.selectSmartBatchEndPage(1, 2, densePage1))
+
+        val denseCombined = plainPages.toMutableMap().apply {
+            this[1] = "A".repeat(4_600)
+            this[2] = "B".repeat(4_600)
+        }
+        assertEquals(1, repository.selectSmartBatchEndPage(1, 2, denseCombined))
+
+        val denseLines = plainPages.toMutableMap().apply {
+            this[1] = (1..45).joinToString("\n") { "Row 1-$it" }
+            this[2] = (1..85).joinToString("\n") { "Row 2-$it" }
+        }
+        assertEquals(1, repository.selectSmartBatchEndPage(1, 2, denseLines))
     }
 
     @Test
-    fun statefulFivePageBatchesPauseAfterBatch1PropagateCarryOverContextAndDeduplicateBoundary() = runBlocking {
-        val docId = "doc-stateful-12"
+    fun statefulTwoPageBatchesPauseAfterBatch1PropagateCarryOverContextAndDeduplicateBoundary() = runBlocking {
+        val docId = "doc-stateful-6"
         val documentDao = mock<DocumentDao>()
         val draftDao = mock<DraftTransactionDao>()
         val settings = mock<SettingsRepository>()
         val store = ExtractedTextStore(tempFolder.newFolder("extracted_text_stateful"))
 
         store.openWriter(docId).use { writer ->
-            for (p in 1..12) {
+            for (p in 1..6) {
                 val text = when (p) {
                     1 -> "HDFC Mutual Fund\nFolio No: 123456/78\nHDFC Top 100 Fund ISIN: INF179K01BE2\n01-Jan-2024 SIP 5000 50 100"
-                    5 -> "01-May-2024 SIP 5000 50 100\n05-May-2024 SIP 2500"
-                    6 -> "25 100\n01-Jun-2024 SIP 5000 50 100"
-                    else -> "01-Feb-2024 SIP 5000 50 100 (Page $p)"
+                    2 -> "01-Feb-2024 SIP 5000 50 100\n05-Feb-2024 SIP 2500"
+                    3 -> "25 100\n01-Mar-2024 SIP 5000 50 100"
+                    else -> "01-Apr-2024 SIP 5000 50 100 (Page $p)"
                 }
                 store.writePage(writer, p, text)
             }
@@ -634,14 +652,14 @@ class DocumentRepositoryLargeImportTest {
 
         var currentDoc = DocumentEntity(
             id = docId,
-            fileName = "cas_12_pages.pdf",
-            localPath = "/tmp/cas_12_pages.pdf",
-            fileHash = "hash-12",
-            fileSize = 12_000L,
+            fileName = "cas_6_pages.pdf",
+            localPath = "/tmp/cas_6_pages.pdf",
+            fileHash = "hash-6",
+            fileSize = 6_000L,
             importDate = 1700000000000L,
             status = DocumentStatus.OCR_COMPLETE.name,
             extractedTextPath = store.pathFor(docId),
-            pageCount = 12,
+            pageCount = 6,
             processedPages = 0,
             assetClass = AssetClass.MUTUAL_FUND.name,
         )
@@ -680,7 +698,7 @@ class DocumentRepositoryLargeImportTest {
             Unit
         }
         whenever(settings.getGeminiApiKey()).thenReturn("api-key")
-        whenever(settings.getGeminiModelName()).thenReturn("gemini-2.5-flash")
+        whenever(settings.getGeminiModelName()).thenReturn("gemini-3.8-flash")
 
         val seenContexts = mutableListOf<AiCarryOverContext?>()
         val fakeContextualAi = object : ContextualAiProvider {
@@ -715,7 +733,7 @@ class DocumentRepositoryLargeImportTest {
                                     assetClass = "MUTUAL_FUND",
                                     broker = "CAMS",
                                     isin = "INF179K01BE2",
-                                    sourcePage = 5,
+                                    sourcePage = 2,
                                 ),
                             ),
                             carryOverContext = AiCarryOverContext(
@@ -725,14 +743,14 @@ class DocumentRepositoryLargeImportTest {
                                 activeFolio = "123456/78",
                                 activeBroker = "CAMS",
                                 activeColumnHeaders = listOf("Date", "Transaction", "Amount", "Units", "NAV"),
-                                incompleteTailText = "05-May-2024 SIP 2500",
+                                incompleteTailText = "05-Feb-2024 SIP 2500",
                             ),
                         ),
                     )
-                    rawText.contains("--- PAGE 6 ---") -> Result.success(
+                    rawText.contains("--- PAGE 3 ---") -> Result.success(
                         AiExtractionBatchResult(
                             drafts = listOf(
-                                // Boundary duplicate of b1-1 from page 5
+                                // Boundary duplicate of b1-1 from page 2
                                 DraftTransactionEntity(
                                     id = "b2-dup",
                                     documentId = documentId,
@@ -746,7 +764,7 @@ class DocumentRepositoryLargeImportTest {
                                     assetClass = "MUTUAL_FUND",
                                     broker = "CAMS",
                                     isin = "INF179K01BE2",
-                                    sourcePage = 6,
+                                    sourcePage = 3,
                                 ),
                                 // New completed split row from tail text
                                 DraftTransactionEntity(
@@ -758,11 +776,11 @@ class DocumentRepositoryLargeImportTest {
                                     price = "100",
                                     netAmount = "2500",
                                     confidence = 95,
-                                    tradeDate = 1714867200000L,
+                                    tradeDate = 1707091200000L,
                                     assetClass = "MUTUAL_FUND",
                                     broker = "CAMS",
                                     isin = "INF179K01BE2",
-                                    sourcePage = 6,
+                                    sourcePage = 3,
                                 ),
                             ),
                             carryOverContext = AiCarryOverContext(
@@ -786,11 +804,11 @@ class DocumentRepositoryLargeImportTest {
                                     price = "100",
                                     netAmount = "5000",
                                     confidence = 96,
-                                    tradeDate = 1717200000000L,
+                                    tradeDate = 1711929600000L,
                                     assetClass = "MUTUAL_FUND",
                                     broker = "CAMS",
                                     isin = "INF179K01BE2",
-                                    sourcePage = 11,
+                                    sourcePage = 5,
                                 ),
                             ),
                         ),
@@ -807,31 +825,31 @@ class DocumentRepositoryLargeImportTest {
             extractedTextStore = store,
         )
 
-        // Batch 1 (Pages 1-5) pauses cleanly
+        // Batch 1 (Pages 1-2) pauses cleanly
         val batch1 = repository.processNextAiBatch(docId)
         assertEquals(AiBatchStopReason.PAUSED_AFTER_BATCH, batch1.stopReason)
         assertEquals(1, batch1.startPage)
-        assertEquals(5, batch1.endPage)
+        assertEquals(2, batch1.endPage)
         assertEquals(DocumentStatus.AI_PAUSED.name, currentDoc.status)
-        assertEquals(5, currentDoc.processedPages)
+        assertEquals(2, currentDoc.processedPages)
         assertTrue(currentDoc.carryOverContextJson?.contains("INF179K01BE2") == true)
         assertEquals(1, savedDrafts.size)
 
-        // Batch 2 (Pages 6-10) inherits carryOverContext and deduplicates boundary duplicate b2-dup
+        // Batch 2 (Pages 3-4) inherits carryOverContext and deduplicates boundary duplicate b2-dup
         val batch2 = repository.processNextAiBatch(docId)
         assertEquals(AiBatchStopReason.PAUSED_AFTER_BATCH, batch2.stopReason)
-        assertEquals(6, batch2.startPage)
-        assertEquals(10, batch2.endPage)
+        assertEquals(3, batch2.startPage)
+        assertEquals(4, batch2.endPage)
         assertEquals(1, batch2.newDraftsCount) // b2-dup skipped, b2-new inserted
-        assertEquals("05-May-2024 SIP 2500", seenContexts[1]?.incompleteTailText)
+        assertEquals("05-Feb-2024 SIP 2500", seenContexts[1]?.incompleteTailText)
         assertEquals("123456/78", seenContexts[1]?.activeFolio)
         assertEquals(2, savedDrafts.size)
 
-        // Auto-process remaining finishes pages 11-12
+        // Auto-process remaining finishes pages 5-6
         val batch3 = repository.autoProcessRemainingAiBatches(docId)
         assertEquals(AiBatchStopReason.COMPLETED_ALL_PAGES, batch3.stopReason)
-        assertEquals(11, batch3.startPage)
-        assertEquals(12, batch3.endPage)
+        assertEquals(5, batch3.startPage)
+        assertEquals(6, batch3.endPage)
         assertEquals(DocumentStatus.AI_COMPLETE.name, currentDoc.status)
         assertEquals(3, savedDrafts.size)
     }
@@ -845,7 +863,7 @@ class DocumentRepositoryLargeImportTest {
         val store = ExtractedTextStore(tempFolder.newFolder("extracted_text_autopause"))
 
         store.openWriter(docId).use { writer ->
-            for (p in 1..15) {
+            for (p in 1..6) {
                 store.writePage(writer, p, "01-Jan-2024 BUY RELIANCE 10 2500 25000 (Page $p)")
             }
             writer.flush()
@@ -853,15 +871,15 @@ class DocumentRepositoryLargeImportTest {
 
         var currentDoc = DocumentEntity(
             id = docId,
-            fileName = "trades_15.pdf",
-            localPath = "/tmp/trades_15.pdf",
-            fileHash = "hash-15",
-            fileSize = 15_000L,
+            fileName = "trades_6.pdf",
+            localPath = "/tmp/trades_6.pdf",
+            fileHash = "hash-6",
+            fileSize = 6_000L,
             importDate = 1700000000000L,
             status = DocumentStatus.AI_PAUSED.name,
             extractedTextPath = store.pathFor(docId),
-            pageCount = 15,
-            processedPages = 5,
+            pageCount = 6,
+            processedPages = 2,
         )
         whenever(documentDao.getDocumentById(docId)).thenAnswer { currentDoc }
         whenever(documentDao.updateAiBatchProgress(eq(docId), any(), any(), any(), anyOrNull(), anyOrNull())).thenAnswer { inv ->
@@ -901,7 +919,7 @@ class DocumentRepositoryLargeImportTest {
                             price = "2500.00",
                             netAmount = "250000.00", // 10x math mismatch!
                             confidence = 92,
-                            sourcePage = 6,
+                            sourcePage = 3,
                         ),
                     ),
                 ),
@@ -918,7 +936,7 @@ class DocumentRepositoryLargeImportTest {
 
         val result = repository.autoProcessRemainingAiBatches(docId)
         assertEquals(AiBatchStopReason.AUTO_PAUSED_NEEDS_REVIEW, result.stopReason)
-        assertEquals(10, result.endPage)
+        assertEquals(4, result.endPage)
         assertEquals(1, result.flaggedDraftCount)
         assertEquals(DocumentStatus.AI_PAUSED.name, currentDoc.status)
         assertTrue(currentDoc.extractionError?.contains("flagged for review") == true)
@@ -1159,11 +1177,11 @@ class DocumentRepositoryLargeImportTest {
         val store = ExtractedTextStore(context)
 
         store.openWriter(docId).use { writer ->
-            for (p in 1..10) {
+            for (p in 1..4) {
                 val pageText = when (p) {
                     1 -> "NSDL Consolidated Demat & Bond Statement\nClient ID: 10020030\nDate | Security | Qty | Price | Amount"
-                    5 -> "30-Mar-2024 Complete Row BUY NHAI Bond 10 @ 1000.00 = 10000.00\n31-Mar-2024 BUY NHAI Tax Free Bond 2027 INE906B07FG1"
-                    6 -> "25 units @ 1050.00 Net: 26250.00\n02-Apr-2024 SELL REC Bond 2026 INE020B08AA1 10 @ 1020.00 = 10200.00"
+                    2 -> "30-Mar-2024 Complete Row BUY NHAI Bond 10 @ 1000.00 = 10000.00\n31-Mar-2024 BUY NHAI Tax Free Bond 2027 INE906B07FG1"
+                    3 -> "25 units @ 1050.00 Net: 26250.00\n02-Apr-2024 SELL REC Bond 2026 INE020B08AA1 10 @ 1020.00 = 10200.00"
                     else -> "Bond activity page $p"
                 }
                 store.writePage(writer, p, pageText)
@@ -1176,14 +1194,14 @@ class DocumentRepositoryLargeImportTest {
         val settings = mock<SettingsRepository>()
         var currentDoc = DocumentEntity(
             id = docId,
-            fileName = "bond_statement_10p.pdf",
-            localPath = "/tmp/bond_statement_10p.pdf",
-            fileHash = "hash-bond-10",
-            fileSize = 10_000L,
+            fileName = "bond_statement_4p.pdf",
+            localPath = "/tmp/bond_statement_4p.pdf",
+            fileHash = "hash-bond-4",
+            fileSize = 4_000L,
             importDate = 1700000000000L,
             status = DocumentStatus.OCR_COMPLETE.name,
             extractedTextPath = store.pathFor(docId),
-            pageCount = 10,
+            pageCount = 4,
             processedPages = 0,
             assetClass = AssetClass.OTHER.name,
         )
@@ -1223,7 +1241,7 @@ class DocumentRepositoryLargeImportTest {
             Unit
         }
         whenever(settings.getGeminiApiKey()).thenReturn("api-key")
-        whenever(settings.getGeminiModelName()).thenReturn("gemini-2.5-flash")
+        whenever(settings.getGeminiModelName()).thenReturn("gemini-3.8-flash")
 
         val seenContexts = mutableListOf<AiCarryOverContext?>()
         var batchCall = 0
@@ -1253,7 +1271,7 @@ class DocumentRepositoryLargeImportTest {
                         AiExtractionBatchResult(
                             drafts = listOf(
                                 DraftTransactionEntity(
-                                    id = "stub-page5",
+                                    id = "stub-page2",
                                     documentId = documentId,
                                     assetName = "NHAI Tax Free Bond 2027",
                                     assetClass = "BOND",
@@ -1264,7 +1282,7 @@ class DocumentRepositoryLargeImportTest {
                                     tradeDate = march31Epoch,
                                     isin = "INE906B07FG1",
                                     broker = "NSDL",
-                                    sourcePage = 5,
+                                    sourcePage = 2,
                                     confidence = 60,
                                 ),
                             ),
@@ -1283,12 +1301,12 @@ class DocumentRepositoryLargeImportTest {
                         .atStartOfDay(ZoneOffset.UTC)
                         .toInstant()
                         .toEpochMilli()
-                    // Batch 2 completes the page 5->6 split row (omitting assetClass & broker to test carry-over)
+                    // Batch 2 completes the page 2->3 split row (omitting assetClass & broker to test carry-over)
                     Result.success(
                         AiExtractionBatchResult(
                             drafts = listOf(
                                 DraftTransactionEntity(
-                                    id = "complete-page6",
+                                    id = "complete-page3",
                                     documentId = documentId,
                                     assetName = "Unknown",
                                     assetClass = "",
@@ -1299,7 +1317,7 @@ class DocumentRepositoryLargeImportTest {
                                     tradeDate = march31Epoch,
                                     isin = "",
                                     broker = null,
-                                    sourcePage = 6,
+                                    sourcePage = 3,
                                     confidence = 96,
                                 ),
                             ),
@@ -1323,7 +1341,7 @@ class DocumentRepositoryLargeImportTest {
 
         val batch1 = repository.processNextAiBatch(docId)
         assertEquals(1, batch1.startPage)
-        assertEquals(5, batch1.endPage)
+        assertEquals(2, batch1.endPage)
         assertEquals(AiBatchStopReason.PAUSED_AFTER_BATCH, batch1.stopReason)
         assertTrue(batch1.carryOverContext.fallbackTailLines.contains("NHAI Tax Free Bond 2027"))
         assertTrue(batch1.carryOverContext.recentBoundaryTransactions.any {
@@ -1331,8 +1349,8 @@ class DocumentRepositoryLargeImportTest {
         })
 
         val batch2 = repository.processNextAiBatch(docId)
-        assertEquals(6, batch2.startPage)
-        assertEquals(10, batch2.endPage)
+        assertEquals(3, batch2.startPage)
+        assertEquals(4, batch2.endPage)
         assertEquals(AiBatchStopReason.COMPLETED_ALL_PAGES, batch2.stopReason)
 
         val secondPrior = seenContexts[1]
@@ -1341,7 +1359,7 @@ class DocumentRepositoryLargeImportTest {
         assertTrue(secondPrior?.fallbackTailLines?.contains("INE906B07FG1") == true)
         assertTrue(secondPrior?.recentBoundaryTransactions?.isNotEmpty() == true)
 
-        verify(draftDao).deleteByIds(listOf("stub-page5"))
+        verify(draftDao).deleteByIds(listOf("stub-page2"))
         assertEquals(1, savedDrafts.size)
         val completed = savedDrafts.single()
         assertEquals("BOND", completed.assetClass)
@@ -1350,6 +1368,149 @@ class DocumentRepositoryLargeImportTest {
         assertEquals("NHAI Tax Free Bond 2027", completed.assetName)
         assertEquals("25", completed.quantity)
         assertEquals("26250.00", completed.netAmount)
+    }
+
+    @Test
+    fun retryAfterMaxTokensClearsErrorAndSplitsTruncatedBatchIntoSinglePages(): Unit = runBlocking {
+        val docId = "doc-max-tokens-split"
+        val filesDir = tempFolder.newFolder("max_tokens_split_files")
+        val context = mock<Context>()
+        whenever(context.filesDir).thenReturn(filesDir)
+        val store = ExtractedTextStore(context)
+
+        store.openWriter(docId).use { writer ->
+            store.writePage(writer, 1, "01-Jan-2026 BUY HDFC MF 10 100 1000")
+            store.writePage(writer, 2, "02-Jan-2026 BUY SBI MF 20 100 2000")
+            writer.flush()
+        }
+
+        val documentDao = mock<DocumentDao>()
+        val draftDao = mock<DraftTransactionDao>()
+        val settings = mock<SettingsRepository>()
+        var currentDoc = DocumentEntity(
+            id = docId,
+            fileName = "cams_cas.pdf",
+            localPath = "/tmp/cams_cas.pdf",
+            fileHash = "hash-max-tokens",
+            fileSize = 2_000L,
+            importDate = 1700000000000L,
+            status = DocumentStatus.FAILED.name,
+            extractedTextPath = store.pathFor(docId),
+            pageCount = 2,
+            processedPages = 0,
+            extractionError = "Content generation stopped. Reason: MAX_TOKENS",
+            assetClass = AssetClass.MUTUAL_FUND.name,
+        )
+        val savedDrafts = mutableListOf<DraftTransactionEntity>()
+
+        whenever(documentDao.getDocumentById(docId)).thenAnswer { currentDoc }
+        whenever(documentDao.updateExtractionProgress(eq(docId), any(), any(), any())).thenAnswer { inv ->
+            currentDoc = currentDoc.copy(
+                processedPages = inv.getArgument(1),
+                pageCount = inv.getArgument(2),
+                status = inv.getArgument(3),
+            )
+            Unit
+        }
+        whenever(documentDao.updateStatusAndError(eq(docId), any(), anyOrNull())).thenAnswer { inv ->
+            currentDoc = currentDoc.copy(
+                status = inv.getArgument(1),
+                extractionError = inv.getArgument(2),
+            )
+            Unit
+        }
+        whenever(documentDao.updateCarryOverContext(eq(docId), anyOrNull())).thenAnswer { inv ->
+            currentDoc = currentDoc.copy(carryOverContextJson = inv.getArgument(1))
+            Unit
+        }
+        whenever(documentDao.updateStatus(eq(docId), any())).thenAnswer { inv ->
+            currentDoc = currentDoc.copy(status = inv.getArgument(1))
+            Unit
+        }
+        whenever(draftDao.getByDocumentIdOnce(docId)).thenAnswer { savedDrafts.toList() }
+        whenever(draftDao.insertAll(any())).thenAnswer { inv ->
+            savedDrafts.addAll(inv.getArgument<List<DraftTransactionEntity>>(0))
+            Unit
+        }
+        whenever(settings.getGeminiApiKey()).thenReturn("api-key")
+        whenever(settings.getGeminiModelName()).thenReturn("gemini-3.8-flash")
+
+        val splitAi = object : ContextualAiProvider {
+            override suspend fun extractTransactions(rawText: String, apiKey: String, documentId: String) =
+                extractTransactionsWithContext(rawText, apiKey, documentId).map { it.drafts }
+
+            override suspend fun extractTransactionsDetailed(rawText: String, apiKey: String, documentId: String) =
+                extractTransactionsWithContext(rawText, apiKey, documentId)
+
+            override suspend fun extractTransactionsWithContext(
+                rawText: String,
+                apiKey: String,
+                documentId: String,
+                priorContext: AiCarryOverContext?,
+                modelName: String?,
+            ): Result<AiExtractionBatchResult> {
+                val hasP1 = rawText.contains("--- PAGE 1 ---")
+                val hasP2 = rawText.contains("--- PAGE 2 ---")
+                return when {
+                    hasP1 && hasP2 -> Result.success(
+                        AiExtractionBatchResult(drafts = emptyList(), wasTruncated = true),
+                    )
+                    hasP1 -> Result.success(
+                        AiExtractionBatchResult(
+                            drafts = listOf(
+                                DraftTransactionEntity(
+                                    id = "p1-tx",
+                                    documentId = documentId,
+                                    assetName = "HDFC MF",
+                                    transactionType = "BUY",
+                                    quantity = "10",
+                                    price = "100",
+                                    netAmount = "1000",
+                                    confidence = 95,
+                                    sourcePage = 1,
+                                    assetClass = "MUTUAL_FUND",
+                                ),
+                            ),
+                            wasTruncated = false,
+                        ),
+                    )
+                    else -> Result.success(
+                        AiExtractionBatchResult(
+                            drafts = listOf(
+                                DraftTransactionEntity(
+                                    id = "p2-tx",
+                                    documentId = documentId,
+                                    assetName = "SBI MF",
+                                    transactionType = "BUY",
+                                    quantity = "20",
+                                    price = "100",
+                                    netAmount = "2000",
+                                    confidence = 95,
+                                    sourcePage = 2,
+                                    assetClass = "MUTUAL_FUND",
+                                ),
+                            ),
+                            wasTruncated = false,
+                        ),
+                    )
+                }
+            }
+        }
+
+        val repository = createRepository(
+            documentDao = documentDao,
+            draftTransactionDao = draftDao,
+            settingsRepository = settings,
+            aiProvider = splitAi,
+            extractedTextStore = store,
+        )
+
+        val result = repository.processNextAiBatch(docId)
+        assertEquals(AiBatchStopReason.COMPLETED_ALL_PAGES, result.stopReason)
+        assertEquals(2, result.newDraftsCount)
+        assertEquals(2, savedDrafts.size)
+        assertEquals(DocumentStatus.AI_COMPLETE.name, currentDoc.status)
+        assertNull(currentDoc.extractionError)
     }
 
     @Test

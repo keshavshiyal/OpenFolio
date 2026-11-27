@@ -36,7 +36,7 @@ class DocumentImportWorker @AssistedInject constructor(
             trySetForeground(mode, 0, 0, documentId)
         }
 
-        var lastForegroundUpdatePage = -5
+        var lastForegroundUpdatePage = -2
         val onProgress: suspend (String, Int, Int) -> Unit = { stage, current, total ->
             setProgress(
                 workDataOf(
@@ -45,8 +45,8 @@ class DocumentImportWorker @AssistedInject constructor(
                     KEY_TOTAL to total,
                 ),
             )
-            if (shouldPromoteForeground || total > 5) {
-                if (current - lastForegroundUpdatePage >= 5 || current == total || current == 1) {
+            if (shouldPromoteForeground || total > 2) {
+                if (current - lastForegroundUpdatePage >= 2 || current == total || current == 1) {
                     lastForegroundUpdatePage = current
                     trySetForeground(stage, current, total, documentId)
                 }
