@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.Room
 import com.openfolio.core.data.local.AppMetadataDao
 import com.openfolio.core.data.local.DatabasePassphraseProvider
+import com.openfolio.core.data.local.LocalFileCrypto
 import com.openfolio.core.data.local.OpenFolioDatabase
 import com.openfolio.core.data.local.dao.AccountDao
 import com.openfolio.core.data.local.dao.AssetDao
@@ -29,8 +30,7 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
-import net.sqlcipher.database.SQLiteDatabase
-import net.sqlcipher.database.SupportFactory
+import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
 
 @Module
 @InstallIn(SingletonComponent::class)
@@ -41,15 +41,15 @@ object DatabaseModule {
         @ApplicationContext context: Context,
         passphraseProvider: DatabasePassphraseProvider,
     ): OpenFolioDatabase {
-        SQLiteDatabase.loadLibs(context)
+        System.loadLibrary("sqlcipher")
+        val passphrase = passphraseProvider.getPassphraseOrPlaceholder()
         return Room.databaseBuilder(
             context,
             OpenFolioDatabase::class.java,
-            "openfolio.db",
+            OpenFolioDatabase.DATABASE_NAME,
         )
-            .fallbackToDestructiveMigration()
-            .fallbackToDestructiveMigrationOnDowngrade()
-            .openHelperFactory(SupportFactory(passphraseProvider.getPassphrase()))
+            .addMigrations(*OpenFolioDatabase.MIGRATIONS)
+            .openHelperFactory(SupportOpenHelperFactory(passphrase))
             .build()
     }
 
@@ -104,9 +104,10 @@ object DatabaseModule {
         database: OpenFolioDatabase,
         databaseExporter: DatabaseExporter,
         settingsRepository: SettingsRepository,
+        localFileCrypto: LocalFileCrypto,
         @ApplicationContext context: Context,
     ): AppBackupManager =
-        AppBackupManagerImpl(database, databaseExporter, settingsRepository, context)
+        AppBackupManagerImpl(database, databaseExporter, settingsRepository, context, localFileCrypto)
 
     @Provides
     @Singleton

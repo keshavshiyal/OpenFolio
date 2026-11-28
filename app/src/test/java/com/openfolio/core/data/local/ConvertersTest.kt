@@ -71,4 +71,18 @@ class ConvertersTest {
         assertNull(Converters.enumToString<AssetClass>(null))
         assertNull(Converters.stringToEnum<AssetClass>(null))
     }
+
+    @Test
+    fun corruptedDecimalsAndUnknownEnumsReturnSafeFallbacksInsteadOfCrashing() {
+        assertEquals(BigDecimal.ZERO, converters.toBigDecimal("N/A"))
+        assertEquals(BigDecimal.ZERO, converters.toBigDecimal("--"))
+        assertEquals(BigDecimal.ZERO, converters.toBigDecimal("not_a_number"))
+
+        assertEquals(AccountType.MANUAL, converters.toAccountType("FUTURE_ACCOUNT_TYPE"))
+        assertEquals(AssetClass.OTHER, converters.toAssetClass("DERIVATIVE_FUTURE"))
+        assertEquals(AssetStatus.ACTIVE, converters.toAssetStatus("SUSPENDED_LEGACY"))
+        assertEquals(TransactionType.OTHER, converters.toTransactionType("SIP"))
+        assertEquals(TransactionStatus.CONFIRMED, converters.toTransactionStatus("FUTURE_STATUS"))
+        assertNull(Converters.stringToEnum<AssetClass>("NON_EXISTENT"))
+    }
 }

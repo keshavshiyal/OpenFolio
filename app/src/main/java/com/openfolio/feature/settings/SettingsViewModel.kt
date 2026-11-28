@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.File
 import java.time.Instant
@@ -45,6 +46,7 @@ data class SettingsUiState(
     val tableCount: Int? = null,
     val totalRowCount: Long? = null,
     val lastExportedFileName: String? = null,
+    val apiKeyStorageError: String? = null,
 )
 
 sealed interface SettingsEvent {
@@ -76,13 +78,19 @@ class SettingsViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             settingsRepository.geminiApiKeyFlow.collect { key ->
-                _uiState.value = _uiState.value.copy(apiKey = key)
+                _uiState.update { it.copy(apiKey = key) }
             }
         }
         viewModelScope.launch {
             val modelFlow: StateFlow<String>? = settingsRepository.geminiModelNameFlow
             modelFlow?.collect { model ->
-                _uiState.value = _uiState.value.copy(modelName = model)
+                _uiState.update { it.copy(modelName = model) }
+            }
+        }
+        viewModelScope.launch {
+            val errorFlow: StateFlow<String?>? = settingsRepository.apiKeyStorageError
+            errorFlow?.collect { error ->
+                _uiState.update { it.copy(apiKeyStorageError = error) }
             }
         }
         loadDatabaseSummary()
@@ -132,6 +140,14 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun clearCorruptedApiKeyStorage() {
+        viewModelScope.launch {
+            settingsRepository.clearCorruptedApiKey()
+            _uiState.update { it.copy(apiKey = "", apiKeyStorageError = null) }
+            _events.emit(SettingsEvent.ShowSnackbar("Secure key storage reset. Please re-enter your API key."))
+        }
+    }
+
     fun getDefaultExportFileName(): String {
         val now = Instant.now()
         val timestamp = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")
@@ -177,7 +193,7 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch(ioDispatcher) {
             _uiState.value = _uiState.value.copy(isExporting = true)
             try {
-                val exportDir = File(context.cacheDir, "exports").apply { mkdirs() }
+                val exportDir = prepareExportDir()
                 val metadata = databaseExporter.getExportMetadata()
                 val timestamp = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")
                     .withZone(ZoneOffset.UTC)
@@ -251,7 +267,7 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch(ioDispatcher) {
             _uiState.value = _uiState.value.copy(isExportingDossier = true)
             try {
-                val exportDir = File(context.cacheDir, "exports").apply { mkdirs() }
+                val exportDir = prepareExportDir()
                 val fileName = getDefaultDossierFileName()
                 val targetFile = File(exportDir, fileName)
                 targetFile.outputStream().use { stream ->
@@ -336,7 +352,7 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch(ioDispatcher) {
             _uiState.value = _uiState.value.copy(isExportingBackup = true)
             try {
-                val exportDir = File(context.cacheDir, "exports").apply { mkdirs() }
+                val exportDir = prepareExportDir()
                 val fileName = getDefaultBackupFileName()
                 val targetFile = File(exportDir, fileName)
                 val summary = targetFile.outputStream().use { stream ->
@@ -464,7 +480,7 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch(ioDispatcher) {
             _uiState.value = _uiState.value.copy(activeCsvReportType = reportType)
             try {
-                val exportDir = File(context.cacheDir, "exports").apply { mkdirs() }
+                val exportDir = prepareExportDir()
                 val fileName = getDefaultCsvFileName(reportType)
                 val targetFile = File(exportDir, fileName)
                 val result = targetFile.outputStream().use { stream ->
@@ -498,5 +514,20 @@ class SettingsViewModel @Inject constructor(
                 _uiState.value = _uiState.value.copy(activeCsvReportType = null)
             }
         }
+    }
+
+    private fun prepareExportDir(): File {
+        val exportDir = File(context.cacheDir, "exports").apply { mkdirs() }
+        val cutoffMillis = System.currentTimeMillis() - STALE_EXPORT_MAX_AGE_MS
+        exportDir.listFiles()?.forEach { file ->
+            if (file.isFile && file.lastModified() < cutoffMillis) {
+                runCatching { file.delete() }
+            }
+        }
+        return exportDir
+    }
+
+    private companion object {
+        const val STALE_EXPORT_MAX_AGE_MS = 15L * 60L * 1000L
     }
 }

@@ -1,11 +1,14 @@
 package com.openfolio.core.data.remote.ai
 
 import android.util.Log
+import com.openfolio.BuildConfig
 import com.openfolio.core.data.local.entity.DraftTransactionEntity
+import com.openfolio.core.data.local.entity.TransactionType
 import com.openfolio.core.utils.AssetNameNormalizer
 import com.openfolio.core.utils.DateParser
+import com.openfolio.core.utils.FinancialNumberParser
+import com.openfolio.core.utils.PiiRedactor
 import java.io.IOException
-import java.math.BigDecimal
 import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
 import java.net.URL
@@ -250,7 +253,9 @@ class GeminiAiProvider internal constructor(
             require(rawText.isNotBlank()) { "Raw text must not be blank." }
 
             val resolvedModelName = resolveModelName(modelName)
-            val promptInput = buildBatchPrompt(rawText, priorContext)
+            val redactedRawText = PiiRedactor.redactForAi(rawText)
+            val redactedPriorContext = PiiRedactor.sanitizeCarryOverContextForAi(priorContext)
+            val promptInput = buildBatchPrompt(redactedRawText, redactedPriorContext)
 
             val parsed = executeWithRetry {
                 if (generateContentFn != null) {
@@ -285,7 +290,11 @@ class GeminiAiProvider internal constructor(
         } catch (ce: CancellationException) {
             throw ce
         } catch (exception: Throwable) {
-            runCatching { Log.e("GeminiAiProvider", "Gemini API call failed: ${exception.message}", exception) }
+            if (BuildConfig.DEBUG) {
+                runCatching {
+                    Log.e("GeminiAiProvider", "Gemini API call failed: ${exception::class.java.simpleName}")
+                }
+            }
             Result.failure(exception)
         }
     }
@@ -566,12 +575,19 @@ class GeminiAiProvider internal constructor(
             val rawAssetClass = obj.optString("assetClass", "STOCK").trim().uppercase()
             val assetClass = if (rawAssetClass in ALLOWED_ASSET_CLASSES) rawAssetClass else "STOCK"
 
-            val transactionType = obj.optString("transactionType", "BUY").trim().uppercase()
-            val quantity = extractJsonString(obj, "quantity", "1")
-            val price = extractJsonString(obj, "price", "0")
-            val netAmount = extractJsonString(obj, "netAmount", "0")
+            val (normalizedType, recognizedType) = TransactionType.normalizeOrOther(
+                obj.optString("transactionType", "BUY"),
+            )
+            val (quantity, qtyValid) = extractJsonNumber(obj, "quantity", "1")
+            val (price, priceValid) = extractJsonNumber(obj, "price", "0")
+            val (netAmount, netValid) = extractJsonNumber(obj, "netAmount", "0")
             val tradeDateStr = obj.optString("tradeDate", "").trim()
-            val confidence = obj.optInt("confidence", 85).coerceIn(0, 100)
+            val rawConfidence = obj.optInt("confidence", 85).coerceIn(0, 100)
+            val confidence = if (recognizedType && qtyValid && priceValid && netValid) {
+                rawConfidence
+            } else {
+                minOf(rawConfidence, 65)
+            }
 
             val broker = obj.optString("broker", "").trim().takeIf(String::isNotBlank)
             val rawIsin = obj.optString("isin", "").trim().takeIf(String::isNotBlank)
@@ -586,7 +602,7 @@ class GeminiAiProvider internal constructor(
                     id = UUID.randomUUID().toString(),
                     documentId = documentId,
                     assetName = assetName,
-                    transactionType = transactionType,
+                    transactionType = normalizedType.name,
                     quantity = quantity,
                     price = price,
                     netAmount = netAmount,
@@ -605,18 +621,20 @@ class GeminiAiProvider internal constructor(
         return transactions
     }
 
-    private fun extractJsonString(obj: JSONObject, key: String, default: String): String {
-        if (obj.isNull(key)) return default
+    private fun extractJsonNumber(obj: JSONObject, key: String, default: String): Pair<String, Boolean> {
+        if (obj.isNull(key)) return default to true
         val stringValue = when (val raw = obj.opt(key)) {
-            null -> default
-            is String -> raw.trim().ifBlank { default }
-            is Number -> raw.toString().trim().ifBlank { default }
-            else -> raw.toString().trim().ifBlank { default }
+            null -> return default to true
+            is String -> raw.trim().ifBlank { return default to true }
+            is Number -> raw.toString().trim().ifBlank { return default to true }
+            else -> raw.toString().trim().ifBlank { return default to true }
         }
-        return runCatching {
-            val clean = stringValue.replace(",", "").trim()
-            BigDecimal(clean).toPlainString()
-        }.getOrDefault(stringValue)
+        val parsed = FinancialNumberParser.parseOrNull(stringValue)
+        return if (parsed != null) {
+            parsed.toPlainString() to true
+        } else {
+            default to false
+        }
     }
 
     internal fun parseTradeDate(tradeDateStr: String): Long? =
@@ -686,10 +704,10 @@ class GeminiAiProvider internal constructor(
                 "activeAmc": "Active Mutual Fund / AMC / Issuer name at end of these pages (or empty)",
                 "activeScheme": "Active MF scheme, stock, bond, FD, or asset name at end of these pages (or empty)",
                 "activeIsin": "Active 12-char ISIN at end of these pages (or empty)",
-                "activeFolio": "Active Folio No at end of these pages (or empty)",
+                "activeFolio": "Leave empty (do not extract personal folio numbers)",
                 "activeBroker": "Active Broker / Depository name (or empty)",
                 "activeAssetClass": "Active assetClass at end of these pages (or empty)",
-                "activeAccountId": "Active Demat / Account / Client ID at end of these pages (or empty)",
+                "activeAccountId": "Leave empty (do not extract personal account or demat numbers)",
                 "activeColumnHeaders": ["Column1", "Column2"],
                 "incompleteTailText": "Any incomplete split transaction row or trailing header cut off at the bottom of the last page, else empty"
               }

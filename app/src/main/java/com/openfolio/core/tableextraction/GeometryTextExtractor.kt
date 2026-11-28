@@ -2,11 +2,12 @@ package com.openfolio.core.tableextraction
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.net.Uri
+import android.graphics.BitmapFactory
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.TextRecognizer
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import com.openfolio.core.data.local.LocalFileCrypto
 import com.openfolio.core.utils.StreamingPdfProcessor
 import com.openfolio.core.utils.awaitCancellable
 import com.tom_roush.pdfbox.io.MemoryUsageSetting
@@ -18,6 +19,7 @@ import com.tom_roush.pdfbox.text.PDFTextStripper
 import com.tom_roush.pdfbox.text.TextPosition
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
+import java.io.FileInputStream
 import java.io.IOException
 import java.util.UUID
 import javax.inject.Inject
@@ -30,6 +32,7 @@ import kotlinx.coroutines.withContext
 @Singleton
 class GeometryTextExtractor @Inject constructor(
     @ApplicationContext private val context: Context,
+    private val fileCrypto: LocalFileCrypto? = null,
 ) {
 
     suspend fun extractWords(
@@ -76,8 +79,17 @@ class GeometryTextExtractor @Inject constructor(
 
         var recognizer: TextRecognizer? = null
         try {
+            val crypto = fileCrypto
             val doc = try {
-                if (password.isNullOrBlank()) {
+                if (crypto != null && crypto.isEncrypted(file)) {
+                    crypto.openPlaintextInputStream(file).use { stream ->
+                        if (password.isNullOrBlank()) {
+                            PDDocument.load(stream, memorySetting)
+                        } else {
+                            PDDocument.load(stream, password, memorySetting)
+                        }
+                    }
+                } else if (password.isNullOrBlank()) {
                     PDDocument.load(file, memorySetting)
                 } else {
                     PDDocument.load(file, password, memorySetting)
@@ -153,11 +165,15 @@ class GeometryTextExtractor @Inject constructor(
     private suspend fun extractFromImage(file: File): List<ExtractedWord> {
         currentCoroutineContext().ensureActive()
         val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+        val bitmap = (fileCrypto?.openPlaintextInputStream(file) ?: FileInputStream(file)).use { stream ->
+            BitmapFactory.decodeStream(stream)
+        } ?: throw IOException("Unable to decode image for geometry extraction.")
         return try {
-            val image = InputImage.fromFilePath(context, Uri.fromFile(file))
+            val image = InputImage.fromBitmap(bitmap, 0)
             val visionText = recognizer.process(image).awaitCancellable()
             visionTextToWords(visionText, pageIndex = 1)
         } finally {
+            bitmap.recycle()
             try {
                 recognizer.close()
             } catch (_: Exception) {

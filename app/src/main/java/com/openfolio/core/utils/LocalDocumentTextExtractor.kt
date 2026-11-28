@@ -1,6 +1,7 @@
 package com.openfolio.core.utils
 
 import android.content.Context
+import com.openfolio.core.data.local.LocalFileCrypto
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import javax.inject.Inject
@@ -9,8 +10,9 @@ import kotlinx.coroutines.withContext
 
 class LocalDocumentTextExtractor @Inject constructor(
     @ApplicationContext private val context: Context,
+    private val fileCrypto: LocalFileCrypto? = null,
 ) : DocumentTextExtractor {
-    private val streamingPdfProcessor by lazy { StreamingPdfProcessor(context) }
+    private val streamingPdfProcessor by lazy { StreamingPdfProcessor(context, fileCrypto) }
 
     override suspend fun extractText(
         file: File,

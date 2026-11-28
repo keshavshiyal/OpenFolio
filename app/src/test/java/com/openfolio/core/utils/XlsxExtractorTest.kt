@@ -174,6 +174,52 @@ class XlsxExtractorTest {
         }
     }
 
+    @Test
+    fun rejectsXmlDoctypeAndExternalEntitiesInXlsx() {
+        val maliciousSheetXml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <!DOCTYPE worksheet [
+                <!ENTITY xxe SYSTEM "file:///etc/passwd">
+            ]>
+            <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                <sheetData>
+                    <row r="1"><c r="A1" t="inlineStr"><is><t>&xxe;</t></is></c></row>
+                </sheetData>
+            </worksheet>
+        """.trimIndent()
+
+        val file = createTestXlsx(sheetXml = maliciousSheetXml)
+        try {
+            assertThrows(Exception::class.java) {
+                XlsxExtractor().extract(file, headerRowIndex = 0)
+            }
+        } finally {
+            file.delete()
+        }
+    }
+
+    @Test
+    fun rejectsHighlyCompressedXmlZipBombInXlsx() {
+        // Highly repetitive comment/whitespace inside sheet XML yields >100:1 compression ratio (>10 MB plain vs tiny zip)
+        val filler = "<!-- " + "A".repeat(12_000_000) + " -->"
+        val bombSheetXml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                $filler
+                <sheetData>
+                    <row r="1"><c r="A1"><v>1</v></c></row>
+                </sheetData>
+            </worksheet>
+        """.trimIndent()
+
+        val file = createTestXlsx(sheetXml = bombSheetXml)
+        try {
+            assertThrows(IllegalArgumentException::class.java) {
+                XlsxExtractor().extract(file, headerRowIndex = 0)
+            }
+        } finally {
+            file.delete()
+        }
+    }
+
     private fun createTestXlsx(
         sheetXml: String,
         sharedStringsXml: String? = null,

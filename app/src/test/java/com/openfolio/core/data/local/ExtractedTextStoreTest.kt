@@ -1,5 +1,7 @@
 package com.openfolio.core.data.local
 
+import java.security.SecureRandom
+import javax.crypto.spec.SecretKeySpec
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -109,5 +111,34 @@ class ExtractedTextStoreTest {
         assertEquals(setOf(5, 6, 7, 8, 9), slice.keys)
         assertEquals("Line on page 5", slice[5])
         assertEquals("Line on page 9", slice[9])
+    }
+
+    @Test
+    fun encryptedStoreProtectsSidecarAtRestAndReadsPlaintextTransparently() {
+        val crypto = LocalFileCrypto(
+            keyProvider = { SecretKeySpec(ByteArray(32) { 0x4A }, "AES") },
+            random = SecureRandom(),
+        )
+        val store = ExtractedTextStore(tempFolder.newFolder("extracted_text_encrypted"), crypto)
+        val docId = "doc-secret-sidecar"
+
+        store.openWriter(docId).use { writer ->
+            store.writePage(writer, 1, "Confidential PAN ABCDE1234F Reliance Qty 50")
+            store.writePage(writer, 2, "HDFC Mutual Fund INF179K01BE2 1000.00")
+            writer.flush()
+        }
+
+        val rawBytes = store.fileFor(docId).readBytes().decodeToString()
+        assertFalse(rawBytes.contains("Confidential"))
+        assertFalse(rawBytes.contains("ABCDE1234F"))
+        assertFalse(rawBytes.contains(ExtractedTextStore.PAGE_MARKER_PREFIX))
+        assertTrue(crypto.isEncrypted(store.fileFor(docId)))
+
+        assertTrue(store.hasText(docId))
+        assertEquals(2, store.getMaxPageNumber(docId))
+        val sample = store.readSample(docId, maxChars = 400)
+        assertTrue(sample.contains("Reliance Qty 50"))
+        val range = store.readPagesRange(docId, 2..2)
+        assertEquals("HDFC Mutual Fund INF179K01BE2 1000.00", range[2])
     }
 }

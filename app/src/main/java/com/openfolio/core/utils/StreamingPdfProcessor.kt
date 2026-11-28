@@ -1,12 +1,13 @@
 package com.openfolio.core.utils
 
 import android.content.Context
-import android.net.Uri
+import android.graphics.BitmapFactory
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.TextRecognizer
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import com.openfolio.core.data.local.LocalFileCrypto
 import com.tom_roush.pdfbox.io.MemoryUsageSetting
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.encryption.InvalidPasswordException
@@ -15,6 +16,7 @@ import com.tom_roush.pdfbox.rendering.PDFRenderer
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
+import java.io.FileInputStream
 import java.io.IOException
 import java.util.UUID
 import javax.inject.Inject
@@ -48,6 +50,7 @@ data class StreamingPdfResult(
 @Singleton
 class StreamingPdfProcessor @Inject constructor(
     @ApplicationContext private val context: Context,
+    private val fileCrypto: LocalFileCrypto? = null,
 ) {
     suspend fun processPages(
         file: File,
@@ -146,11 +149,15 @@ class StreamingPdfProcessor @Inject constructor(
     suspend fun extractImageText(file: File): String = withContext(Dispatchers.IO) {
         currentCoroutineContext().ensureActive()
         val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+        val bitmap = (fileCrypto?.openPlaintextInputStream(file) ?: FileInputStream(file)).use { stream ->
+            BitmapFactory.decodeStream(stream)
+        } ?: throw IOException("Unable to decode image for OCR.")
         try {
-            val image = InputImage.fromFilePath(context, Uri.fromFile(file))
+            val image = InputImage.fromBitmap(bitmap, 0)
             val visionText = recognizer.process(image).awaitCancellable()
             reconstructLinesFromVisionText(visionText)
         } finally {
+            bitmap.recycle()
             try {
                 recognizer.close()
             } catch (_: Exception) {
@@ -163,8 +170,17 @@ class StreamingPdfProcessor @Inject constructor(
         password: String?,
         memorySetting: MemoryUsageSetting,
     ): PDDocument {
+        val crypto = fileCrypto
         return try {
-            if (password.isNullOrBlank()) {
+            if (crypto != null && crypto.isEncrypted(file)) {
+                crypto.openPlaintextInputStream(file).use { stream ->
+                    if (password.isNullOrBlank()) {
+                        PDDocument.load(stream, memorySetting)
+                    } else {
+                        PDDocument.load(stream, password, memorySetting)
+                    }
+                }
+            } else if (password.isNullOrBlank()) {
                 PDDocument.load(file, memorySetting)
             } else {
                 PDDocument.load(file, password, memorySetting)

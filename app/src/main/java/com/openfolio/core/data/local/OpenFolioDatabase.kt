@@ -3,6 +3,7 @@ package com.openfolio.core.data.local
 import androidx.room.Database
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
+import androidx.room.migration.Migration
 import com.openfolio.core.data.local.dao.AccountDao
 import com.openfolio.core.data.local.dao.AssetDao
 import com.openfolio.core.data.local.dao.ColumnMappingDao
@@ -36,7 +37,7 @@ import com.openfolio.core.data.local.entity.ValuationEntity
         ValuationEntity::class,
     ],
     version = 1,
-    exportSchema = false,
+    exportSchema = true,
 )
 @TypeConverters(Converters::class)
 abstract class OpenFolioDatabase : RoomDatabase() {
@@ -61,6 +62,12 @@ abstract class OpenFolioDatabase : RoomDatabase() {
     abstract fun valuationDao(): ValuationDao
 
     companion object {
+        const val DATABASE_NAME = "openfolio.db"
         const val SCHEMA_VERSION = 1
+
+        /**
+         * All schema upgrades MUST add explicit non-destructive [Migration] entries here.
+         */
+        val MIGRATIONS: Array<Migration> = emptyArray()
     }
 }

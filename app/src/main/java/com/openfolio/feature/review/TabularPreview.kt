@@ -33,9 +33,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.openfolio.core.data.local.LocalFileCrypto
 import com.openfolio.core.ui.theme.LocalOpenFolioColors
+import com.openfolio.core.utils.CsvExtractor
 import com.openfolio.core.utils.StructuredFileParser
+import com.openfolio.core.utils.XlsxExtractor
 import java.io.File
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -60,6 +64,8 @@ fun TabularDocumentPreview(
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalOpenFolioColors.current
+    val appContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    val fileCrypto = remember(appContext) { LocalFileCrypto(appContext) }
     var isLoading by remember(filePath, fileExtension) { mutableStateOf(true) }
     var errorMessage by remember(filePath, fileExtension) { mutableStateOf<String?>(null) }
     var rows by remember(filePath, fileExtension) { mutableStateOf<List<List<String>>>(emptyList()) }
@@ -73,13 +79,19 @@ fun TabularDocumentPreview(
                 if (!file.exists() || !file.canRead()) {
                     throw IllegalArgumentException("File does not exist or cannot be read: $filePath")
                 }
-                val raw = StructuredFileParser().readPreviewRows(file, limit = 100)
+                val parser = StructuredFileParser(
+                    CsvExtractor(fileCrypto),
+                    XlsxExtractor(fileCrypto, appContext),
+                )
+                val raw = parser.readPreviewRows(file, limit = 100)
                 normalizeRaggedRows(raw)
             }
             rows = loadedRows
             if (loadedRows.isEmpty()) {
                 errorMessage = "Preview unavailable"
             }
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (_: Exception) {
             errorMessage = "Preview unavailable"
         } finally {

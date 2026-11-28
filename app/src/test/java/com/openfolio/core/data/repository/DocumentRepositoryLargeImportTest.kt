@@ -842,7 +842,7 @@ class DocumentRepositoryLargeImportTest {
         assertEquals(4, batch2.endPage)
         assertEquals(1, batch2.newDraftsCount) // b2-dup skipped, b2-new inserted
         assertEquals("05-Feb-2024 SIP 2500", seenContexts[1]?.incompleteTailText)
-        assertEquals("123456/78", seenContexts[1]?.activeFolio)
+        assertEquals("", seenContexts[1]?.activeFolio)
         assertEquals(2, savedDrafts.size)
 
         // Auto-process remaining finishes pages 5-6
@@ -1355,7 +1355,7 @@ class DocumentRepositoryLargeImportTest {
 
         val secondPrior = seenContexts[1]
         assertEquals("BOND", secondPrior?.activeAssetClass)
-        assertEquals("NSDL-10020030", secondPrior?.activeAccountId)
+        assertEquals("", secondPrior?.activeAccountId)
         assertTrue(secondPrior?.fallbackTailLines?.contains("INE906B07FG1") == true)
         assertTrue(secondPrior?.recentBoundaryTransactions?.isNotEmpty() == true)
 

@@ -15,21 +15,32 @@ import javax.inject.Singleton
 /**
  * File-backed sidecar storage for extracted document text, keeping multi-megabyte PDF text
  * out of SQLCipher / Room CursorWindow limits while supporting O(1)-memory page-by-page streaming.
+ * When [fileCrypto] is provided, sidecar files are encrypted at rest via chunked AES-256-GCM.
  */
 @Singleton
 class ExtractedTextStore internal constructor(
     private val directory: File,
+    private val fileCrypto: LocalFileCrypto? = null,
 ) {
     @Inject
-    constructor(@ApplicationContext context: Context) : this(File(context.filesDir, DIRECTORY_NAME))
+    constructor(
+        @ApplicationContext context: Context,
+        fileCrypto: LocalFileCrypto,
+    ) : this(File(context.filesDir, DIRECTORY_NAME), fileCrypto)
+
+    internal constructor(context: Context) : this(File(context.filesDir, DIRECTORY_NAME), null)
+
+    internal constructor(directory: File) : this(directory, null)
 
     fun openWriter(documentId: String): BufferedWriter {
         if (!directory.exists()) {
             directory.mkdirs()
         }
         val target = fileFor(documentId)
+        val rawOut = FileOutputStream(target)
+        val encryptedOut = fileCrypto?.encryptingOutputStream(rawOut) ?: rawOut
         return BufferedWriter(
-            OutputStreamWriter(FileOutputStream(target), Charsets.UTF_8),
+            OutputStreamWriter(encryptedOut, Charsets.UTF_8),
             BUFFER_SIZE,
         )
     }
@@ -49,7 +60,7 @@ class ExtractedTextStore internal constructor(
     inline fun forEachPage(documentId: String, onPage: (pageNumber: Int, pageText: String) -> Unit) {
         val file = fileFor(documentId)
         if (!file.exists()) return
-        BufferedReader(InputStreamReader(FileInputStream(file), Charsets.UTF_8), BUFFER_SIZE).use { reader ->
+        openReader(file).use { reader ->
             var currentPage = -1
             val buffer = StringBuilder()
             var hasLineInPage = false
@@ -95,7 +106,7 @@ class ExtractedTextStore internal constructor(
         val file = fileFor(documentId)
         if (!file.exists()) return 0
         var maxPage = 0
-        BufferedReader(InputStreamReader(FileInputStream(file), Charsets.UTF_8), BUFFER_SIZE).use { reader ->
+        openReader(file).use { reader ->
             while (true) {
                 val line = reader.readLine() ?: break
                 val parsed = parsePageMarker(line)
@@ -112,7 +123,7 @@ class ExtractedTextStore internal constructor(
         val file = fileFor(documentId)
         if (!file.exists()) return ""
         val sb = StringBuilder(minOf(maxChars, 4096))
-        BufferedReader(InputStreamReader(FileInputStream(file), Charsets.UTF_8), BUFFER_SIZE).use { reader ->
+        openReader(file).use { reader ->
             while (sb.length < maxChars) {
                 val line = reader.readLine() ?: break
                 if (parsePageMarker(line) != null) continue
@@ -136,7 +147,7 @@ class ExtractedTextStore internal constructor(
     fun hasText(documentId: String): Boolean {
         val file = fileFor(documentId)
         if (!file.exists() || file.length() == 0L) return false
-        BufferedReader(InputStreamReader(FileInputStream(file), Charsets.UTF_8), BUFFER_SIZE).use { reader ->
+        openReader(file).use { reader ->
             while (true) {
                 val line = reader.readLine() ?: return false
                 if (parsePageMarker(line) == null && line.isNotBlank()) {
@@ -154,6 +165,12 @@ class ExtractedTextStore internal constructor(
     }
 
     fun pathFor(documentId: String): String = fileFor(documentId).absolutePath
+
+    @PublishedApi
+    internal fun openReader(file: File): BufferedReader {
+        val input = fileCrypto?.openPlaintextInputStream(file) ?: FileInputStream(file)
+        return BufferedReader(InputStreamReader(input, Charsets.UTF_8), BUFFER_SIZE)
+    }
 
     @PublishedApi
     internal fun fileFor(documentId: String): File {

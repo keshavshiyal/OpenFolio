@@ -1,6 +1,7 @@
 package com.openfolio.core.tableextraction
 
 import android.content.Context
+import com.openfolio.core.data.local.LocalFileCrypto
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.BufferedWriter
 import java.io.File
@@ -16,7 +17,9 @@ import kotlinx.coroutines.withContext
 @Singleton
 class CsvTableGenerator @Inject constructor(
     @ApplicationContext private val context: Context,
+    private val fileCrypto: LocalFileCrypto? = null,
 ) {
+    constructor(@ApplicationContext context: Context) : this(context = context, fileCrypto = null)
 
     suspend fun generateCsvFile(
         table: ExtractedTable,
@@ -31,8 +34,10 @@ class CsvTableGenerator @Inject constructor(
         val fileName = "table_${table.tableIndex}_${baseName}_${UUID.randomUUID().toString().take(8)}.csv"
         val csvFile = File(dir, fileName)
 
+        val rawStream = FileOutputStream(csvFile)
+        val outStream = fileCrypto?.encryptingOutputStream(rawStream) ?: rawStream
         BufferedWriter(
-            OutputStreamWriter(FileOutputStream(csvFile), StandardCharsets.UTF_8),
+            OutputStreamWriter(outStream, StandardCharsets.UTF_8),
             STREAM_BUFFER_SIZE,
         ).use { writer ->
             writeCsvContent(table, writer)

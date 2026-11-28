@@ -321,6 +321,293 @@ class AppBackupManagerTest {
         manager.exportEncryptedBackup(ByteArrayOutputStream(), "123")
     }
 
+    @Test
+    fun futureDatabaseVersionBackupIsRejectedWithoutDeletingLocalFiles() = runTest {
+        val workDir = tempFolder.newFolder("fv_work")
+        val docsDir = tempFolder.newFolder("fv_docs")
+        val textDir = tempFolder.newFolder("fv_text")
+        val existingDoc = File(docsDir, "keep.pdf").apply { writeText("IMPORTANT_PDF") }
+
+        val futureDb = mock<SupportSQLiteDatabase>()
+        whenever(futureDb.version).thenReturn(OpenFolioDatabase.SCHEMA_VERSION + 5)
+        whenever(futureDb.query(any<String>())).thenAnswer { createMockCursor(arrayOf("name"), emptyList()) }
+
+        val futurePayload = JSONObject().apply {
+            put("metadata", JSONObject().apply {
+                put("format", "OpenFolio Database Export")
+                put("databaseVersion", OpenFolioDatabase.SCHEMA_VERSION + 5)
+                put("exportedAt", "2026-11-27T10:00:00Z")
+            })
+            put("tables", JSONObject().apply {
+                put("assets", JSONObject().apply {
+                    put("columns", JSONArray(listOf("id")))
+                    put("rows", JSONArray())
+                })
+            })
+        }
+        val exporter = object : DatabaseExporter {
+            override suspend fun getExportMetadata(): DatabaseExportMetadata =
+                DatabaseExportMetadata(1, 0, 0L, "", emptyList())
+            override suspend fun exportToJson(outputStream: OutputStream): ExportResult {
+                outputStream.write(futurePayload.toString().toByteArray(StandardCharsets.UTF_8))
+                return ExportResult(1, 0L, OpenFolioDatabase.SCHEMA_VERSION + 5, "db.json", "2026-11-27T10:00:00Z")
+            }
+            override suspend fun exportDatabaseToJson(db: SupportSQLiteDatabase, outputStream: OutputStream) =
+                exportToJson(outputStream)
+        }
+        val settings = mock<SettingsRepository>()
+        whenever(settings.getShowValues()).thenReturn(true)
+        whenever(settings.getGeminiModelName()).thenReturn("gemini-3.8-flash")
+
+        val manager = AppBackupManagerImpl(
+            database = mock(),
+            databaseExporter = exporter,
+            settingsRepository = settings,
+            workBaseDir = workDir,
+            documentsDir = docsDir,
+            extractedTextDir = textDir,
+            dbProvider = { futureDb },
+        )
+        val bytes = ByteArrayOutputStream().use { out ->
+            manager.exportEncryptedBackup(out, "pass-future-123")
+            out.toByteArray()
+        }
+
+        val targetDb = mock<SupportSQLiteDatabase>()
+        var threw = false
+        try {
+            manager.importEncryptedBackup(ByteArrayInputStream(bytes), "pass-future-123")
+        } catch (_: InvalidBackupFormatException) {
+            threw = true
+        }
+        assertTrue(threw)
+        assertTrue(existingDoc.exists())
+        assertEquals("IMPORTANT_PDF", existingDoc.readText())
+        verify(targetDb, never()).execSQL(any())
+    }
+
+    @Test
+    fun failedRestoreTransactionPreservesExistingDocumentsAndSidecars() = runTest {
+        val srcWork = tempFolder.newFolder("ar_src_w")
+        val srcDocs = tempFolder.newFolder("ar_src_d")
+        val srcText = tempFolder.newFolder("ar_src_t")
+        File(srcDocs, "new_stmt.pdf").writeText("NEW_STATEMENT")
+
+        val srcDb = mock<SupportSQLiteDatabase>()
+        whenever(srcDb.version).thenReturn(1)
+        whenever(srcDb.query(any<String>())).thenAnswer { inv ->
+            if (inv.getArgument<String>(0).contains("FROM `documents`")) {
+                createMockCursor(
+                    arrayOf("id", "fileName", "localPath", "extractedTextPath"),
+                    listOf(listOf("doc-new", "new_stmt.pdf", File(srcDocs, "new_stmt.pdf").absolutePath, null)),
+                )
+            } else {
+                createMockCursor(arrayOf("name"), emptyList())
+            }
+        }
+        val payload = JSONObject().apply {
+            put("metadata", JSONObject().apply {
+                put("format", "OpenFolio Database Export")
+                put("databaseVersion", 1)
+                put("exportedAt", "2026-11-27T10:00:00Z")
+            })
+            put("tables", JSONObject().apply {
+                put("documents", JSONObject().apply {
+                    put("columns", JSONArray(listOf("id", "fileName", "localPath")))
+                    put("rows", JSONArray().put(JSONObject().apply {
+                        put("id", "doc-new")
+                        put("fileName", "new_stmt.pdf")
+                        put("localPath", "/old/new_stmt.pdf")
+                    }))
+                })
+            })
+        }
+        val exporter = object : DatabaseExporter {
+            override suspend fun getExportMetadata(): DatabaseExportMetadata =
+                DatabaseExportMetadata(1, 1, 1L, "", emptyList())
+            override suspend fun exportToJson(outputStream: OutputStream): ExportResult {
+                outputStream.write(payload.toString().toByteArray(StandardCharsets.UTF_8))
+                return ExportResult(1, 1L, 1, "db.json", "2026-11-27T10:00:00Z")
+            }
+            override suspend fun exportDatabaseToJson(db: SupportSQLiteDatabase, outputStream: OutputStream) =
+                exportToJson(outputStream)
+        }
+        val settings = mock<SettingsRepository>()
+        whenever(settings.getShowValues()).thenReturn(true)
+        whenever(settings.getGeminiModelName()).thenReturn("gemini-3.8-flash")
+
+        val exportMgr = AppBackupManagerImpl(
+            database = mock(),
+            databaseExporter = exporter,
+            settingsRepository = settings,
+            workBaseDir = srcWork,
+            documentsDir = srcDocs,
+            extractedTextDir = srcText,
+            dbProvider = { srcDb },
+        )
+        val bytes = ByteArrayOutputStream().use { out ->
+            exportMgr.exportEncryptedBackup(out, "atomic-pass-123")
+            out.toByteArray()
+        }
+
+        val dstWork = tempFolder.newFolder("ar_dst_w")
+        val dstDocs = tempFolder.newFolder("ar_dst_d")
+        val dstText = tempFolder.newFolder("ar_dst_t")
+        val existingDoc = File(dstDocs, "original_keep.pdf").apply { writeText("KEEP_ORIGINAL_DOC") }
+        val existingTxt = File(dstText, "original.txt").apply { writeText("KEEP_ORIGINAL_TEXT") }
+
+        val failingDb = mock<SupportSQLiteDatabase>()
+        whenever(failingDb.query(any<String>())).thenAnswer { createMockCursor(arrayOf("name"), emptyList()) }
+        val failingMgr = AppBackupManagerImpl(
+            database = mock(),
+            databaseExporter = exporter,
+            settingsRepository = settings,
+            workBaseDir = dstWork,
+            documentsDir = dstDocs,
+            extractedTextDir = dstText,
+            dbProvider = { failingDb },
+            transactionRunner = { _, _ -> throw IllegalStateException("Simulated disk full mid-DB commit") },
+        )
+
+        var threw = false
+        try {
+            failingMgr.importEncryptedBackup(ByteArrayInputStream(bytes), "atomic-pass-123")
+        } catch (_: IllegalStateException) {
+            threw = true
+        }
+        assertTrue(threw)
+        assertTrue(existingDoc.exists())
+        assertEquals("KEEP_ORIGINAL_DOC", existingDoc.readText())
+        assertTrue(existingTxt.exists())
+        assertEquals("KEEP_ORIGINAL_TEXT", existingTxt.readText())
+    }
+
+    @Test
+    fun encryptedLocalFilesRoundTripThroughBackupWithLocalFileCrypto() = runTest {
+        val crypto = com.openfolio.core.data.local.LocalFileCrypto(
+            keyProvider = { javax.crypto.spec.SecretKeySpec(ByteArray(32) { 0x62 }, "AES") },
+        )
+        val srcWork = tempFolder.newFolder("enc_src_w")
+        val srcDocs = tempFolder.newFolder("enc_src_d")
+        val srcText = tempFolder.newFolder("enc_src_t")
+
+        val encDoc = File(srcDocs, "secret.pdf").apply {
+            crypto.encryptingOutputStream(outputStream()).use {
+                it.write("%PDF-1.7-CONFIDENTIAL".toByteArray(StandardCharsets.UTF_8))
+            }
+        }
+        val encTxt = File(srcText, "doc-enc.txt").apply {
+            crypto.encryptingOutputStream(outputStream()).use {
+                it.write("<<<OPENFOLIO_PAGE:1>>>\nSecret Folio Content".toByteArray(StandardCharsets.UTF_8))
+            }
+        }
+
+        val srcDb = mock<SupportSQLiteDatabase>()
+        whenever(srcDb.version).thenReturn(1)
+        whenever(srcDb.query(any<String>())).thenAnswer { inv ->
+            if (inv.getArgument<String>(0).contains("FROM `documents`")) {
+                createMockCursor(
+                    arrayOf("id", "fileName", "localPath", "extractedTextPath"),
+                    listOf(listOf("doc-enc", "secret.pdf", encDoc.absolutePath, encTxt.absolutePath)),
+                )
+            } else {
+                createMockCursor(arrayOf("name"), emptyList())
+            }
+        }
+        val payload = JSONObject().apply {
+            put("metadata", JSONObject().apply {
+                put("format", "OpenFolio Database Export")
+                put("databaseVersion", 1)
+                put("exportedAt", "2026-11-27T10:00:00Z")
+            })
+            put("tables", JSONObject().apply {
+                put("documents", JSONObject().apply {
+                    put("columns", JSONArray(listOf("id", "fileName", "localPath", "extractedTextPath")))
+                    put("rows", JSONArray().put(JSONObject().apply {
+                        put("id", "doc-enc")
+                        put("fileName", "secret.pdf")
+                        put("localPath", encDoc.absolutePath)
+                        put("extractedTextPath", encTxt.absolutePath)
+                    }))
+                })
+            })
+        }
+        val exporter = object : DatabaseExporter {
+            override suspend fun getExportMetadata(): DatabaseExportMetadata =
+                DatabaseExportMetadata(1, 1, 1L, "", emptyList())
+            override suspend fun exportToJson(outputStream: OutputStream): ExportResult {
+                outputStream.write(payload.toString().toByteArray(StandardCharsets.UTF_8))
+                return ExportResult(1, 1L, 1, "db.json", "2026-11-27T10:00:00Z")
+            }
+            override suspend fun exportDatabaseToJson(db: SupportSQLiteDatabase, outputStream: OutputStream) =
+                exportToJson(outputStream)
+        }
+        val settings = mock<SettingsRepository>()
+        whenever(settings.getShowValues()).thenReturn(true)
+        whenever(settings.getGeminiModelName()).thenReturn("gemini-3.8-flash")
+
+        val srcMgr = AppBackupManagerImpl(
+            database = mock(),
+            databaseExporter = exporter,
+            settingsRepository = settings,
+            workBaseDir = srcWork,
+            documentsDir = srcDocs,
+            extractedTextDir = srcText,
+            dbProvider = { srcDb },
+            fileCrypto = crypto,
+        )
+        val backupBytes = ByteArrayOutputStream().use { out ->
+            srcMgr.exportEncryptedBackup(out, "enc-backup-pass")
+            out.toByteArray()
+        }
+
+        val dstWork = tempFolder.newFolder("enc_dst_w")
+        val dstDocs = tempFolder.newFolder("enc_dst_d")
+        val dstText = tempFolder.newFolder("enc_dst_t")
+        val dstDb = mock<SupportSQLiteDatabase>()
+        whenever(dstDb.query(any<String>())).thenAnswer { inv ->
+            val sql = inv.getArgument<String>(0)
+            when {
+                sql.contains("sqlite_master") -> createMockCursor(arrayOf("name"), listOf(listOf("documents")))
+                sql.contains("PRAGMA table_info(`documents`)") -> createMockCursor(
+                    arrayOf("name"),
+                    listOf(listOf("id"), listOf("fileName"), listOf("localPath"), listOf("extractedTextPath")),
+                )
+                else -> createMockCursor(arrayOf("name"), emptyList())
+            }
+        }
+        whenever(dstDb.compileStatement(any())).thenReturn(mock<SupportSQLiteStatement>())
+
+        val dstMgr = AppBackupManagerImpl(
+            database = mock(),
+            databaseExporter = exporter,
+            settingsRepository = settings,
+            workBaseDir = dstWork,
+            documentsDir = dstDocs,
+            extractedTextDir = dstText,
+            dbProvider = { dstDb },
+            transactionRunner = { _, block -> block() },
+            fileCrypto = crypto,
+        )
+        val restored = dstMgr.importEncryptedBackup(ByteArrayInputStream(backupBytes), "enc-backup-pass")
+        assertEquals(1, restored.restoredDocumentFilesCount)
+        assertEquals(1, restored.restoredExtractedTextCount)
+
+        val restoredDoc = File(dstDocs, "doc-enc_secret.pdf")
+        assertTrue(restoredDoc.exists())
+        assertTrue(crypto.isEncrypted(restoredDoc))
+        assertEquals(
+            "%PDF-1.7-CONFIDENTIAL",
+            crypto.openPlaintextInputStream(restoredDoc).bufferedReader().readText(),
+        )
+        val restoredTxt = File(dstText, "doc-enc.txt")
+        assertTrue(restoredTxt.exists())
+        assertTrue(crypto.isEncrypted(restoredTxt))
+        assertTrue(
+            crypto.openPlaintextInputStream(restoredTxt).bufferedReader().readText().contains("Secret Folio Content"),
+        )
+    }
+
     private fun createMockCursor(
         columnNames: Array<String>,
         rows: List<List<Any?>>,

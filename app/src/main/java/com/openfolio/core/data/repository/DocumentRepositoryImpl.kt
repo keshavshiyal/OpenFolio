@@ -5,7 +5,9 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Log
 import androidx.room.withTransaction
+import com.openfolio.BuildConfig
 import com.openfolio.core.data.local.ExtractedTextStore
+import com.openfolio.core.data.local.LocalFileCrypto
 import com.openfolio.core.data.local.OpenFolioDatabase
 import com.openfolio.core.data.local.PdfPasswordStore
 import com.openfolio.core.data.local.dao.ColumnMappingDao
@@ -50,7 +52,9 @@ import com.openfolio.core.utils.CasParseState
 import com.openfolio.core.utils.CasStatementParser
 import com.openfolio.core.utils.DateParser
 import com.openfolio.core.utils.DocumentTextExtractor
+import com.openfolio.core.utils.FinancialNumberParser
 import com.openfolio.core.utils.PdfPageContent
+import com.openfolio.core.utils.PiiRedactor
 import com.openfolio.core.utils.StreamingPdfProcessor
 import com.openfolio.core.utils.StructuredFileParser
 import com.openfolio.core.utils.StructuredTable
@@ -98,6 +102,7 @@ class DocumentRepositoryImpl @Inject constructor(
     private val streamingPdfProcessor: StreamingPdfProcessor? = null,
     private val pdfPasswordStore: PdfPasswordStore? = null,
     private val importScheduler: DocumentImportScheduler? = null,
+    private val fileCrypto: LocalFileCrypto? = null,
 ) : DocumentRepository {
 
     internal var transactionRunner: (suspend (suspend () -> Any?) -> Any?)? = null
@@ -251,12 +256,13 @@ class DocumentRepositoryImpl @Inject constructor(
                 } catch (_: Exception) {
                     document.getAssetClassEnum()
                 }
+                val normalizedDraftType = TransactionType.normalizeOrOther(draft.transactionType).first.name
                 val fingerprint = createTransactionFingerprint(
                     assetId = assetId,
                     isin = isin,
                     ticker = ticker,
                     assetName = draft.assetName,
-                    transactionType = draft.transactionType,
+                    transactionType = normalizedDraftType,
                     quantity = draft.quantity,
                     unitPrice = draft.price,
                     netAmount = draft.netAmount,
@@ -362,12 +368,10 @@ class DocumentRepositoryImpl @Inject constructor(
                     }
                 }
 
-                val cleanQty = draft.quantity.replace(",", "").replace("₹", "").trim().ifBlank { "0" }
-                val cleanPrice = draft.price.replace(",", "").replace("₹", "").trim().ifBlank { "0" }
-                val cleanNetAmount = draft.netAmount.replace(",", "").replace("₹", "").trim().ifBlank { "0" }
-                val quantity = BigDecimal(cleanQty).abs()
-                var price = BigDecimal(cleanPrice).abs()
-                var netAmount = BigDecimal(cleanNetAmount).abs()
+                val normalizedType = TransactionType.normalizeOrOther(draft.transactionType).first
+                val quantity = FinancialNumberParser.parseOrNull(draft.quantity)?.abs() ?: BigDecimal.ZERO
+                var price = FinancialNumberParser.parseOrNull(draft.price)?.abs() ?: BigDecimal.ZERO
+                var netAmount = FinancialNumberParser.parseOrNull(draft.netAmount)?.abs() ?: BigDecimal.ZERO
 
                 if (price.compareTo(BigDecimal.ZERO) == 0 && quantity > BigDecimal.ZERO && netAmount > BigDecimal.ZERO) {
                     price = netAmount.divide(quantity, 4, RoundingMode.HALF_UP)
@@ -385,7 +389,7 @@ class DocumentRepositoryImpl @Inject constructor(
                         id = transactionId,
                         accountId = DEFAULT_ACCOUNT_ID,
                         assetId = assetId,
-                        type = TransactionType.valueOf(draft.transactionType),
+                        type = normalizedType,
                         tradeDate = item.resolvedTradeDate,
                         settlementDate = null,
                         quantity = quantity,
@@ -411,7 +415,9 @@ class DocumentRepositoryImpl @Inject constructor(
                 touchedAssetIds.add(assetId)
             }
 
-            runCatching { Log.d("SaveTxn", "Total transactions to insert: ${transactionsToInsert.size}") }
+            if (BuildConfig.DEBUG) {
+                runCatching { Log.d("SaveTxn", "Total transactions to insert: ${transactionsToInsert.size}") }
+            }
             if (transactionsToInsert.isNotEmpty()) {
                 transactionsToInsert.chunked(INSERT_BATCH_SIZE).forEach { batch ->
                     transactionDao.insertAll(batch)
@@ -813,17 +819,20 @@ class DocumentRepositoryImpl @Inject constructor(
             depth: Int,
         ): AiExtractionBatchResult {
             currentCoroutineContext().ensureActive()
+            val redactedChunkText = PiiRedactor.redactForAi(chunkText)
+            val redactedPriorContext = PiiRedactor.sanitizeCarryOverContextForAi(priorContext)
+                ?: AiCarryOverContext()
             val batchResult: AiExtractionBatchResult = try {
                 val res = when (aiProvider) {
                     is ContextualAiProvider -> aiProvider.extractTransactionsWithContext(
-                        rawText = chunkText,
+                        rawText = redactedChunkText,
                         apiKey = apiKey,
                         documentId = documentId,
-                        priorContext = priorContext,
+                        priorContext = redactedPriorContext,
                         modelName = configuredModelName,
                     )
                     is TruncationAwareAiProvider -> {
-                        val promptText = buildPromptWithContext(chunkText, priorContext)
+                        val promptText = buildPromptWithContext(redactedChunkText, redactedPriorContext)
                         aiProvider.extractTransactionsDetailed(
                             rawText = promptText,
                             apiKey = apiKey,
@@ -831,7 +840,7 @@ class DocumentRepositoryImpl @Inject constructor(
                         )
                     }
                     else -> {
-                        val promptText = buildPromptWithContext(chunkText, priorContext)
+                        val promptText = buildPromptWithContext(redactedChunkText, redactedPriorContext)
                         aiProvider.extractTransactions(
                             rawText = promptText,
                             apiKey = apiKey,
@@ -1314,6 +1323,20 @@ class DocumentRepositoryImpl @Inject constructor(
         val doc = requireNotNull(documentDao.getDocumentById(documentId)) {
             "Document not found: $documentId"
         }
+        val crypto = fileCrypto
+        if (crypto != null && csvFile.exists() && !crypto.isEncrypted(csvFile)) {
+            val encryptedTmp = File(csvFile.parentFile ?: File("."), "${csvFile.name}.enc.tmp")
+            csvFile.inputStream().use { input ->
+                crypto.encryptingOutputStream(FileOutputStream(encryptedTmp)).use { out ->
+                    input.copyTo(out)
+                    out.flush()
+                }
+            }
+            if (!encryptedTmp.renameTo(csvFile)) {
+                encryptedTmp.copyTo(csvFile, overwrite = true)
+                encryptedTmp.delete()
+            }
+        }
         val updated = doc.copy(
             localPath = csvFile.absolutePath,
             status = DocumentStatus.READY_FOR_MAPPING.name,
@@ -1390,13 +1413,15 @@ class DocumentRepositoryImpl @Inject constructor(
             var insertedDocument: DocumentEntity? = null
 
             try {
-                // Single-pass stream: compute SHA-256 hash and exact byte count while writing to temp file
+                // Single-pass stream: compute SHA-256 hash over plaintext while encrypting at rest
                 val digest = MessageDigest.getInstance("SHA-256")
                 var copiedSize = 0L
                 val inputStream = resolver.openInputStream(uri)
                     ?: throw IOException("Unable to read the selected file.")
                 DigestInputStream(inputStream, digest).use { digestInput ->
-                    FileOutputStream(tempFile).use { output ->
+                    val rawOut = FileOutputStream(tempFile)
+                    val targetOut = fileCrypto?.encryptingOutputStream(rawOut) ?: rawOut
+                    targetOut.use { output ->
                         val buffer = ByteArray(INGEST_BUFFER_SIZE)
                         while (true) {
                             currentCoroutineContext().ensureActive()
@@ -2193,7 +2218,6 @@ class DocumentRepositoryImpl @Inject constructor(
         var amc = ""
         var scheme = ""
         var isin = ""
-        var folio = ""
         store.forEachPage(documentId) { pageNumber, pageText ->
             if (pageNumber >= untilPage) return@forEachPage
             for (rawLine in pageText.lineSequence()) {
@@ -2204,7 +2228,7 @@ class DocumentRepositoryImpl @Inject constructor(
                     isin = extractedIsin
                 }
                 if (line.contains("Folio No", ignoreCase = true)) {
-                    folio = line.substringAfter(":", line).trim()
+                    // Intentionally omitted from AI carry-over context to prevent PII egress.
                 } else if (line.contains("Mutual Fund", ignoreCase = true) && line.length < 90) {
                     amc = line
                 } else if (isContextHeaderLine(line)) {
@@ -2217,7 +2241,7 @@ class DocumentRepositoryImpl @Inject constructor(
             activeAmc = amc,
             activeScheme = scheme.ifBlank { lastDraft?.assetName.orEmpty() },
             activeIsin = isin.ifBlank { lastDraft?.isin.orEmpty() },
-            activeFolio = folio,
+            activeFolio = "",
             activeBroker = lastDraft?.broker.orEmpty(),
         )
     }
@@ -2246,9 +2270,7 @@ class DocumentRepositoryImpl @Inject constructor(
         return diff > tolerance
     }
 
-    private fun parseCleanBigDecimal(raw: String): BigDecimal? = runCatching {
-        BigDecimal(raw.replace(",", "").replace("₹", "").trim())
-    }.getOrNull()
+    private fun parseCleanBigDecimal(raw: String): BigDecimal? = FinancialNumberParser.parseOrNull(raw)
 
     private fun buildDraftSignature(draft: DraftTransactionEntity): String {
         val normQty = parseCleanBigDecimal(draft.quantity)?.stripTrailingZeros()?.toPlainString()

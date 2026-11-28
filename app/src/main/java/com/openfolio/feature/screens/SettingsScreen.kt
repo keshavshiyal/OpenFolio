@@ -6,6 +6,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -344,6 +345,40 @@ fun SettingsScreen(
                             text = "Save Key",
                             style = MaterialTheme.typography.labelLarge,
                         )
+                    }
+
+                    if (!uiState.apiKeyStorageError.isNullOrBlank()) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(
+                                    color = colors.lossGlyph.copy(alpha = 0.08f),
+                                    shape = RoundedCornerShape(8.dp),
+                                )
+                                .border(
+                                    width = 1.dp,
+                                    color = colors.lossGlyph.copy(alpha = 0.35f),
+                                    shape = RoundedCornerShape(8.dp),
+                                )
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(
+                                text = uiState.apiKeyStorageError.orEmpty(),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colors.content,
+                            )
+                            TextButton(
+                                onClick = viewModel::clearCorruptedApiKeyStorage,
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                            ) {
+                                Text(
+                                    text = "Reset Key Storage",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = colors.lossGlyph,
+                                )
+                            }
+                        }
                     }
 
                     Row(

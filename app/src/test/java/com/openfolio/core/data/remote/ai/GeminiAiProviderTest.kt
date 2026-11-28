@@ -776,4 +776,65 @@ class GeminiAiProviderTest {
         assertEquals(2, http429Attempts)
         assertEquals(listOf(2_000L), recordedDelays)
     }
+
+    @Test
+    fun normalizesAiTransactionTypesSanitizesMalformedNumbersAndScrubsPiiPrompt() = runBlocking {
+        var capturedPrompt = ""
+        val provider = GeminiAiProvider(
+            delayFn = { },
+            generateContentFn = { _, prompt ->
+                capturedPrompt = prompt
+                """
+                {
+                  "transactions": [
+                    {
+                      "assetName": "HDFC Flexi Cap",
+                      "transactionType": "SIP",
+                      "quantity": "12.50",
+                      "price": "₹ 1,200.00",
+                      "netAmount": "15,000.00",
+                      "confidence": 94
+                    },
+                    {
+                      "assetName": "Strange Holding",
+                      "transactionType": "FUTURE_WEIRD_TYPE",
+                      "quantity": "N/A",
+                      "price": "--",
+                      "netAmount": "(2,500.50)",
+                      "confidence": 92
+                    }
+                  ],
+                  "carryOverContext": {}
+                }
+                """.trimIndent()
+            },
+        )
+
+        val result = provider.extractTransactionsWithContext(
+            rawText = "PAN: ABCDE1234F Folio No: 998877/11 HDFCBANK ISIN: INF179K01BE2",
+            apiKey = "AIza-test",
+            documentId = "doc-sanitize",
+            priorContext = AiCarryOverContext(activeFolio = "998877/11", activeAccountId = "ACC-123"),
+        ).getOrThrow()
+
+        assertFalse(capturedPrompt.contains("ABCDE1234F"))
+        assertFalse(capturedPrompt.contains("998877/11"))
+        assertFalse(capturedPrompt.contains("ACC-123"))
+        assertTrue(capturedPrompt.contains("INF179K01BE2"))
+
+        assertEquals(2, result.drafts.size)
+        val sipDraft = result.drafts[0]
+        assertEquals("BUY", sipDraft.transactionType)
+        assertEquals("12.50", sipDraft.quantity)
+        assertEquals("1200.00", sipDraft.price)
+        assertEquals("15000.00", sipDraft.netAmount)
+        assertEquals(94, sipDraft.confidence)
+
+        val malformedDraft = result.drafts[1]
+        assertEquals("OTHER", malformedDraft.transactionType)
+        assertEquals("1", malformedDraft.quantity)
+        assertEquals("0", malformedDraft.price)
+        assertEquals("-2500.50", malformedDraft.netAmount)
+        assertEquals(65, malformedDraft.confidence)
+    }
 }

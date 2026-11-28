@@ -9,10 +9,9 @@
 -keep class * extends androidx.room.RoomDatabase
 -dontwarn androidx.room.paging.**
 
-# SQLCipher
--keep class net.sqlcipher.** { *; }
--keep class net.sqlcipher.database.** { *; }
--dontwarn net.sqlcipher.**
+# SQLCipher for Android
+-keep class net.zetetic.database.** { *; }
+-dontwarn net.zetetic.database.**
 
 # OpenCSV
 -keep class com.opencsv.** { *; }

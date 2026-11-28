@@ -1000,6 +1000,129 @@ class DocumentRepositoryImplTest {
         verify(documentDao).deleteById(manualDocId)
     }
 
+    @Test
+    fun saveDraftTransactionsHandlesUnknownTransactionTypeAndMalformedDecimalsWithoutCrashing() = runBlocking {
+        val database = mock<OpenFolioDatabase>()
+        val documentDao = mock<DocumentDao>()
+        val draftDao = mock<DraftTransactionDao>()
+        val txnDao = mock<TransactionDao>()
+        val accountDao = mock<com.openfolio.core.data.local.dao.AccountDao>()
+        val assetDao = mock<com.openfolio.core.data.local.dao.AssetDao>()
+        val lotDao = mock<com.openfolio.core.data.local.dao.LotDao>()
+        val docId = "doc-malformed-ai-drafts"
+
+        whenever(database.accountDao()).thenReturn(accountDao)
+        whenever(database.assetDao()).thenReturn(assetDao)
+        whenever(database.lotDao()).thenReturn(lotDao)
+        whenever(assetDao.getAllOnce()).thenReturn(emptyList())
+        whenever(txnDao.getExistingFingerprints(org.mockito.kotlin.any())).thenReturn(emptyList())
+        whenever(txnDao.getByAssetIdOnce(org.mockito.kotlin.any())).thenReturn(emptyList())
+        whenever(documentDao.getDocumentById(docId)).thenReturn(
+            DocumentEntity(
+                id = docId,
+                fileName = "ai.pdf",
+                localPath = "/tmp/ai.pdf",
+                fileHash = "hash-ai",
+                fileSize = 512L,
+                importDate = 1700000000000L,
+                status = DocumentStatus.AI_COMPLETE.name,
+            ),
+        )
+        whenever(draftDao.getByDocumentIdOnce(docId)).thenReturn(
+            listOf(
+                DraftTransactionEntity(
+                    id = "d-sip",
+                    documentId = docId,
+                    assetName = "HDFC Flexi Cap",
+                    transactionType = "SIP",
+                    quantity = "10",
+                    price = "100",
+                    netAmount = "1000",
+                    confidence = 95,
+                ),
+                DraftTransactionEntity(
+                    id = "d-na",
+                    documentId = docId,
+                    assetName = "Mystery Security",
+                    transactionType = "UNRECOGNIZED_ACTION",
+                    quantity = "N/A",
+                    price = "--",
+                    netAmount = "NaN",
+                    confidence = 60,
+                ),
+            ),
+        )
+
+        val repository = DocumentRepositoryImpl(
+            documentDao = documentDao,
+            columnMappingDao = mock<ColumnMappingDao>(),
+            draftTransactionDao = draftDao,
+            transactionDao = txnDao,
+            database = database,
+            documentTextExtractor = mock<DocumentTextExtractor>(),
+            structuredFileParser = mock<StructuredFileParser>(),
+            settingsRepository = mock<SettingsRepository>(),
+            aiProvider = mock<AiProvider>(),
+            applicationScope = mock<CoroutineScope>(),
+        ).apply {
+            transactionRunner = { block -> block() }
+        }
+
+        val result = repository.saveDraftTransactions(docId)
+        assertEquals(2, result.savedCount)
+
+        val captor = org.mockito.kotlin.argumentCaptor<List<com.openfolio.core.data.local.entity.TransactionEntity>>()
+        verify(txnDao).insertAll(captor.capture())
+        val saved = captor.firstValue
+        assertEquals(2, saved.size)
+        assertEquals(com.openfolio.core.data.local.entity.TransactionType.BUY, saved[0].type)
+        assertEquals(com.openfolio.core.data.local.entity.TransactionType.OTHER, saved[1].type)
+        assertEquals(0, saved[1].quantity?.compareTo(java.math.BigDecimal.ZERO))
+        assertEquals(0, saved[1].netAmount.compareTo(java.math.BigDecimal.ZERO))
+    }
+
+    @Test
+    fun attachExtractedCsvEncryptsPlaintextFileWhenLocalFileCryptoIsConfigured() = runBlocking {
+        val crypto = com.openfolio.core.data.local.LocalFileCrypto(
+            keyProvider = { javax.crypto.spec.SecretKeySpec(ByteArray(32) { 0x51 }, "AES") },
+        )
+        val csvFile = kotlin.io.path.createTempFile("extracted", ".csv").toFile().apply {
+            writeText("Symbol,Qty,Price\nRELIANCE,5,2500\n")
+            deleteOnExit()
+        }
+        val documentDao = mock<DocumentDao>()
+        whenever(documentDao.getDocumentById("doc-csv")).thenReturn(
+            DocumentEntity(
+                id = "doc-csv",
+                fileName = "stmt.pdf",
+                localPath = "/tmp/stmt.pdf",
+                fileHash = "hash-csv",
+                fileSize = 100L,
+                importDate = 1700000000000L,
+                status = DocumentStatus.OCR_COMPLETE.name,
+            ),
+        )
+
+        val repository = DocumentRepositoryImpl(
+            documentDao = documentDao,
+            columnMappingDao = mock<ColumnMappingDao>(),
+            draftTransactionDao = mock<DraftTransactionDao>(),
+            transactionDao = mock<TransactionDao>(),
+            database = mock<OpenFolioDatabase>(),
+            documentTextExtractor = mock<DocumentTextExtractor>(),
+            structuredFileParser = mock<StructuredFileParser>(),
+            settingsRepository = mock<SettingsRepository>(),
+            aiProvider = mock<AiProvider>(),
+            applicationScope = mock<CoroutineScope>(),
+            fileCrypto = crypto,
+        )
+
+        repository.attachExtractedCsv("doc-csv", csvFile)
+
+        assertTrue(crypto.isEncrypted(csvFile))
+        assertTrue(crypto.openPlaintextInputStream(csvFile).bufferedReader().readText().contains("RELIANCE,5,2500"))
+    }
+
     private fun createTestRepository() = DocumentRepositoryImpl(
         documentDao = mock<DocumentDao>(),
         columnMappingDao = mock<ColumnMappingDao>(),

@@ -5,17 +5,18 @@ import android.database.Cursor
 import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.sqlite.db.SupportSQLiteStatement
 import com.openfolio.core.data.local.ExtractedTextStore
+import com.openfolio.core.data.local.LocalFileCrypto
 import com.openfolio.core.data.local.OpenFolioDatabase
 import com.openfolio.core.data.repository.DocumentRepositoryImpl
 import com.openfolio.core.data.repository.SettingsRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.FilterOutputStream
+import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.nio.ByteBuffer
@@ -84,6 +85,7 @@ class AppBackupManagerImpl @Inject constructor(
     private val databaseExporter: DatabaseExporter,
     private val settingsRepository: SettingsRepository,
     @ApplicationContext context: Context,
+    private val fileCrypto: LocalFileCrypto? = null,
 ) : AppBackupManager {
 
     private val workBaseDir: File = context.cacheDir
@@ -117,11 +119,13 @@ class AppBackupManagerImpl @Inject constructor(
         dbProvider: (() -> SupportSQLiteDatabase)? = null,
         transactionRunner: ((SupportSQLiteDatabase, () -> Unit) -> Unit)? = null,
         invalidateTables: (() -> Unit)? = null,
+        fileCrypto: LocalFileCrypto? = null,
     ) : this(
         database = database,
         databaseExporter = databaseExporter,
         settingsRepository = settingsRepository,
         context = FakeDirContext(workBaseDir, documentsDir.parentFile ?: workBaseDir),
+        fileCrypto = fileCrypto,
     ) {
         this.customWorkBaseDir = workBaseDir
         this.customDocumentsDir = documentsDir
@@ -178,14 +182,14 @@ class AppBackupManagerImpl @Inject constructor(
                 )
                 zipOut.closeEntry()
 
-                // 2. Inbox Document Binary Files + Extracted Text Sidecars
+                // 2. Inbox Document Binary Files + Extracted Text Sidecars (stored in portable plaintext inside encrypted ZIP)
                 for (doc in docRecords) {
                     val localFile = doc.localPath.takeIf { it.isNotBlank() }?.let(::File)
                     if (localFile != null && localFile.exists() && localFile.isFile) {
                         val safeName = sanitizeFileName(doc.fileName.ifBlank { localFile.name })
                         val entryPath = "$DIR_INBOX_FILES/${doc.id}/$safeName"
                         zipOut.putNextEntry(ZipEntry(entryPath))
-                        FileInputStream(localFile).use { it.copyTo(zipOut, IO_BUFFER_SIZE) }
+                        openReadableFileStream(localFile).use { it.copyTo(zipOut, IO_BUFFER_SIZE) }
                         zipOut.closeEntry()
 
                         docFileManifest.put(
@@ -202,7 +206,7 @@ class AppBackupManagerImpl @Inject constructor(
                     if (sidecarFile != null && sidecarFile.exists() && sidecarFile.isFile && bundledTextIds.add(doc.id)) {
                         val entryPath = "$DIR_EXTRACTED_TEXT/${doc.id}.txt"
                         zipOut.putNextEntry(ZipEntry(entryPath))
-                        FileInputStream(sidecarFile).use { it.copyTo(zipOut, IO_BUFFER_SIZE) }
+                        openReadableFileStream(sidecarFile).use { it.copyTo(zipOut, IO_BUFFER_SIZE) }
                         zipOut.closeEntry()
 
                         textFileManifest.put(
@@ -272,6 +276,23 @@ class AppBackupManagerImpl @Inject constructor(
 
         val tempZipFile = File(customWorkBaseDir, "restore_tmp_${UUID.randomUUID()}.zip")
         val tempExtractDir = File(customWorkBaseDir, "restore_extract_${UUID.randomUUID()}")
+        val restoreToken = UUID.randomUUID().toString()
+        val stagingDocsDir = File(
+            customDocumentsDir.parentFile ?: customWorkBaseDir,
+            "${customDocumentsDir.name}.staging_$restoreToken",
+        )
+        val stagingTextDir = File(
+            customExtractedTextDir.parentFile ?: customWorkBaseDir,
+            "${customExtractedTextDir.name}.staging_$restoreToken",
+        )
+        val backupOldDocsDir = File(
+            customDocumentsDir.parentFile ?: customWorkBaseDir,
+            "${customDocumentsDir.name}.old_$restoreToken",
+        )
+        val backupOldTextDir = File(
+            customExtractedTextDir.parentFile ?: customWorkBaseDir,
+            "${customExtractedTextDir.name}.old_$restoreToken",
+        )
         tempZipFile.parentFile?.mkdirs()
 
         try {
@@ -286,6 +307,10 @@ class AppBackupManagerImpl @Inject constructor(
                 ?: throw InvalidBackupFormatException("Backup archive is missing manifest.json.")
             val databaseFile = extractedEntries[ENTRY_DATABASE_JSON]
                 ?: throw InvalidBackupFormatException("Backup archive is missing database.json.")
+
+            if (manifestFile.length() > MAX_JSON_ENTRY_BYTES || databaseFile.length() > MAX_JSON_ENTRY_BYTES) {
+                throw InvalidBackupFormatException("Backup metadata/database JSON exceeds maximum supported size.")
+            }
 
             val manifest = runCatching {
                 JSONObject(manifestFile.readText(StandardCharsets.UTF_8))
@@ -305,11 +330,17 @@ class AppBackupManagerImpl @Inject constructor(
             if (dbMeta?.optString("format") != "OpenFolio Database Export") {
                 throw InvalidBackupFormatException("Invalid database export payload inside backup.")
             }
+            val backupDbVersion = dbMeta.optInt("databaseVersion", -1)
+            if (backupDbVersion !in 1..OpenFolioDatabase.SCHEMA_VERSION) {
+                throw InvalidBackupFormatException(
+                    "Backup schema version ($backupDbVersion) is incompatible with installed database version (${OpenFolioDatabase.SCHEMA_VERSION}).",
+                )
+            }
             val tablesObj = databaseJson.optJSONObject("tables")
                 ?: throw InvalidBackupFormatException("Backup database payload contains no tables.")
 
-            val restoredDocsById = mutableMapOf<String, File>()
-            val restoredTextsById = mutableMapOf<String, File>()
+            val stagedDocsByTargetName = linkedMapOf<String, File>()
+            val stagedTextsByTargetName = linkedMapOf<String, File>()
             val finalDocPathsById = mutableMapOf<String, String>()
             val finalTextPathsById = mutableMapOf<String, String>()
 
@@ -321,9 +352,10 @@ class AppBackupManagerImpl @Inject constructor(
                     val zipEntry = item.optString("zipEntry").trim()
                     val safeName = sanitizeFileName(item.optString("fileName").ifBlank { "document" })
                     val source = extractedEntries[zipEntry]
-                    if (docId.isNotBlank() && source != null && source.isFile) {
-                        restoredDocsById[docId] = source
-                        finalDocPathsById[docId] = File(customDocumentsDir, "${docId}_$safeName").absolutePath
+                    if (isSafeIdentifier(docId) && source != null && source.isFile) {
+                        val fileName = "${docId}_$safeName"
+                        stagedDocsByTargetName[fileName] = source
+                        finalDocPathsById[docId] = File(customDocumentsDir, fileName).absolutePath
                     }
                 }
             }
@@ -335,17 +367,24 @@ class AppBackupManagerImpl @Inject constructor(
                     val docId = item.optString("documentId").trim()
                     val zipEntry = item.optString("zipEntry").trim()
                     val source = extractedEntries[zipEntry]
-                    if (docId.isNotBlank() && source != null && source.isFile) {
-                        restoredTextsById[docId] = source
-                        finalTextPathsById[docId] = File(customExtractedTextDir, "$docId.txt").absolutePath
+                    if (isSafeIdentifier(docId) && source != null && source.isFile) {
+                        val fileName = "$docId.txt"
+                        stagedTextsByTargetName[fileName] = source
+                        finalTextPathsById[docId] = File(customExtractedTextDir, fileName).absolutePath
                     }
                 }
             }
+
+            // Stage & verify all restored files BEFORE touching DB or deleting existing files
+            stageRestoredFiles(stagingDocsDir, stagedDocsByTargetName)
+            stageRestoredFiles(stagingTextDir, stagedTextsByTargetName)
 
             val db = dbProvider()
             var restoredTableCount = 0
             var restoredRowCount = 0L
 
+            // Execute DB update and atomic directory swap together inside the DB transaction:
+            // if filesystem swap fails, we roll back the directory rename and throw so SQLite rolls back.
             transactionRunner(db) {
                 val (tables, rows) = restoreTablesInTransaction(
                     db = db,
@@ -355,21 +394,20 @@ class AppBackupManagerImpl @Inject constructor(
                 )
                 restoredTableCount = tables
                 restoredRowCount = rows
+
+                swapStagedDirectoriesAtomically(
+                    stagingDocsDir = stagingDocsDir,
+                    liveDocsDir = customDocumentsDir,
+                    backupOldDocsDir = backupOldDocsDir,
+                    stagingTextDir = stagingTextDir,
+                    liveTextDir = customExtractedTextDir,
+                    backupOldTextDir = backupOldTextDir,
+                )
             }
 
-            // Transaction committed: replace local inbox files and extracted text sidecars
-            syncRestoredFiles(
-                targetDir = customDocumentsDir,
-                restoredByPath = finalDocPathsById.mapNotNull { (docId, path) ->
-                    restoredDocsById[docId]?.let { src -> path to src }
-                }.toMap(),
-            )
-            syncRestoredFiles(
-                targetDir = customExtractedTextDir,
-                restoredByPath = finalTextPathsById.mapNotNull { (docId, path) ->
-                    restoredTextsById[docId]?.let { src -> path to src }
-                }.toMap(),
-            )
+            // Transaction committed cleanly: safe to delete backups of prior local files
+            runCatching { backupOldDocsDir.deleteRecursively() }
+            runCatching { backupOldTextDir.deleteRecursively() }
 
             // Restore settings
             var restoredSettings = false
@@ -384,7 +422,7 @@ class AppBackupManagerImpl @Inject constructor(
                 }
                 val restoredApiKey = settingsObj.optString("geminiApiKey", "").trim()
                 if (restoredApiKey.isNotEmpty()) {
-                    settingsRepository.setGeminiApiKey(restoredApiKey)
+                    runCatching { settingsRepository.setGeminiApiKey(restoredApiKey) }
                 }
                 restoredSettings = true
             }
@@ -394,14 +432,99 @@ class AppBackupManagerImpl @Inject constructor(
             BackupRestoreSummary(
                 tableCount = restoredTableCount,
                 totalRows = restoredRowCount,
-                restoredDocumentFilesCount = restoredDocsById.size,
-                restoredExtractedTextCount = restoredTextsById.size,
+                restoredDocumentFilesCount = stagedDocsByTargetName.size,
+                restoredExtractedTextCount = stagedTextsByTargetName.size,
                 restoredSettings = restoredSettings,
             )
         } finally {
             tempZipFile.delete()
             tempExtractDir.deleteRecursively()
+            if (stagingDocsDir.exists()) stagingDocsDir.deleteRecursively()
+            if (stagingTextDir.exists()) stagingTextDir.deleteRecursively()
         }
+    }
+
+    private fun openReadableFileStream(file: File): InputStream =
+        fileCrypto?.openPlaintextInputStream(file) ?: FileInputStream(file)
+
+    private fun stageRestoredFiles(
+        stagingDir: File,
+        sourceByTargetFileName: Map<String, File>,
+    ) {
+        if (stagingDir.exists()) {
+            stagingDir.deleteRecursively()
+        }
+        if (!stagingDir.mkdirs()) {
+            throw IOException("Unable to create restore staging directory: ${stagingDir.absolutePath}")
+        }
+        for ((targetFileName, sourceFile) in sourceByTargetFileName) {
+            val dest = File(stagingDir, targetFileName)
+            FileInputStream(sourceFile).use { input ->
+                val rawOut = FileOutputStream(dest)
+                val outStream = fileCrypto?.encryptingOutputStream(rawOut) ?: rawOut
+                outStream.use { output ->
+                    input.copyTo(output, IO_BUFFER_SIZE)
+                    output.flush()
+                }
+            }
+            if (!dest.exists() || (sourceFile.length() > 0L && dest.length() == 0L)) {
+                throw IOException("Failed to verify staged restore file: ${dest.name}")
+            }
+        }
+    }
+
+    private fun swapStagedDirectoriesAtomically(
+        stagingDocsDir: File,
+        liveDocsDir: File,
+        backupOldDocsDir: File,
+        stagingTextDir: File,
+        liveTextDir: File,
+        backupOldTextDir: File,
+    ) {
+        var docsMovedOut = false
+        var docsSwappedIn = false
+        var textMovedOut = false
+        var textSwappedIn = false
+        try {
+            if (liveDocsDir.exists()) {
+                moveDirectoryOrThrow(liveDocsDir, backupOldDocsDir)
+                docsMovedOut = true
+            }
+            moveDirectoryOrThrow(stagingDocsDir, liveDocsDir)
+            docsSwappedIn = true
+
+            if (liveTextDir.exists()) {
+                moveDirectoryOrThrow(liveTextDir, backupOldTextDir)
+                textMovedOut = true
+            }
+            moveDirectoryOrThrow(stagingTextDir, liveTextDir)
+            textSwappedIn = true
+        } catch (ex: Exception) {
+            runCatching {
+                if (textSwappedIn && liveTextDir.exists()) liveTextDir.deleteRecursively()
+                if (textMovedOut && backupOldTextDir.exists() && !liveTextDir.exists()) {
+                    moveDirectoryOrThrow(backupOldTextDir, liveTextDir)
+                }
+                if (docsSwappedIn && liveDocsDir.exists()) liveDocsDir.deleteRecursively()
+                if (docsMovedOut && backupOldDocsDir.exists() && !liveDocsDir.exists()) {
+                    moveDirectoryOrThrow(backupOldDocsDir, liveDocsDir)
+                }
+            }
+            throw ex
+        }
+    }
+
+    private fun moveDirectoryOrThrow(source: File, target: File) {
+        target.parentFile?.mkdirs()
+        if (target.exists()) {
+            target.deleteRecursively()
+        }
+        if (source.renameTo(target)) return
+        // Fallback when renameTo crosses mount boundaries
+        if (!source.copyRecursively(target, overwrite = true)) {
+            throw IOException("Unable to move directory ${source.name} -> ${target.name}")
+        }
+        source.deleteRecursively()
     }
 
     private fun restoreTablesInTransaction(
@@ -527,39 +650,21 @@ class AppBackupManagerImpl @Inject constructor(
         }
     }
 
-    private fun syncRestoredFiles(
-        targetDir: File,
-        restoredByPath: Map<String, File>,
-    ) {
-        if (targetDir.exists()) {
-            targetDir.listFiles()?.forEach { existing ->
-                if (existing.isFile) {
-                    existing.delete()
-                }
-            }
-        } else {
-            targetDir.mkdirs()
-        }
-
-        for ((targetPath, sourceFile) in restoredByPath) {
-            val dest = File(targetPath)
-            dest.parentFile?.mkdirs()
-            FileInputStream(sourceFile).use { input ->
-                FileOutputStream(dest).use { output ->
-                    input.copyTo(output, IO_BUFFER_SIZE)
-                }
-            }
-        }
-    }
-
     private fun unpackZipSafely(zipFile: File, destDir: File): Map<String, File> {
         destDir.mkdirs()
         val canonicalDest = destDir.canonicalPath + File.separator
         val extracted = mutableMapOf<String, File>()
+        var entryCount = 0
+        var totalUncompressedBytes = 0L
+        val buffer = ByteArray(IO_BUFFER_SIZE)
 
         ZipInputStream(BufferedInputStream(FileInputStream(zipFile))).use { zipIn ->
             while (true) {
                 val entry = zipIn.nextEntry ?: break
+                entryCount++
+                if (entryCount > MAX_BACKUP_ENTRY_COUNT) {
+                    throw InvalidBackupFormatException("Backup archive exceeds maximum allowed entry count.")
+                }
                 if (entry.isDirectory) {
                     zipIn.closeEntry()
                     continue
@@ -572,9 +677,27 @@ class AppBackupManagerImpl @Inject constructor(
                 if (!targetFile.canonicalPath.startsWith(canonicalDest)) {
                     throw InvalidBackupFormatException("Unsafe entry outside target directory: $entryName")
                 }
+                val declaredSize = entry.size
+                if (declaredSize > MAX_BACKUP_SINGLE_ENTRY_BYTES) {
+                    throw InvalidBackupFormatException("Backup entry exceeds maximum allowed size: $entryName")
+                }
+
                 targetFile.parentFile?.mkdirs()
+                var entryBytes = 0L
                 FileOutputStream(targetFile).use { out ->
-                    zipIn.copyTo(out, IO_BUFFER_SIZE)
+                    while (true) {
+                        val read = zipIn.read(buffer)
+                        if (read <= 0) break
+                        entryBytes += read
+                        totalUncompressedBytes += read
+                        if (entryBytes > MAX_BACKUP_SINGLE_ENTRY_BYTES) {
+                            throw InvalidBackupFormatException("Backup entry exceeds maximum uncompressed size: $entryName")
+                        }
+                        if (totalUncompressedBytes > MAX_BACKUP_TOTAL_UNCOMPRESSED_BYTES) {
+                            throw InvalidBackupFormatException("Backup archive exceeds maximum total uncompressed size.")
+                        }
+                        out.write(buffer, 0, read)
+                    }
                 }
                 extracted[entryName] = targetFile
                 zipIn.closeEntry()
@@ -656,6 +779,7 @@ class AppBackupManagerImpl @Inject constructor(
         }
 
         try {
+            var totalDecryptedBytes = 0L
             FileOutputStream(targetZipFile).use { out ->
                 val buffer = ByteArray(IO_BUFFER_SIZE)
                 while (true) {
@@ -663,15 +787,25 @@ class AppBackupManagerImpl @Inject constructor(
                     if (read <= 0) break
                     val plainChunk = cipher.update(buffer, 0, read)
                     if (plainChunk != null && plainChunk.isNotEmpty()) {
+                        totalDecryptedBytes += plainChunk.size
+                        if (totalDecryptedBytes > MAX_BACKUP_TOTAL_UNCOMPRESSED_BYTES) {
+                            throw InvalidBackupFormatException("Encrypted backup archive exceeds maximum allowed size.")
+                        }
                         out.write(plainChunk)
                     }
                 }
                 val finalBlock = cipher.doFinal()
                 if (finalBlock != null && finalBlock.isNotEmpty()) {
+                    totalDecryptedBytes += finalBlock.size
+                    if (totalDecryptedBytes > MAX_BACKUP_TOTAL_UNCOMPRESSED_BYTES) {
+                        throw InvalidBackupFormatException("Encrypted backup archive exceeds maximum allowed size.")
+                    }
                     out.write(finalBlock)
                 }
                 out.flush()
             }
+        } catch (invalid: InvalidBackupFormatException) {
+            throw invalid
         } catch (badTag: AEADBadTagException) {
             throw BackupDecryptionException("Incorrect backup password or corrupted backup file.", badTag)
         } catch (sec: GeneralSecurityException) {
@@ -779,6 +913,9 @@ class AppBackupManagerImpl @Inject constructor(
     private fun sanitizeFileName(raw: String): String =
         raw.replace(Regex("[^A-Za-z0-9._-]"), "_").take(120).ifBlank { "document" }
 
+    private fun isSafeIdentifier(id: String): Boolean =
+        id.isNotBlank() && !id.contains('/') && !id.contains('\\') && !id.contains("..")
+
     private data class DocFileInfo(
         val id: String,
         val fileName: String,
@@ -807,6 +944,11 @@ class AppBackupManagerImpl @Inject constructor(
     companion object {
         const val BACKUP_EXTENSION = "ofbackup"
         const val MIN_PASSWORD_LENGTH = 6
+        const val MAX_BACKUP_ENTRY_COUNT = 5_000
+        const val MAX_BACKUP_SINGLE_ENTRY_BYTES = 100L * 1024L * 1024L
+        const val MAX_BACKUP_TOTAL_UNCOMPRESSED_BYTES = 512L * 1024L * 1024L
+        const val MAX_JSON_ENTRY_BYTES = 64L * 1024L * 1024L
+
         private const val MAGIC_HEADER = "OFBKUP01"
         private val MAGIC_BYTES = MAGIC_HEADER.toByteArray(StandardCharsets.US_ASCII)
         private const val BACKUP_FORMAT_VERSION = 1
